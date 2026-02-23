@@ -1,0 +1,2 @@
+ALTER TABLE "feedback" ALTER COLUMN "booking_id" SET NOT NULL;--> statement-breakpoint
+ALTER TABLE "feedback" ADD CONSTRAINT "feedback_booking_id_bookings_id_fk" FOREIGN KEY ("booking_id") REFERENCES "public"."bookings"("id") ON DELETE cascade ON UPDATE no action;

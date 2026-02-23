@@ -1,0 +1,1 @@
+ALTER TABLE "services" RENAME COLUMN "duration" TO "EstimateDuration";
