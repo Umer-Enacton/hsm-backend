@@ -79,6 +79,8 @@ const businessProfiles = pgTable("business_profiles", {
   businessName: varchar("business_name", { length: 255 }).notNull(),
   description: varchar("description", { length: 1000 }),
   phone: varchar("phone", { length: 20 }).notNull(),
+  state: varchar("state", { length: 100 }).notNull(), // State/Province
+  city: varchar("city", { length: 100 }).notNull(), // City within state
   website: varchar("website", { length: 255 }),
   logo: varchar("logo", { length: 500 }), // Cloudinary URL for business logo
   coverImage: varchar("cover_image", { length: 500 }), // Cloudinary URL for cover/banner image
@@ -107,7 +109,6 @@ const slots = pgTable("slots", {
     .notNull()
     .references(() => businessProfiles.id, { onDelete: "cascade" }),
   startTime: time("start_time").notNull(),
-  endTime: time("end_time").notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 

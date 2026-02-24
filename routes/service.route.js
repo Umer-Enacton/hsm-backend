@@ -3,6 +3,7 @@ const router = express.Router();
 const {
   getAllServices,
   getServicesByBusiness,
+  getServiceById,
   addService,
   deleteService,
   updateService,
@@ -10,9 +11,10 @@ const {
 const authorizeRole = require("../middleware/roleBasedRoutes");
 const { PROVIDER } = require("../config/roles");
 const validate = require("../middleware/validate");
-const { serviceSchema } = require("../helper/validation");
+const { serviceSchema, serviceUpdateSchema } = require("../helper/validation");
 
 router.get("/services", getAllServices);
+router.get("/services/:id", getServiceById);
 router.get("/services/business/:businessId", getServicesByBusiness);
 
 router.post(
@@ -25,7 +27,7 @@ router.post(
 router.put(
   "/services/:serviceId",
   authorizeRole(PROVIDER),
-  validate(serviceSchema),
+  validate(serviceUpdateSchema),
   updateService
 );
 

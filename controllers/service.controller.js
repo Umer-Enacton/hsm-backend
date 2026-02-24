@@ -4,9 +4,107 @@ const { eq, and } = require("drizzle-orm");
 
 const getAllServices = async (req, res) => {
   try {
-    const allServices = await db.select().from(services);
-    res.status(200).json({ services: allServices });
+    const allServices = await db
+      .select({
+        // Service fields
+        id: services.id,
+        name: services.name,
+        description: services.description,
+        price: services.price,
+        EstimateDuration: services.EstimateDuration,
+        image: services.image,
+        isActive: services.isActive,
+        businessProfileId: services.businessProfileId,
+        createdAt: services.createdAt,
+        // Business/Provider fields
+        provider: {
+          id: businessProfiles.id,
+          businessName: businessProfiles.businessName,
+          description: businessProfiles.description,
+          phone: businessProfiles.phone,
+          state: businessProfiles.state,
+          city: businessProfiles.city,
+          logo: businessProfiles.logo,
+          rating: businessProfiles.rating,
+          isVerified: businessProfiles.isVerified,
+        },
+      })
+      .from(services)
+      .leftJoin(businessProfiles, eq(services.businessProfileId, businessProfiles.id));
+
+    // Get total reviews count for each provider (this would require another join with feedback table)
+    // For now, setting totalReviews to 0
+    const servicesWithReviews = allServices.map(service => ({
+      ...service,
+      provider: {
+        ...service.provider,
+        totalReviews: 0, // TODO: Join with feedback table to get actual count
+      },
+    }));
+
+    res.status(200).json({ services: servicesWithReviews, total: servicesWithReviews.length });
   } catch (error) {
+    console.error("Error fetching services:", error);
+    res.status(500).json({ message: "Server error", error: error.message });
+  }
+};
+
+// Get service by ID
+const getServiceById = async (req, res) => {
+  try {
+    const serviceId = Number(req.params.id);
+
+    if (!serviceId) {
+      return res.status(400).json({ message: "Service ID is required" });
+    }
+
+    const [service] = await db
+      .select({
+        // Service fields
+        id: services.id,
+        name: services.name,
+        description: services.description,
+        price: services.price,
+        EstimateDuration: services.EstimateDuration,
+        image: services.image,
+        isActive: services.isActive,
+        businessProfileId: services.businessProfileId,
+        createdAt: services.createdAt,
+        // Business/Provider fields
+        provider: {
+          id: businessProfiles.id,
+          businessName: businessProfiles.businessName,
+          description: businessProfiles.description,
+          phone: businessProfiles.phone,
+          state: businessProfiles.state,
+          city: businessProfiles.city,
+          logo: businessProfiles.logo,
+          rating: businessProfiles.rating,
+          isVerified: businessProfiles.isVerified,
+        },
+      })
+      .from(services)
+      .leftJoin(businessProfiles, eq(services.businessProfileId, businessProfiles.id))
+      .where(eq(services.id, serviceId));
+
+    if (!service) {
+      return res.status(404).json({ message: "Service not found" });
+    }
+
+    // Add empty slots and reviews arrays (frontend expects these)
+    const serviceDetails = {
+      ...service,
+      provider: {
+        ...service.provider,
+        totalReviews: 0, // TODO: Fetch actual count from feedback table
+      },
+      slots: [], // TODO: Fetch actual slots from slots table
+      reviews: [], // TODO: Fetch actual reviews from feedback table
+    };
+
+    res.status(200).json(serviceDetails);
+  } catch (error) {
+    console.error("Error fetching service:", error);
     res.status(500).json({ message: "Server error", error: error.message });
   }
 };
@@ -25,7 +123,13 @@ const getServicesByBusiness = async (req, res) => {
       .from(services)
       .where(eq(services.businessProfileId, businessId));
 
-    res.status(200).json({ services: businessServices });
+    // Map EstimateDuration to duration for frontend compatibility
+    const mappedServices = businessServices.map(service => ({
+      ...service,
+      duration: service.EstimateDuration, // Map backend field to frontend expected field
+    }));
+
+    res.status(200).json({ services: mappedServices });
   } catch (error) {
     res.status(500).json({ message: "Server error", error: error.message });
   }
@@ -77,9 +181,16 @@ const addService = async (req, res) => {
         image: image || null,
       })
       .returning();
+
+    // Map EstimateDuration to duration for frontend compatibility
+    const serviceResponse = {
+      ...newService,
+      duration: newService.EstimateDuration,
+    };
+
     res
       .status(201)
-      .json({ message: "Service added successfully", service: newService });
+      .json({ message: "Service added successfully", service: serviceResponse });
   } catch (error) {
     res.status(500).json({ message: "Server error", error: error.message });
   }
@@ -89,7 +200,7 @@ const updateService = async (req, res) => {
     const { serviceId } = req.params;
     //const userId = req.params.userId;
     const userId = req.token.id;
-    const { name, description, price, duration, image } = req.body;
+    const { name, description, price, duration, image, isActive } = req.body;
     if (!userId) {
       return res.status(400).json({ message: "User ID is required" });
     }
@@ -101,6 +212,7 @@ const updateService = async (req, res) => {
     if (price !== undefined) updateData.price = price;
     if (duration !== undefined) updateData.EstimateDuration = duration;
     if (image !== undefined) updateData.image = image;
+    if (isActive !== undefined) updateData.isActive = isActive;
 
     const service = await db
       .select()
@@ -134,9 +246,16 @@ const updateService = async (req, res) => {
       .set(updateData)
       .where(eq(services.id, serviceId))
       .returning();
+
+    // Map EstimateDuration to duration for frontend compatibility
+    const serviceResponse = {
+      ...updatedService,
+      duration: updatedService.EstimateDuration,
+    };
+
     res.status(200).json({
       message: "Service updated successfully",
-      service: updatedService,
+      service: serviceResponse,
     });
   } catch (error) {
     res.status(500).json({ message: "Server error", error: error.message });
@@ -180,6 +299,7 @@ const deleteService = async (req, res) => {
 };
 module.exports = {
   getAllServices,
+  getServiceById,
   getServicesByBusiness,
   addService,
   updateService,

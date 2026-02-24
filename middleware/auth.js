@@ -10,7 +10,7 @@ const auth = (req, res, next) => {
     //   next();
     //check from cookies
     const token = req.cookies.token;
-    console.log(token);
+    // console.log(token);
     if (token) {
       const user = jwt.verify(token, JWT_SECRET);
       req.token = user;

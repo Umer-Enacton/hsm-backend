@@ -36,14 +36,21 @@ const uploadAvatar = async (req, res) => {
  */
 const uploadLogo = async (req, res) => {
   try {
+    console.log('Logo upload request received');
+    console.log('File:', req.file ? 'Found' : 'Not found');
+    console.log('Body:', req.body);
+
     if (!req.file) {
+      console.log('No file in request');
       return res.status(400).json({
         success: false,
         message: 'No file uploaded',
       });
     }
 
+    console.log('Uploading logo to Cloudinary...');
     const result = await uploadBufferToCloudinary(req.file.buffer, 'business/logos');
+    console.log('Logo uploaded to Cloudinary:', result);
 
     res.status(200).json({
       success: true,
@@ -66,14 +73,21 @@ const uploadLogo = async (req, res) => {
  */
 const uploadCoverImage = async (req, res) => {
   try {
+    console.log('Cover image upload request received');
+    console.log('File:', req.file ? 'Found' : 'Not found');
+    console.log('Body:', req.body);
+
     if (!req.file) {
+      console.log('No file in request');
       return res.status(400).json({
         success: false,
         message: 'No file uploaded',
       });
     }
 
+    console.log('Uploading cover image to Cloudinary...');
     const result = await uploadBufferToCloudinary(req.file.buffer, 'business/covers');
+    console.log('Cover image uploaded to Cloudinary:', result);
 
     res.status(200).json({
       success: true,

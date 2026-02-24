@@ -162,6 +162,35 @@ const serviceSchema = yup.object({
     .required("Duration is required"),
 });
 
+// Optional schema for service updates (all fields optional)
+const serviceUpdateSchema = yup.object({
+  name: yup
+    .string()
+    .trim()
+    .min(3, "Service name must be at least 3 characters"),
+
+  description: yup
+    .string()
+    .trim()
+    .min(10, "Service description too short"),
+
+  price: yup
+    .number()
+    .typeError("Price must be a number")
+    .positive("Price must be greater than 0")
+    .max(100000, "Price seems unrealistic"),
+
+  duration: yup
+    .number()
+    .typeError("Duration must be a number")
+    .positive("Duration must be positive")
+    .max(1440, "Duration cannot exceed 24 hours"),
+
+  image: yup.string().url("Image must be a valid URL"),
+
+  isActive: yup.boolean(),
+});
+
 /* -------------------- SLOT -------------------- */
 
 const slotSchema = yup.object({
@@ -169,11 +198,6 @@ const slotSchema = yup.object({
     .string()
     .matches(timeRegex, "Start time must be HH:mm:ss")
     .required("Start time is required"),
-
-  endTime: yup
-    .string()
-    .matches(timeRegex, "End time must be HH:mm:ss")
-    .required("End time is required"),
 });
 
 /* -------------------- BOOKING -------------------- */
@@ -215,6 +239,7 @@ module.exports = {
   addressSchema,
   businessSchema,
   serviceSchema,
+  serviceUpdateSchema,
   slotSchema,
   bookingSchema,
   feedbackSchema,
