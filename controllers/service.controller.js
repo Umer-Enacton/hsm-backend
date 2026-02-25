@@ -1,10 +1,65 @@
 const db = require("../config/db");
-const { services, businessProfiles } = require("../models/schema");
-const { eq, and } = require("drizzle-orm");
+const { services, businessProfiles, feedback } = require("../models/schema");
+const { eq, and, or, ilike, gte, lte, count } = require("drizzle-orm");
 
 const getAllServices = async (req, res) => {
   try {
-    const allServices = await db
+    // Extract query parameters for filtering
+    const {
+      state,
+      city,
+      category_id,
+      min_price,
+      max_price,
+      search
+    } = req.query;
+
+    // Build dynamic WHERE conditions
+    const conditions = [];
+
+    // Search filter - search in service name OR description (case-insensitive)
+    if (search && search.trim()) {
+      const searchTerm = search.trim();
+      conditions.push(
+        or(
+          ilike(services.name, `%${searchTerm}%`),
+          ilike(services.description, `%${searchTerm}%`)
+        )
+      );
+    }
+
+    // Location filters - from business profile
+    if (state && state.trim()) {
+      conditions.push(eq(businessProfiles.state, state.trim()));
+    }
+    if (city && city.trim()) {
+      conditions.push(eq(businessProfiles.city, city.trim()));
+    }
+
+    // Category filter - NOTE: categoryId is on business_profiles table, not services
+    if (category_id) {
+      conditions.push(eq(businessProfiles.categoryId, Number(category_id)));
+    }
+
+    // Price range filters
+    if (min_price) {
+      const minPrice = Number(min_price);
+      if (!isNaN(minPrice)) {
+        conditions.push(gte(services.price, minPrice));
+      }
+    }
+    if (max_price) {
+      const maxPrice = Number(max_price);
+      if (!isNaN(maxPrice)) {
+        conditions.push(lte(services.price, maxPrice));
+      }
+    }
+
+    // Combine all conditions with AND
+    const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
+
+    // Build the query
+    let query = db
       .select({
         // Service fields
         id: services.id,
@@ -15,6 +70,8 @@ const getAllServices = async (req, res) => {
         image: services.image,
         isActive: services.isActive,
         businessProfileId: services.businessProfileId,
+        rating: services.rating,
+        totalReviews: services.totalReviews,
         createdAt: services.createdAt,
         // Business/Provider fields
         provider: {
@@ -25,24 +82,20 @@ const getAllServices = async (req, res) => {
           state: businessProfiles.state,
           city: businessProfiles.city,
           logo: businessProfiles.logo,
-          rating: businessProfiles.rating,
           isVerified: businessProfiles.isVerified,
         },
       })
       .from(services)
       .leftJoin(businessProfiles, eq(services.businessProfileId, businessProfiles.id));
 
-    // Get total reviews count for each provider (this would require another join with feedback table)
-    // For now, setting totalReviews to 0
-    const servicesWithReviews = allServices.map(service => ({
-      ...service,
-      provider: {
-        ...service.provider,
-        totalReviews: 0, // TODO: Join with feedback table to get actual count
-      },
-    }));
+    // Apply WHERE clause if conditions exist
+    if (whereClause) {
+      query = query.where(whereClause);
+    }
 
-    res.status(200).json({ services: servicesWithReviews, total: servicesWithReviews.length });
+    const allServices = await query;
+
+    res.status(200).json({ services: allServices, total: allServices.length });
   } catch (error) {
     console.error("Error fetching services:", error);
     res.status(500).json({ message: "Server error", error: error.message });
@@ -69,6 +122,8 @@ const getServiceById = async (req, res) => {
         image: services.image,
         isActive: services.isActive,
         businessProfileId: services.businessProfileId,
+        rating: services.rating,
+        totalReviews: services.totalReviews,
         createdAt: services.createdAt,
         // Business/Provider fields
         provider: {
@@ -79,7 +134,6 @@ const getServiceById = async (req, res) => {
           state: businessProfiles.state,
           city: businessProfiles.city,
           logo: businessProfiles.logo,
-          rating: businessProfiles.rating,
           isVerified: businessProfiles.isVerified,
         },
       })
@@ -94,12 +148,8 @@ const getServiceById = async (req, res) => {
     // Add empty slots and reviews arrays (frontend expects these)
     const serviceDetails = {
       ...service,
-      provider: {
-        ...service.provider,
-        totalReviews: 0, // TODO: Fetch actual count from feedback table
-      },
-      slots: [], // TODO: Fetch actual slots from slots table
-      reviews: [], // TODO: Fetch actual reviews from feedback table
+      slots: [], // Frontend will fetch these separately
+      reviews: [], // Frontend will fetch these separately
     };
 
     res.status(200).json(serviceDetails);

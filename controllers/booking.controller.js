@@ -5,6 +5,8 @@ const {
   services,
   Address,
   bookings,
+  users,
+  feedback,
 } = require("../models/schema");
 const { eq, and, gte, lte, desc } = require("drizzle-orm");
 
@@ -52,10 +54,11 @@ const getCustomerBookings = async (req, res) => {
       .select()
       .from(bookings)
       .where(eq(bookings.customerId, userId))
-      .orderBy(desc(bookings.createdAt));
+      .orderBy(desc(bookings.bookingDate)); // Fixed: use bookingDate instead of createdAt
 
     res.status(200).json({ bookings: customerBookings });
   } catch (error) {
+    console.error("Error fetching customer bookings:", error);
     res.status(500).json({ message: "Server error", error: error.message });
   }
 };
@@ -80,10 +83,76 @@ const getProviderBookings = async (req, res) => {
       .select()
       .from(bookings)
       .where(eq(bookings.businessProfileId, business[0].id))
-      .orderBy(desc(bookings.createdAt));
+      .orderBy(desc(bookings.bookingDate));
 
-    res.status(200).json({ bookings: providerBookings });
+    // Fetch customer details for each booking
+    const bookingsWithCustomers = await Promise.all(
+      providerBookings.map(async (booking) => {
+        // Get customer info
+        const [customer] = await db
+          .select()
+          .from(users)
+          .where(eq(users.id, booking.customerId))
+          .limit(1);
+
+        // Get service info
+        const [service] = await db
+          .select()
+          .from(services)
+          .where(eq(services.id, booking.serviceId))
+          .limit(1);
+
+        // Get slot info
+        const [slot] = await db
+          .select()
+          .from(slots)
+          .where(eq(slots.id, booking.slotId))
+          .limit(1);
+
+        // Get address info
+        const [address] = await db
+          .select()
+          .from(Address)
+          .where(eq(Address.id, booking.addressId))
+          .limit(1);
+
+        // Get feedback if booking is completed
+        let feedbackData = null;
+        if (booking.status === "completed") {
+          const [feedbackRecord] = await db
+            .select()
+            .from(feedback)
+            .where(eq(feedback.bookingId, booking.id))
+            .limit(1);
+
+          if (feedbackRecord) {
+            feedbackData = {
+              rating: feedbackRecord.rating,
+              comments: feedbackRecord.comments,
+              createdAt: feedbackRecord.createdAt,
+            };
+          }
+        }
+
+        return {
+          ...booking,
+          customerName: customer?.name || "Unknown",
+          customerPhone: customer?.phone || "",
+          customerEmail: customer?.email || "",
+          serviceName: service?.name || "Unknown Service",
+          price: service?.price || booking.totalPrice || 0,
+          startTime: slot?.startTime || "",
+          address: address
+            ? `${address.street}, ${address.city}, ${address.state} ${address.zipCode}`
+            : "Unknown Address",
+          feedback: feedbackData,
+        };
+      })
+    );
+
+    res.status(200).json({ bookings: bookingsWithCustomers });
   } catch (error) {
+    console.error("Error fetching provider bookings:", error);
     res.status(500).json({ message: "Server error", error: error.message });
   }
 };
@@ -526,50 +595,43 @@ const completeBooking = async (req, res) => {
         .status(403)
         .json({ message: "You are not authorized to complete this booking" });
     }
-    // check if current time is after slot end time
+    // check if slot exists
     const slot = await db
       .select()
       .from(slots)
       .where(eq(slots.id, booking[0].slotId));
-    // const currentTime = new Date();
-    // Parse slot end time (Postgres TIME comes as string "HH:mm:ss")
-    const [endHour, endMinute, endSecond] = slot[0].endTime
-      .split(":")
-      .map(Number);
 
-    const slotEndDateTime = new Date(booking[0].bookingDate);
-    slotEndDateTime.setHours(endHour, endMinute, endSecond || 0, 0);
-    const now = new Date();
-    const bookingDateTime = new Date(booking[0].bookingDate);
-
-    // Normalize dates (ignore time)
-    const todayDateOnly = new Date(
-      now.getFullYear(),
-      now.getMonth(),
-      now.getDate()
-    );
-
-    const bookingDateOnly = new Date(
-      bookingDateTime.getFullYear(),
-      bookingDateTime.getMonth(),
-      bookingDateTime.getDate()
-    );
-
-    // 🔴 Case 1: Booking date is in the future
-    if (todayDateOnly < bookingDateOnly) {
-      return res.status(400).json({
-        message: "Booking date has not arrived yet",
-      });
+    if (slot.length === 0) {
+      return res.status(404).json({ message: "Slot not found" });
     }
 
-    // 🟠 Case 2: Same day → check slot end time
-    if (todayDateOnly.getTime() === bookingDateOnly.getTime()) {
-      if (now < slotEndDateTime) {
-        return res.status(400).json({
-          message: "Slot time has not finished yet",
-        });
-      }
-    }
+    // For simplicity, allow completing confirmed bookings without time check
+    // The provider can manually complete when service is done
+    // If you want to enforce time-based completion, uncomment below:
+
+    // // Parse slot start time (Postgres TIME comes as string "HH:mm:ss")
+    // const [startHour, startMinute] = slot[0].startTime.split(":").map(Number);
+    // // Assume 1 hour duration for service, or use service.duration
+    // const slotEndDateTime = new Date(booking[0].bookingDate);
+    // slotEndDateTime.setHours(startHour + 1, startMinute, 0, 0); // +1 hour for service duration
+    // const now = new Date();
+    // const bookingDateTime = new Date(booking[0].bookingDate);
+
+    // // 🔴 Case 1: Booking date is in the future
+    // if (now < bookingDateTime.setHours(0,0,0,0)) {
+    //   return res.status(400).json({
+    //     message: "Booking date has not arrived yet",
+    //   });
+    // }
+
+    // // 🟠 Case 2: Same day → check if slot time has passed
+    // const todayDateOnly = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    // const bookingDateOnly = new Date(bookingDateTime.getFullYear(), bookingDateTime.getMonth(), bookingDateTime.getDate());
+
+    // if (todayDateOnly.getTime() === bookingDateOnly.getTime() && now < slotEndDateTime) {
+    //   return res.status(400).json({
+    //     message: "Slot time has not finished yet",
+    //   });
     // 5. Update booking status
     const [updatedBooking] = await db
       .update(bookings)

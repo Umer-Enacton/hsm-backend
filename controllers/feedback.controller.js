@@ -1,5 +1,5 @@
 const db = require("../config/db");
-const { feedback, bookings, services } = require("../models/schema");
+const { feedback, bookings, services, users } = require("../models/schema");
 const { eq } = require("drizzle-orm");
 
 // Get feedback by business ID
@@ -42,22 +42,23 @@ const getFeedbackByService = async (req, res) => {
       return res.status(400).json({ message: "Service ID is required" });
     }
 
-    // Get all bookings for this service
-    const serviceBookings = await db
+    // Get all feedback for this service with customer details
+    const serviceFeedback = await db
       .select({
-        id: bookings.id,
-        feedbackId: feedback.id,
+        id: feedback.id,
+        bookingId: feedback.bookingId,
         rating: feedback.rating,
         comments: feedback.comments,
         createdAt: feedback.createdAt,
-        customerId: bookings.customerId,
+        customerId: feedback.customerId,
+        customerName: users.name,
       })
-      .from(bookings)
-      .where(eq(bookings.serviceId, serviceId))
-      .leftJoin(feedback, eq(feedback.bookingId, bookings.id))
+      .from(feedback)
+      .innerJoin(users, eq(feedback.customerId, users.id))
+      .where(eq(feedback.serviceId, serviceId))
       .orderBy(feedback.createdAt);
 
-    res.status(200).json({ feedback: serviceBookings });
+    res.status(200).json({ feedback: serviceFeedback });
   } catch (error) {
     res.status(500).json({ message: "Server error", error: error.message });
   }
@@ -109,10 +110,28 @@ const addFeedback = async (req, res) => {
       .insert(feedback)
       .values({
         bookingId,
+        serviceId: booking[0].serviceId,
+        customerId: booking[0].customerId,
         rating,
         comments,
       })
       .returning();
+
+    // Update service rating
+    const allFeedback = await db
+      .select()
+      .from(feedback)
+      .where(eq(feedback.serviceId, booking[0].serviceId));
+
+    const avgRating = allFeedback.reduce((sum, f) => sum + Number(f.rating), 0) / allFeedback.length;
+
+    await db
+      .update(services)
+      .set({
+        rating: avgRating.toFixed(2),
+        totalReviews: allFeedback.length,
+      })
+      .where(eq(services.id, booking[0].serviceId));
 
     return res.status(201).json({
       message: "Feedback added successfully",

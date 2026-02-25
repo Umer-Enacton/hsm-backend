@@ -84,7 +84,6 @@ const businessProfiles = pgTable("business_profiles", {
   website: varchar("website", { length: 255 }),
   logo: varchar("logo", { length: 500 }), // Cloudinary URL for business logo
   coverImage: varchar("cover_image", { length: 500 }), // Cloudinary URL for cover/banner image
-  rating: decimal("rating", { precision: 3, scale: 2 }),
   isVerified: boolean("is_verified").default(false).notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
@@ -100,6 +99,8 @@ const services = pgTable("services", {
   EstimateDuration: integer("EstimateDuration").notNull(),
   image: varchar("image", { length: 500 }), // Cloudinary URL for service image
   isActive: boolean("is_active").default(true).notNull(),
+  rating: decimal("rating", { precision: 3, scale: 2 }).default(0),
+  totalReviews: integer("total_reviews").default(0),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
@@ -137,6 +138,12 @@ const feedback = pgTable("feedback", {
   id: serial("id").primaryKey(),
   bookingId: integer("booking_id")
     .references(() => bookings.id, { onDelete: "cascade" })
+    .notNull(),
+  serviceId: integer("service_id")
+    .references(() => services.id, { onDelete: "cascade" })
+    .notNull(),
+  customerId: integer("customer_id")
+    .references(() => users.id, { onDelete: "cascade" })
     .notNull(),
   rating: decimal("rating", { precision: 2, scale: 1 }).notNull(),
   comments: varchar("comments", { length: 2000 }),

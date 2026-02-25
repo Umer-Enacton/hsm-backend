@@ -22,7 +22,6 @@ const getAllBusinesses = async (req, res) => {
         website: businessProfiles.website,
         logo: businessProfiles.logo,
         coverImage: businessProfiles.coverImage,
-        rating: businessProfiles.rating,
         isVerified: businessProfiles.isVerified,
         createdAt: businessProfiles.createdAt,
         // Provider fields
@@ -77,7 +76,6 @@ const getBusinessByProviderId = async (req, res) => {
         website: businessProfiles.website,
         logo: businessProfiles.logo,
         coverImage: businessProfiles.coverImage,
-        rating: businessProfiles.rating,
         isVerified: businessProfiles.isVerified,
         createdAt: businessProfiles.createdAt,
         // Provider (user) fields - for reference only
@@ -136,7 +134,6 @@ const getBusinessById = async (req, res) => {
         website: businessProfiles.website,
         logo: businessProfiles.logo,
         coverImage: businessProfiles.coverImage,
-        rating: businessProfiles.rating,
         isVerified: businessProfiles.isVerified,
         createdAt: businessProfiles.createdAt,
         // Provider fields
@@ -265,10 +262,11 @@ const addBusiness = async (req, res) => {
         categoryId: businessProfiles.categoryId,
         category: Category.name,
         phone: businessProfiles.phone, // Business phone
+        state: businessProfiles.state,
+        city: businessProfiles.city,
         website: businessProfiles.website,
         logo: businessProfiles.logo,
         coverImage: businessProfiles.coverImage,
-        rating: businessProfiles.rating,
         isVerified: businessProfiles.isVerified,
         createdAt: businessProfiles.createdAt,
         // Provider fields
@@ -362,7 +360,6 @@ const updateBusiness = async (req, res) => {
         website: businessProfiles.website,
         logo: businessProfiles.logo,
         coverImage: businessProfiles.coverImage,
-        rating: businessProfiles.rating,
         isVerified: businessProfiles.isVerified,
         createdAt: businessProfiles.createdAt,
         // Provider fields
