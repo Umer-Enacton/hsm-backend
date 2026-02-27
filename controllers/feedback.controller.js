@@ -11,7 +11,7 @@ const getFeedbackByBusiness = async (req, res) => {
       return res.status(400).json({ message: "Business ID is required" });
     }
 
-    // Get all bookings for this business
+    // Get all bookings for this business with customer details
     const businessBookings = await db
       .select({
         id: bookings.id,
@@ -20,14 +20,32 @@ const getFeedbackByBusiness = async (req, res) => {
         comments: feedback.comments,
         createdAt: feedback.createdAt,
         customerId: bookings.customerId,
+        customerName: users.name,
+        customerAvatar: users.avatar,
         serviceId: bookings.serviceId,
       })
       .from(bookings)
+      .innerJoin(users, eq(bookings.customerId, users.id))
       .where(eq(bookings.businessProfileId, businessId))
       .leftJoin(feedback, eq(feedback.bookingId, bookings.id))
       .orderBy(feedback.createdAt);
 
-    res.status(200).json({ feedback: businessBookings });
+    // Transform to match frontend expectations
+    const transformedFeedback = businessBookings
+      .filter((fb) => fb.feedbackId !== null) // Only include bookings with feedback
+      .map((fb) => ({
+        id: fb.feedbackId,
+        rating: fb.rating,
+        comments: fb.comments,
+        createdAt: fb.createdAt,
+        customerId: fb.customerId,
+        customer: {
+          name: fb.customerName,
+          avatar: fb.customerAvatar,
+        },
+      }));
+
+    res.status(200).json({ feedback: transformedFeedback });
   } catch (error) {
     res.status(500).json({ message: "Server error", error: error.message });
   }
@@ -52,13 +70,28 @@ const getFeedbackByService = async (req, res) => {
         createdAt: feedback.createdAt,
         customerId: feedback.customerId,
         customerName: users.name,
+        customerAvatar: users.avatar,
       })
       .from(feedback)
       .innerJoin(users, eq(feedback.customerId, users.id))
       .where(eq(feedback.serviceId, serviceId))
       .orderBy(feedback.createdAt);
 
-    res.status(200).json({ feedback: serviceFeedback });
+    // Transform to match frontend expectations
+    const transformedFeedback = serviceFeedback.map((fb) => ({
+      id: fb.id,
+      bookingId: fb.bookingId,
+      rating: fb.rating,
+      comments: fb.comments,
+      createdAt: fb.createdAt,
+      customerId: fb.customerId,
+      customer: {
+        name: fb.customerName,
+        avatar: fb.customerAvatar,
+      },
+    }));
+
+    res.status(200).json({ feedback: transformedFeedback });
   } catch (error) {
     res.status(500).json({ message: "Server error", error: error.message });
   }

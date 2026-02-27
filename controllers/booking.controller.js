@@ -40,7 +40,64 @@ const getBookingById = async (req, res) => {
       return res.status(403).json({ message: "You are not authorized to view this booking" });
     }
 
-    res.status(200).json({ booking });
+    // Fetch related data
+    const [service] = await db
+      .select()
+      .from(services)
+      .where(eq(services.id, booking.serviceId))
+      .limit(1);
+
+    const [serviceBusinessProfile] = await db
+      .select()
+      .from(businessProfiles)
+      .where(eq(businessProfiles.id, booking.businessProfileId))
+      .limit(1);
+
+    const [address] = await db
+      .select()
+      .from(Address)
+      .where(eq(Address.id, booking.addressId))
+      .limit(1);
+
+    const [slot] = await db
+      .select()
+      .from(slots)
+      .where(eq(slots.id, booking.slotId))
+      .limit(1);
+
+    // Enrich booking with related data
+    const enrichedBooking = {
+      ...booking,
+      service: service ? {
+        id: service.id,
+        name: service.name,
+        description: service.description,
+        price: service.price,
+        duration: service.duration,
+        imageUrl: service.imageUrl,
+        provider: serviceBusinessProfile ? {
+          id: serviceBusinessProfile.id,
+          businessName: serviceBusinessProfile.businessName,
+          rating: serviceBusinessProfile.rating,
+          totalReviews: serviceBusinessProfile.totalReviews,
+          isVerified: serviceBusinessProfile.isVerified,
+        } : undefined,
+      } : null,
+      address: address ? {
+        id: address.id,
+        street: address.street,
+        city: address.city,
+        state: address.state,
+        zipCode: address.zipCode,
+      } : null,
+      slot: slot ? {
+        id: slot.id,
+        startTime: slot.startTime,
+        endTime: slot.endTime,
+      } : null,
+    };
+
+    res.status(200).json({ booking: enrichedBooking });
   } catch (error) {
     res.status(500).json({ message: "Server error", error: error.message });
   }
@@ -54,9 +111,73 @@ const getCustomerBookings = async (req, res) => {
       .select()
       .from(bookings)
       .where(eq(bookings.customerId, userId))
-      .orderBy(desc(bookings.bookingDate)); // Fixed: use bookingDate instead of createdAt
+      .orderBy(desc(bookings.bookingDate));
 
-    res.status(200).json({ bookings: customerBookings });
+    // Fetch related data for each booking
+    const bookingsWithDetails = await Promise.all(
+      customerBookings.map(async (booking) => {
+        // Get service info
+        const [service] = await db
+          .select()
+          .from(services)
+          .where(eq(services.id, booking.serviceId))
+          .limit(1);
+
+        // Get business profile info (provider)
+        const [businessProfile] = await db
+          .select()
+          .from(businessProfiles)
+          .where(eq(businessProfiles.id, booking.businessProfileId))
+          .limit(1);
+
+        // Get address info
+        const [address] = await db
+          .select()
+          .from(Address)
+          .where(eq(Address.id, booking.addressId))
+          .limit(1);
+
+        // Get slot info
+        const [slot] = await db
+          .select()
+          .from(slots)
+          .where(eq(slots.id, booking.slotId))
+          .limit(1);
+
+        return {
+          ...booking,
+          service: service ? {
+            id: service.id,
+            name: service.name,
+            description: service.description,
+            price: service.price,
+            duration: service.duration,
+            imageUrl: service.imageUrl,
+            provider: businessProfile ? {
+              id: businessProfile.id,
+              businessName: businessProfile.businessName,
+              rating: businessProfile.rating,
+              totalReviews: businessProfile.totalReviews,
+              isVerified: businessProfile.isVerified,
+            } : undefined,
+          } : null,
+          address: address ? {
+            id: address.id,
+            street: address.street,
+            city: address.city,
+            state: address.state,
+            zipCode: address.zipCode,
+          } : null,
+          slot: slot ? {
+            id: slot.id,
+            startTime: slot.startTime,
+            endTime: slot.endTime,
+          } : null,
+        };
+      })
+    );
+
+    res.status(200).json({ bookings: bookingsWithDetails });
   } catch (error) {
     console.error("Error fetching customer bookings:", error);
     res.status(500).json({ message: "Server error", error: error.message });

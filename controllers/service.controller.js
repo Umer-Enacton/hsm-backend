@@ -1,5 +1,5 @@
 const db = require("../config/db");
-const { services, businessProfiles, feedback } = require("../models/schema");
+const { services, businessProfiles, feedback, users } = require("../models/schema");
 const { eq, and, or, ilike, gte, lte, count } = require("drizzle-orm");
 
 const getAllServices = async (req, res) => {
@@ -78,6 +78,7 @@ const getAllServices = async (req, res) => {
           id: businessProfiles.id,
           businessName: businessProfiles.businessName,
           description: businessProfiles.description,
+          email: users.email, // ✅ Added email from users table
           phone: businessProfiles.phone,
           state: businessProfiles.state,
           city: businessProfiles.city,
@@ -86,7 +87,8 @@ const getAllServices = async (req, res) => {
         },
       })
       .from(services)
-      .leftJoin(businessProfiles, eq(services.businessProfileId, businessProfiles.id));
+      .leftJoin(businessProfiles, eq(services.businessProfileId, businessProfiles.id))
+      .leftJoin(users, eq(businessProfiles.providerId, users.id));
 
     // Apply WHERE clause if conditions exist
     if (whereClause) {
@@ -130,6 +132,7 @@ const getServiceById = async (req, res) => {
           id: businessProfiles.id,
           businessName: businessProfiles.businessName,
           description: businessProfiles.description,
+          email: users.email, // ✅ Added email from users table
           phone: businessProfiles.phone,
           state: businessProfiles.state,
           city: businessProfiles.city,
@@ -139,6 +142,7 @@ const getServiceById = async (req, res) => {
       })
       .from(services)
       .leftJoin(businessProfiles, eq(services.businessProfileId, businessProfiles.id))
+      .leftJoin(users, eq(businessProfiles.providerId, users.id))
       .where(eq(services.id, serviceId));
 
     if (!service) {
