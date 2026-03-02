@@ -18,6 +18,29 @@ const { slots } = require("../models/schema");
 // Public endpoint for customers to view available slots
 router.get("/slots/public/:businessId", getSlotsPublic);
 
+// Get slot by ID (for invoice generation)
+router.get("/slots/slot/:slotId", async (req, res) => {
+  try {
+    const { eq } = require("drizzle-orm");
+    const slotId = Number(req.params.slotId);
+
+    const [slot] = await db
+      .select()
+      .from(slots)
+      .where(eq(slots.id, slotId))
+      .limit(1);
+
+    if (!slot) {
+      return res.status(404).json({ message: "Slot not found" });
+    }
+
+    res.status(200).json(slot);
+  } catch (error) {
+    console.error("Error fetching slot:", error);
+    res.status(500).json({ message: "Server error", error: error.message });
+  }
+});
+
 // Provider endpoint to manage their own slots
 router.get("/slots/:businessId", authorizeRole(PROVIDER), getSlotsByBusiness);
 

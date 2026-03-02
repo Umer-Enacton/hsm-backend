@@ -8,6 +8,7 @@ const {
   acceptBooking,
   rejectBooking,
   completeBooking,
+  rescheduleBooking,
 } = require("../controllers/booking.controller");
 const authorizeRole = require("../middleware/roleBasedRoutes");
 const { CUSTOMER, PROVIDER } = require("../config/roles");
@@ -23,6 +24,7 @@ router.post(
   validate(bookingSchema),
   addBooking
 );
+router.patch("/booking/:id", authorizeRole(CUSTOMER), rescheduleBooking);
 
 router.put("/accept-booking/:id", authorizeRole(PROVIDER), acceptBooking);
 router.put("/reject-booking/:id", authorizeRole(PROVIDER), rejectBooking);

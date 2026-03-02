@@ -53,6 +53,13 @@ const getBookingById = async (req, res) => {
       .where(eq(businessProfiles.id, booking.businessProfileId))
       .limit(1);
 
+    // Fetch feedback for this booking if exists
+    const [bookingFeedback] = await db
+      .select()
+      .from(feedback)
+      .where(eq(feedback.bookingId, bookingId))
+      .limit(1);
+
     const [address] = await db
       .select()
       .from(Address)
@@ -73,7 +80,8 @@ const getBookingById = async (req, res) => {
         name: service.name,
         description: service.description,
         price: service.price,
-        duration: service.duration,
+        duration: service.EstimateDuration || service.duration,
+        EstimateDuration: service.EstimateDuration || service.duration,
         imageUrl: service.imageUrl,
         provider: serviceBusinessProfile ? {
           id: serviceBusinessProfile.id,
@@ -94,6 +102,11 @@ const getBookingById = async (req, res) => {
         id: slot.id,
         startTime: slot.startTime,
         endTime: slot.endTime,
+      } : null,
+      feedback: bookingFeedback ? {
+        id: bookingFeedback.id,
+        rating: bookingFeedback.rating,
+        comments: bookingFeedback.comments,
       } : null,
     };
 
@@ -144,6 +157,13 @@ const getCustomerBookings = async (req, res) => {
           .where(eq(slots.id, booking.slotId))
           .limit(1);
 
+        // Get feedback info if exists
+        const [bookingFeedback] = await db
+          .select()
+          .from(feedback)
+          .where(eq(feedback.bookingId, booking.id))
+          .limit(1);
+
         return {
           ...booking,
           service: service ? {
@@ -172,6 +192,11 @@ const getCustomerBookings = async (req, res) => {
             id: slot.id,
             startTime: slot.startTime,
             endTime: slot.endTime,
+          } : null,
+          feedback: bookingFeedback ? {
+            id: bookingFeedback.id,
+            rating: bookingFeedback.rating,
+            comments: bookingFeedback.comments,
           } : null,
         };
       })
@@ -260,6 +285,7 @@ const getProviderBookings = async (req, res) => {
           customerName: customer?.name || "Unknown",
           customerPhone: customer?.phone || "",
           customerEmail: customer?.email || "",
+          customerAvatar: customer?.avatar || null,
           serviceName: service?.name || "Unknown Service",
           price: service?.price || booking.totalPrice || 0,
           startTime: slot?.startTime || "",
@@ -679,6 +705,171 @@ const rejectBooking = async (req, res) => {
   }
 };
 
+// Reschedule booking - customer can reschedule pending or confirmed bookings
+const rescheduleBooking = async (req, res) => {
+  try {
+    const bookingId = Number(req.params.id);
+    const userId = req.token.id;
+    const { slotId, bookingDate } = req.body;
+
+    // Validate input
+    if (!bookingId) {
+      return res.status(400).json({ message: "Booking ID is required" });
+    }
+    if (!slotId || !bookingDate) {
+      return res.status(400).json({ message: "slotId and bookingDate are required" });
+    }
+
+    // Validate booking date format
+    const bookingDateObj = new Date(bookingDate);
+    if (isNaN(bookingDateObj.getTime())) {
+      return res.status(400).json({ message: "Invalid bookingDate format" });
+    }
+
+    // Check if booking date is in the past
+    const now = new Date();
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const bookingDateStart = new Date(
+      bookingDateObj.getFullYear(),
+      bookingDateObj.getMonth(),
+      bookingDateObj.getDate()
+    );
+
+    if (bookingDateStart < todayStart) {
+      return res
+        .status(400)
+        .json({ message: "Cannot reschedule to past dates" });
+    }
+
+    // Fetch the booking
+    const [booking] = await db
+      .select()
+      .from(bookings)
+      .where(eq(bookings.id, bookingId));
+
+    if (!booking) {
+      return res.status(404).json({ message: "Booking not found" });
+    }
+
+    // Verify user owns this booking
+    if (booking.customerId !== userId) {
+      return res
+        .status(403)
+        .json({ message: "You are not authorized to reschedule this booking" });
+    }
+
+    // Check if booking can be rescheduled (only pending or confirmed)
+    if (!["pending", "confirmed"].includes(booking.status)) {
+      return res.status(400).json({
+        message: `Cannot reschedule ${booking.status} bookings. Only pending and confirmed bookings can be rescheduled.`
+      });
+    }
+
+    // Validate the new slot exists
+    const [slot] = await db
+      .select()
+      .from(slots)
+      .where(eq(slots.id, slotId));
+
+    if (!slot) {
+      return res.status(404).json({ message: "Slot not found" });
+    }
+
+    // Verify slot belongs to the same business as original booking
+    if (slot.businessProfileId !== booking.businessProfileId) {
+      return res.status(400).json({
+        message: "Selected slot does not belong to the service provider"
+      });
+    }
+
+    // Check if new slot is available for the selected date
+    const startOfDay = new Date(bookingDateObj);
+    startOfDay.setHours(0, 0, 0, 0);
+    const endOfDay = new Date(bookingDateObj);
+    endOfDay.setHours(23, 59, 59, 999);
+
+    const existingBooking = await db
+      .select()
+      .from(bookings)
+      .where(
+        and(
+          eq(bookings.slotId, slotId),
+          gte(bookings.bookingDate, startOfDay),
+          lte(bookings.bookingDate, endOfDay),
+          // Exclude the current booking itself
+          eq(bookings.id, bookingId)
+        )
+      );
+
+    // Check if there's any other booking for this slot on this date
+    const otherBookings = await db
+      .select()
+      .from(bookings)
+      .where(
+        and(
+          eq(bookings.slotId, slotId),
+          gte(bookings.bookingDate, startOfDay),
+          lte(bookings.bookingDate, endOfDay)
+        )
+      );
+
+    // Filter out the current booking from the results
+    const conflictingBookings = otherBookings.filter(b => b.id !== bookingId);
+
+    if (conflictingBookings.length > 0) {
+      return res
+        .status(400)
+        .json({ message: "Slot is already booked for the selected date" });
+    }
+
+    // If rescheduling to today, check if slot time is in the past
+    if (bookingDateStart.getTime() === todayStart.getTime()) {
+      const [slotHours, slotMinutes, slotSeconds = 0] = slot.startTime
+        .split(":")
+        .map(Number);
+
+      const slotDateTime = new Date(
+        now.getFullYear(),
+        now.getMonth(),
+        now.getDate(),
+        slotHours,
+        slotMinutes,
+        slotSeconds
+      );
+
+      // Allow rescheduling if slot is at least 30 minutes in the future
+      const bufferMinutes = 30;
+      if (slotDateTime <= new Date(now.getTime() + bufferMinutes * 60 * 1000)) {
+        return res.status(400).json({
+          message: "Cannot reschedule to a slot that has already passed or is too soon"
+        });
+      }
+    }
+
+    // Update the booking with new slot and date
+    const [updatedBooking] = await db
+      .update(bookings)
+      .set({
+        slotId: slotId,
+        bookingDate: bookingDateObj,
+        // Keep status the same (pending or confirmed)
+      })
+      .where(eq(bookings.id, bookingId))
+      .returning();
+
+    return res.status(200).json({
+      message: "Booking rescheduled successfully",
+      booking: updatedBooking
+    });
+  } catch (error) {
+    console.error("Reschedule booking error:", error);
+    return res.status(500).json({
+      message: "Server error",
+      error: error.message
+    });
+  }
+};
+
 //complete booking by business owner after slot time passed
 const completeBooking = async (req, res) => {
   try {
@@ -778,4 +969,5 @@ module.exports = {
   acceptBooking,
   rejectBooking,
   completeBooking,
+  rescheduleBooking,
 };

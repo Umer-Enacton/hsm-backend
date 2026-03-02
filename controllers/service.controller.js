@@ -97,7 +97,14 @@ const getAllServices = async (req, res) => {
 
     const allServices = await query;
 
-    res.status(200).json({ services: allServices, total: allServices.length });
+    // Map EstimateDuration to estimateDuration and duration for frontend compatibility
+    const mappedServices = allServices.map(service => ({
+      ...service,
+      estimateDuration: service.EstimateDuration,
+      duration: service.EstimateDuration,
+    }));
+
+    res.status(200).json({ services: mappedServices, total: mappedServices.length });
   } catch (error) {
     console.error("Error fetching services:", error);
     res.status(500).json({ message: "Server error", error: error.message });
@@ -152,6 +159,8 @@ const getServiceById = async (req, res) => {
     // Add empty slots and reviews arrays (frontend expects these)
     const serviceDetails = {
       ...service,
+      estimateDuration: service.EstimateDuration, // Map backend field to frontend expected field
+      duration: service.EstimateDuration, // Also map to duration for compatibility
       slots: [], // Frontend will fetch these separately
       reviews: [], // Frontend will fetch these separately
     };
@@ -180,7 +189,8 @@ const getServicesByBusiness = async (req, res) => {
     // Map EstimateDuration to duration for frontend compatibility
     const mappedServices = businessServices.map(service => ({
       ...service,
-      duration: service.EstimateDuration, // Map backend field to frontend expected field
+      estimateDuration: service.EstimateDuration,
+      duration: service.EstimateDuration,
     }));
 
     res.status(200).json({ services: mappedServices });
@@ -239,6 +249,7 @@ const addService = async (req, res) => {
     // Map EstimateDuration to duration for frontend compatibility
     const serviceResponse = {
       ...newService,
+      estimateDuration: newService.EstimateDuration,
       duration: newService.EstimateDuration,
     };
 
@@ -304,6 +315,7 @@ const updateService = async (req, res) => {
     // Map EstimateDuration to duration for frontend compatibility
     const serviceResponse = {
       ...updatedService,
+      estimateDuration: updatedService.EstimateDuration,
       duration: updatedService.EstimateDuration,
     };
 

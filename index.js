@@ -1,6 +1,7 @@
 const express = require("express");
 const cors = require("cors");
 const authRoutes = require("./routes/auth.route");
+const invoiceRoutes = require("./routes/invoice.route");
 const addressRoutes = require("./routes/address.route");
 const userRoutes = require("./routes/user.route");
 const categoryRoutes = require("./routes/category.route");
@@ -40,6 +41,7 @@ app.get("/", (req, res) => {
 
 app.use("/", authRoutes);
 app.use(auth);
+app.use("/invoice", invoiceRoutes);
 app.use("/", addressRoutes);
 app.use("/", userRoutes);
 app.use("/", categoryRoutes);
