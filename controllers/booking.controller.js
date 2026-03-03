@@ -7,8 +7,10 @@ const {
   bookings,
   users,
   feedback,
+  payments,
 } = require("../models/schema");
 const { eq, and, gte, lte, desc } = require("drizzle-orm");
+const { initiateRefund, paiseToRupees } = require("../utils/razorpay");
 
 // Get booking by ID
 const getBookingById = async (req, res) => {
@@ -662,11 +664,13 @@ const rejectBooking = async (req, res) => {
       return res.status(404).json({ message: "Booking not found" });
     }
 
-    // 2. Check booking status
-    if (booking[0].status !== "pending") {
+    // 2. Check booking status - allow cancelling pending or confirmed bookings
+    if (!["pending", "confirmed"].includes(booking[0].status)) {
       return res
         .status(400)
-        .json({ message: "Only pending bookings can be accepted" });
+        .json({
+          message: `Cannot cancel ${booking[0].status} bookings. Only pending and confirmed bookings can be cancelled.`
+        });
     }
 
     // 3. Fetch business profile
@@ -683,21 +687,63 @@ const rejectBooking = async (req, res) => {
     if (businessProfile[0].providerId !== userId) {
       return res
         .status(403)
-        .json({ message: "You are not authorized to accept this booking" });
+        .json({ message: "You are not authorized to cancel this booking" });
     }
 
-    // 5. Update booking status
+    // 5. Check if booking has been paid and initiate refund if so
+    let refundDetails = null;
+    if (booking[0].paymentStatus === "paid") {
+      // Fetch payment record
+      const [payment] = await db
+        .select()
+        .from(payments)
+        .where(eq(payments.bookingId, bookingId));
+
+      if (payment && payment.razorpayPaymentId) {
+        // Initiate refund via Razorpay
+        const refund = await initiateRefund(
+          payment.razorpayPaymentId,
+          payment.amount, // Full refund
+          { reason: "Booking cancelled by provider", bookingId: bookingId.toString() }
+        );
+
+        // Update payment record
+        await db
+          .update(payments)
+          .set({
+            status: "refunded",
+            refundId: refund.id,
+            refundAmount: refund.amount,
+            refundReason: "Booking cancelled by provider",
+            refundedAt: new Date(),
+          })
+          .where(eq(payments.id, payment.id));
+
+        refundDetails = {
+          refundId: refund.id,
+          refundAmount: paiseToRupees(refund.amount),
+        };
+      }
+    }
+
+    // 6. Update booking status
     const [updatedBooking] = await db
       .update(bookings)
-      .set({ status: "cancelled" })
+      .set({
+        status: refundDetails ? "refunded" : "cancelled",
+      })
       .where(eq(bookings.id, bookingId))
       .returning();
 
     return res.status(200).json({
-      message: "Booking Cancelled successfully",
+      message: refundDetails
+        ? "Booking cancelled and refund initiated successfully"
+        : "Booking cancelled successfully",
       booking: updatedBooking,
+      refund: refundDetails,
     });
   } catch (error) {
+    console.error("Error rejecting booking:", error);
     return res.status(500).json({
       message: "Server error",
       error: error.message,

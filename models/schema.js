@@ -8,15 +8,35 @@ const {
   decimal,
   time,
   pgEnum,
+  uniqueIndex,
 } = require("drizzle-orm/pg-core");
+const { sql } = require("drizzle-orm");
 
 // Define all enums first
 const roleEnum = pgEnum("role_type", ["customer", "provider", "admin"]);
 
 const bookingStatusEnum = pgEnum("booking_status", [
   "pending",
+  "payment_pending",
   "confirmed",
   "completed",
+  "cancelled",
+  "refunded",
+]);
+
+const paymentStatusEnum = pgEnum("payment_status", [
+  "pending",
+  "initiated",
+  "paid",
+  "failed",
+  "refunded",
+]);
+
+const paymentIntentStatusEnum = pgEnum("payment_intent_status", [
+  "pending",
+  "completed",
+  "failed",
+  "expired",
   "cancelled",
 ]);
 
@@ -133,7 +153,62 @@ const bookings = pgTable("bookings", {
   bookingDate: timestamp("booking_date").defaultNow().notNull(),
   status: bookingStatusEnum("status").default("pending").notNull(),
   totalPrice: integer("total_price").notNull(),
+  paymentStatus: paymentStatusEnum("payment_status").default("pending").notNull(),
 });
+
+const payments = pgTable("payments", {
+  id: serial("id").primaryKey(),
+  bookingId: integer("booking_id")
+    .notNull()
+    .references(() => bookings.id, { onDelete: "cascade" }),
+  userId: integer("user_id")
+    .notNull()
+    .references(() => users.id, { onDelete: "cascade" }),
+  // Razorpay Details
+  razorpayOrderId: varchar("razorpay_order_id", { length: 100 }),
+  razorpayPaymentId: varchar("razorpay_payment_id", { length: 100 }).unique(),
+  razorpaySignature: varchar("razorpay_signature", { length: 255 }),
+  // Payment Details
+  amount: integer("amount").notNull(), // Amount in paise (₹500 = 50000 paise)
+  currency: varchar("currency", { length: 10 }).default("INR").notNull(),
+  status: paymentStatusEnum("status").default("pending").notNull(),
+  paymentMethod: varchar("payment_method", { length: 50 }), // razorpay, upi, card, etc.
+  // Timestamps
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  completedAt: timestamp("completed_at"),
+  failedAt: timestamp("failed_at"),
+  refundedAt: timestamp("refunded_at"),
+  // Failure/Refund Details
+  failureReason: varchar("failure_reason", { length: 500 }),
+  refundId: varchar("refund_id", { length: 100 }),
+  refundAmount: integer("refund_amount"),
+  refundReason: varchar("refund_reason", { length: 500 }),
+});
+
+// Payment Intents - Temporarily locks slots during payment flow
+const paymentIntents = pgTable("payment_intents", {
+  id: serial("id").primaryKey(),
+  userId: integer("user_id")
+    .notNull()
+    .references(() => users.id, { onDelete: "cascade" }),
+  serviceId: integer("service_id").notNull(),
+  slotId: integer("slot_id").notNull(),
+  addressId: integer("address_id").notNull(),
+  bookingDate: timestamp("booking_date").notNull(),
+  amount: integer("amount").notNull(), // Amount in paise
+  razorpayOrderId: varchar("razorpay_order_id", { length: 100 }),
+  status: paymentIntentStatusEnum("status").default("pending").notNull(),
+  expiresAt: timestamp("expires_at").notNull(), // Lock expires after 1 minute
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  completedAt: timestamp("completed_at"),
+  failureReason: varchar("failure_reason", { length: 500 }),
+}, (table) => ({
+  // Partial unique index: Only one pending intent per slot per date
+  // This prevents double booking race conditions
+  slotDatePendingUnique: uniqueIndex("payment_intents_slot_date_pending_unique")
+    .on(table.slotId, table.bookingDate)
+    .where(sql`${table.status} = 'pending'`),
+}));
 const feedback = pgTable("feedback", {
   id: serial("id").primaryKey(),
   bookingId: integer("booking_id")
@@ -158,8 +233,12 @@ module.exports = {
   services,
   slots,
   bookings,
+  payments,
+  paymentIntents,
   feedback,
   roleEnum,
   bookingStatusEnum,
+  paymentStatusEnum,
+  paymentIntentStatusEnum,
   addressEnum,
 };

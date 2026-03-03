@@ -1,6 +1,6 @@
 const db = require("../config/db");
-const { businessProfiles, slots } = require("../models/schema");
-const { eq, and, lt, gt } = require("drizzle-orm");
+const { businessProfiles, slots, bookings, paymentIntents } = require("../models/schema");
+const { eq, and, lt, gt, or, sql, inArray, gte, lte } = require("drizzle-orm");
 
 /**
  * Helper: Convert time string "HH:mm:ss" to minutes
@@ -29,10 +29,14 @@ function addMinutes(timeStr, minutesToAdd) {
 
 /**
  * Get slots for a business (PUBLIC - for customers to view available slots)
+ * Query params: date (YYYY-MM-DD) - to check availability for specific date
  */
 const getSlotsPublic = async (req, res) => {
   try {
     const { businessId } = req.params;
+    const { date } = req.query; // Optional: date in YYYY-MM-DD format
+
+    console.log(`📡 Getting slots for business ${businessId}, date: ${date || 'not provided'}`);
 
     if (!businessId) {
       return res.status(400).json({ message: "Business ID is required" });
@@ -55,15 +59,99 @@ const getSlotsPublic = async (req, res) => {
       });
     }
 
-    // Get all available slots for this business (only start times)
+    // Get all time slot templates for this business
     const businessSlots = await db
       .select()
       .from(slots)
       .where(eq(slots.businessProfileId, businessId))
       .orderBy(slots.startTime);
 
-    res.status(200).json({ slots: businessSlots });
+    // If no date provided, return all slots as available
+    if (!date) {
+      const slotsWithAvailability = businessSlots.map(slot => ({
+        ...slot,
+        isAvailable: true,
+        status: "available"
+      }));
+
+      console.log(`✅ Returning ${slotsWithAvailability.length} slots (no date filter)`);
+      return res.status(200).json({ slots: slotsWithAvailability });
+    }
+
+    // If date provided, check which slots are booked/locked for this specific date
+    console.log(`🔍 Checking availability for date: ${date}`);
+
+    // Create date range for the selected date
+    const startOfDay = new Date(date);
+    startOfDay.setHours(0, 0, 0, 0);
+    const endOfDay = new Date(date);
+    endOfDay.setHours(23, 59, 59, 999);
+
+    console.log(`📅 Date range: ${startOfDay.toISOString()} to ${endOfDay.toISOString()}`);
+
+    // Find slots that have confirmed/pending bookings for this date
+    const bookedSlotsResult = await db
+      .select({ slotId: bookings.slotId })
+      .from(bookings)
+      .where(
+        and(
+          eq(bookings.businessProfileId, businessId),
+          // Check if bookingDate falls within the selected date
+          and(
+            gte(bookings.bookingDate, startOfDay),
+            lte(bookings.bookingDate, endOfDay)
+          ),
+          or(
+            eq(bookings.status, "pending"),
+            eq(bookings.status, "confirmed")
+          )
+        )
+      );
+
+    // Find slots that are currently locked (pending payment) for this date
+    const lockedSlotsResult = await db
+      .select({ slotId: paymentIntents.slotId })
+      .from(paymentIntents)
+      .innerJoin(slots, eq(paymentIntents.slotId, slots.id))
+      .where(
+        and(
+          eq(slots.businessProfileId, businessId), // Check via slots table
+          // Check if bookingDate falls within the selected date
+          and(
+            gte(paymentIntents.bookingDate, startOfDay),
+            lte(paymentIntents.bookingDate, endOfDay)
+          ),
+          eq(paymentIntents.status, "pending"),
+          gt(paymentIntents.expiresAt, new Date()) // Not expired yet
+        )
+      );
+
+    // Combine booked and locked slot IDs
+    const unavailableSlotIds = new Set([
+      ...bookedSlotsResult.map(b => b.slotId),
+      ...lockedSlotsResult.map(l => l.slotId)
+    ]);
+
+    console.log(`📊 Booked slots:`, bookedSlotsResult.map(b => b.slotId));
+    console.log(`🔒 Locked slots:`, lockedSlotsResult.map(l => l.slotId));
+    console.log(`🚫 Total unavailable slot IDs:`, Array.from(unavailableSlotIds));
+
+    // Mark each slot with availability status
+    const slotsWithAvailability = businessSlots.map(slot => {
+      const isUnavailable = unavailableSlotIds.has(slot.id);
+      return {
+        ...slot,
+        isAvailable: !isUnavailable,
+        status: isUnavailable ? "booked" : "available"
+      };
+    });
+
+    console.log(`✅ Returning ${slotsWithAvailability.length} slots with availability`);
+    console.log(`📊 Summary: ${slotsWithAvailability.filter(s => !s.isAvailable).length} booked, ${slotsWithAvailability.filter(s => s.isAvailable).length} available`);
+
+    res.status(200).json({ slots: slotsWithAvailability });
   } catch (error) {
+    console.error("❌ Error in getSlotsPublic:", error);
     res.status(500).json({ message: "Server error", error: error.message });
   }
 };
@@ -107,24 +195,19 @@ const getSlotsByBusiness = async (req, res) => {
 
     res.status(200).json({ slots: businessSlots });
   } catch (error) {
+    console.error("Error getting business slots:", error);
     res.status(500).json({ message: "Server error", error: error.message });
   }
 };
 
 /**
- * Add slot for a business (only start time required)
+ * Add a new slot (PROVIDER ONLY)
  */
 const addSlot = async (req, res) => {
-  const userId = req.token.id;
   try {
     const { businessId } = req.params;
-    const { startTime } = req.body; // Only need startTime now
-
-    if (!userId) {
-      return res
-        .status(400)
-        .json({ message: "User ID is required" });
-    }
+    const { startTime } = req.body;
+    const userId = req.token.id;
 
     if (!startTime) {
       return res.status(400).json({ message: "Start time is required" });
@@ -142,58 +225,35 @@ const addSlot = async (req, res) => {
       );
 
     if (business.length === 0) {
-      return res
-        .status(404)
-        .json({ message: "Business profile not found for this user" });
+      return res.status(404).json({ message: "Business not found" });
     }
 
-    // Check for duplicate start time
-    const slotExists = await db
-      .select()
-      .from(slots)
-      .where(
-        and(
-          eq(slots.businessProfileId, businessId),
-          eq(slots.startTime, startTime)
-        )
-      );
-
-    if (slotExists.length > 0) {
-      return res
-        .status(400)
-        .json({ message: "Slot with this start time already exists" });
-    }
-
-    // Create new slot (only with startTime)
+    // Create new slot
     const [newSlot] = await db
       .insert(slots)
       .values({
         businessProfileId: businessId,
-        startTime,
+        startTime: startTime
       })
       .returning();
 
-    res.status(201).json({ message: "Slot added successfully", slot: newSlot });
+    res.status(201).json({
+      message: "Slot created successfully",
+      slot: newSlot
+    });
   } catch (error) {
-    // Handle unique constraint violation
-    if (error.code === '23505') {
-      return res.status(400).json({ message: "Slot with this start time already exists" });
-    }
+    console.error("Error adding slot:", error);
     res.status(500).json({ message: "Server error", error: error.message });
   }
 };
 
 /**
- * Delete a slot
+ * Delete a slot (PROVIDER ONLY)
  */
 const deleteSlot = async (req, res) => {
   try {
-    const { slotId, businessId } = req.params;
+    const { businessId, slotId } = req.params;
     const userId = req.token.id;
-
-    if (!userId) {
-      return res.status(400).json({ message: "User ID is required" });
-    }
 
     // Verify business is owned by this user
     const business = await db
@@ -207,32 +267,41 @@ const deleteSlot = async (req, res) => {
       );
 
     if (business.length === 0) {
-      return res
-        .status(404)
-        .json({ message: "Business profile not found for this user" });
+      return res.status(404).json({ message: "Business not found" });
     }
 
-    const deletedCount = await db
-      .delete(slots)
-      .where(and(eq(slots.id, slotId), eq(slots.businessProfileId, businessId)))
-      .returning();
+    // Check if slot exists and belongs to this business
+    const [slot] = await db
+      .select()
+      .from(slots)
+      .where(
+        and(
+          eq(slots.id, slotId),
+          eq(slots.businessProfileId, businessId)
+        )
+      );
 
-    if (deletedCount.length === 0) {
+    if (!slot) {
       return res.status(404).json({ message: "Slot not found" });
     }
 
+    // Delete slot
+    await db
+      .delete(slots)
+      .where(eq(slots.id, slotId));
+
     res.status(200).json({ message: "Slot deleted successfully" });
   } catch (error) {
+    console.error("Error deleting slot:", error);
     res.status(500).json({ message: "Server error", error: error.message });
   }
 };
 
 module.exports = {
   getSlotsPublic,
+  getSlotsByBusiness,
   addSlot,
   deleteSlot,
-  getSlotsByBusiness,
   timeToMinutes,
   minutesToTime,
-  addMinutes,
 };

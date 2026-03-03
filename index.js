@@ -11,7 +11,9 @@ const slotRoutes = require("./routes/slot.route");
 const bookingRoutes = require("./routes/booking.route");
 const feedbackRoutes = require("./routes/feedback.route");
 const uploadRoutes = require("./routes/upload.route");
+const paymentRoutes = require("./routes/payment.route");
 const auth = require("./middleware/auth");
+const { startPeriodicCleanup } = require("./utils/cleanupExpiredIntents");
 const app = express();
 const PORT = process.env.PORT || 8000;
 require("dotenv").config();
@@ -41,6 +43,7 @@ app.get("/", (req, res) => {
 
 app.use("/", authRoutes);
 app.use(auth);
+app.use("/payment", paymentRoutes);
 app.use("/invoice", invoiceRoutes);
 app.use("/", addressRoutes);
 app.use("/", userRoutes);
@@ -53,4 +56,7 @@ app.use("/", feedbackRoutes);
 // Start server
 app.listen(PORT, () => {
   console.log(`🚀 Server is running on http://localhost:${PORT}`);
+
+  // Start periodic cleanup of expired payment intents
+  startPeriodicCleanup();
 });
