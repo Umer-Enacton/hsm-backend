@@ -2,22 +2,34 @@ const jwt = require("jsonwebtoken");
 const JWT_SECRET = process.env.JWT_SECRET;
 const auth = (req, res, next) => {
   try {
-    // const bearerHeader = req.headers["authorization"];
-    // if (typeof bearerHeader != "undefined") {
-    //   const token = bearerHeader.split(" ")[1];
-    //   const user = jwt.verify(token, JWT_SECRET);
-    //   req.token = user;
-    //   next();
-    //check from cookies
-    const token = req.cookies.token;
-    console.log("🔑 Auth middleware - Token found:", !!token);
+    let token = null;
+    let tokenSource = "";
+
+    // Check Authorization header first (for cross-domain requests)
+    const bearerHeader = req.headers["authorization"];
+    if (typeof bearerHeader !== "undefined") {
+      const bearer = bearerHeader.split(" ");
+      if (bearer.length === 2 && bearer[0] === "Bearer") {
+        token = bearer[1];
+        tokenSource = "Authorization header";
+      }
+    }
+
+    // Fall back to cookies (for same-domain requests)
+    if (!token && req.cookies.token) {
+      token = req.cookies.token;
+      tokenSource = "Cookie";
+    }
+
+    console.log("🔑 Auth middleware - Token found:", !!token, "Source:", tokenSource);
+
     if (token) {
       const user = jwt.verify(token, JWT_SECRET);
       console.log("✅ Token verified, user:", { id: user.id, email: user.email, roleId: user.roleId });
       req.token = user;
       next();
     } else {
-      console.log("❌ No token in cookies");
+      console.log("❌ No token in Authorization header or cookies");
       res.status(401).json({ message: "No Token Provided" });
     }
   } catch (error) {
