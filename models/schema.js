@@ -204,7 +204,7 @@ const paymentIntents = pgTable("payment_intents", {
   failureReason: varchar("failure_reason", { length: 500 }),
 }, (table) => ({
   // Partial unique index: Only one pending intent per slot per date per service
-  // This prevents double booking race conditions while allowing different services
+  // This allows different services to be booked simultaneously at the same time slot
   slotDateServicePendingUnique: uniqueIndex("payment_intents_slot_date_service_pending_unique")
     .on(table.slotId, table.bookingDate, table.serviceId)
     .where(sql`${table.status} = 'pending'`),

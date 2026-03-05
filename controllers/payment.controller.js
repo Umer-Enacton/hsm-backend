@@ -136,6 +136,8 @@ const createPaymentOrder = async (req, res) => {
     // ============================================
     // ADDITIONAL SAFEGUARD: Explicit check for existing pending payment intents
     // This adds a pre-check layer before the optimistic insert
+    // IMPORTANT: Payment intents lock the slot for THE SAME SERVICE only
+    // Different services can be booked simultaneously at the same time slot
     // ============================================
     console.log(`🔍 PRE-CHECK: Checking for existing pending payment intents...`);
 
@@ -145,7 +147,7 @@ const createPaymentOrder = async (req, res) => {
       .where(
         and(
           eq(paymentIntents.slotId, slotId),
-          eq(paymentIntents.serviceId, serviceId), // ✅ Add serviceId check
+          eq(paymentIntents.serviceId, serviceId), // ✅ Only lock same service
           eq(paymentIntents.status, "pending")
         )
       )
@@ -182,11 +184,11 @@ const createPaymentOrder = async (req, res) => {
         console.log(`✅ Intent ${existingPendingIntent.id} marked as expired, slot is now available`);
         // Don't return error - continue with booking
       } else if (existingDate === requestDate) {
-        // Intent is still valid and for the same date - block the slot
+        // Intent is still valid and for the same date - block the slot for THIS SERVICE ONLY
         const timeRemaining = Math.max(0, Math.floor((expiresAt.getTime() - now.getTime()) / 1000));
-        console.log(`❌ Slot ${slotId} already locked for Service ${existingPendingIntent.serviceId} on ${bookingDate} by user ${existingPendingIntent.userId} (${timeRemaining}s remaining)`);
+        console.log(`❌ Service ${serviceId} at slot ${slotId} already locked on ${bookingDate} by user ${existingPendingIntent.userId} (${timeRemaining}s remaining)`);
         return res.status(409).json({
-          message: "Another customer is currently booking this slot. Please wait a moment and try again, or choose a different slot.",
+          message: "Another customer is currently booking this service at this time. Please wait a moment and try again, or choose a different time.",
           code: "SLOT_LOCKED",
           retryable: true,
           debug: {
@@ -198,16 +200,18 @@ const createPaymentOrder = async (req, res) => {
         });
       }
     } else {
-      console.log(`✅ No existing pending payment intents found for slot ${slotId}`);
+      console.log(`✅ No existing pending payment intents found for service ${serviceId} at slot ${slotId}`);
     }
 
     // Check if slot is already booked (confirmed bookings block new payment attempts)
+    // IMPORTANT: Check both slotId AND serviceId to allow different services to share slots
     const [existingBooking] = await db
       .select()
       .from(bookings)
       .where(
         and(
           eq(bookings.slotId, slotId),
+          eq(bookings.serviceId, serviceId), // ✅ Must match the same service
           gte(bookings.bookingDate, startOfDay),
           lte(bookings.bookingDate, endOfDay),
           or(
@@ -220,9 +224,9 @@ const createPaymentOrder = async (req, res) => {
       .limit(1);
 
     if (existingBooking) {
-      console.log(`❌ Slot ${slotId} already booked for ${bookingDate}`);
+      console.log(`❌ Slot ${slotId} already booked for service ${serviceId} on ${bookingDate}`);
       return res.status(409).json({
-        message: "This slot has already been booked. Please select a different time.",
+        message: "This slot has already been booked for this service. Please select a different time.",
         code: "SLOT_ALREADY_BOOKED",
       });
     }

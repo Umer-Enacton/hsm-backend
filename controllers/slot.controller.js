@@ -29,14 +29,16 @@ function addMinutes(timeStr, minutesToAdd) {
 
 /**
  * Get slots for a business (PUBLIC - for customers to view available slots)
- * Query params: date (YYYY-MM-DD) - to check availability for specific date
+ * Query params:
+ *  - date (YYYY-MM-DD) - to check availability for specific date
+ *  - serviceId (optional) - filter by service to show availability per service
  */
 const getSlotsPublic = async (req, res) => {
   try {
     const { businessId } = req.params;
-    const { date } = req.query; // Optional: date in YYYY-MM-DD format
+    const { date, serviceId } = req.query; // Optional: date and serviceId
 
-    console.log(`📡 Getting slots for business ${businessId}, date: ${date || 'not provided'}`);
+    console.log(`📡 Getting slots for business ${businessId}, date: ${date || 'not provided'}, service: ${serviceId || 'all services'}`);
 
     if (!businessId) {
       return res.status(400).json({ message: "Business ID is required" });
@@ -90,41 +92,53 @@ const getSlotsPublic = async (req, res) => {
     console.log(`📅 Date range: ${startOfDay.toISOString()} to ${endOfDay.toISOString()}`);
 
     // Find slots that have confirmed/pending bookings for this date
+    // IMPORTANT: Only filter by serviceId if serviceId is provided
+    const bookingConditions = [
+      eq(bookings.businessProfileId, businessId),
+      // Check if bookingDate falls within the selected date
+      and(
+        gte(bookings.bookingDate, startOfDay),
+        lte(bookings.bookingDate, endOfDay)
+      ),
+      or(
+        eq(bookings.status, "pending"),
+        eq(bookings.status, "confirmed")
+      )
+    ];
+
+    // If serviceId provided, only check bookings for that service
+    if (serviceId) {
+      bookingConditions.push(eq(bookings.serviceId, parseInt(serviceId)));
+    }
+
     const bookedSlotsResult = await db
       .select({ slotId: bookings.slotId })
       .from(bookings)
-      .where(
-        and(
-          eq(bookings.businessProfileId, businessId),
-          // Check if bookingDate falls within the selected date
-          and(
-            gte(bookings.bookingDate, startOfDay),
-            lte(bookings.bookingDate, endOfDay)
-          ),
-          or(
-            eq(bookings.status, "pending"),
-            eq(bookings.status, "confirmed")
-          )
-        )
-      );
+      .where(and(...bookingConditions));
 
     // Find slots that are currently locked (pending payment) for this date
+    // IMPORTANT: Only filter by serviceId if serviceId is provided
+    const paymentIntentConditions = [
+      eq(slots.businessProfileId, businessId), // Check via slots table
+      // Check if bookingDate falls within the selected date
+      and(
+        gte(paymentIntents.bookingDate, startOfDay),
+        lte(paymentIntents.bookingDate, endOfDay)
+      ),
+      eq(paymentIntents.status, "pending"),
+      gt(paymentIntents.expiresAt, new Date()) // Not expired yet
+    ];
+
+    // If serviceId provided, only check payment intents for that service
+    if (serviceId) {
+      paymentIntentConditions.push(eq(paymentIntents.serviceId, parseInt(serviceId)));
+    }
+
     const lockedSlotsResult = await db
       .select({ slotId: paymentIntents.slotId })
       .from(paymentIntents)
       .innerJoin(slots, eq(paymentIntents.slotId, slots.id))
-      .where(
-        and(
-          eq(slots.businessProfileId, businessId), // Check via slots table
-          // Check if bookingDate falls within the selected date
-          and(
-            gte(paymentIntents.bookingDate, startOfDay),
-            lte(paymentIntents.bookingDate, endOfDay)
-          ),
-          eq(paymentIntents.status, "pending"),
-          gt(paymentIntents.expiresAt, new Date()) // Not expired yet
-        )
-      );
+      .where(and(...paymentIntentConditions));
 
     // Combine booked and locked slot IDs
     const unavailableSlotIds = new Set([
@@ -132,9 +146,9 @@ const getSlotsPublic = async (req, res) => {
       ...lockedSlotsResult.map(l => l.slotId)
     ]);
 
-    console.log(`📊 Booked slots:`, bookedSlotsResult.map(b => b.slotId));
-    console.log(`🔒 Locked slots:`, lockedSlotsResult.map(l => l.slotId));
-    console.log(`🚫 Total unavailable slot IDs:`, Array.from(unavailableSlotIds));
+    console.log(`📊 Service ${serviceId || 'ALL'} - Booked slots:`, bookedSlotsResult.map(b => b.slotId));
+    console.log(`🔒 Service ${serviceId || 'ALL'} - Locked slots:`, lockedSlotsResult.map(l => l.slotId));
+    console.log(`🚫 Service ${serviceId || 'ALL'} - Total unavailable slot IDs:`, Array.from(unavailableSlotIds));
 
     // Mark each slot with availability status
     const slotsWithAvailability = businessSlots.map(slot => {
