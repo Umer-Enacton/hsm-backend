@@ -1,5 +1,4 @@
 const multer = require("multer");
-const { v4: uuidv4 } = require("uuid");
 
 // Configure storage with memory storage (we'll upload to Cloudinary directly from memory)
 const storage = multer.memoryStorage();
