@@ -83,10 +83,16 @@ app.use("/", servicesRoutes);
 app.use("/", slotRoutes);
 app.use("/", bookingRoutes);
 app.use("/", feedbackRoutes);
-// Start server
-app.listen(PORT, () => {
-  console.log(`🚀 Server is running on http://localhost:${PORT}`);
 
-  // Start periodic cleanup of expired payment intents
-  startPeriodicCleanup();
-});
+// Start server (only for local development)
+if (require.main === module) {
+  app.listen(PORT, () => {
+    console.log(`🚀 Server is running on http://localhost:${PORT}`);
+
+    // Start periodic cleanup of expired payment intents
+    startPeriodicCleanup();
+  });
+}
+
+// Export for Vercel serverless deployment
+module.exports = app;
