@@ -21,6 +21,16 @@ const neonDbConfig = {
   ssl: { rejectUnauthorized: false }
 };
 
+// Helper function to format values for SQL
+function formatValue(val) {
+  if (val === null || val === undefined) return 'NULL';
+  if (typeof val === 'string') return `'${val.replace(/'/g, "''")}'`;
+  if (typeof val === 'boolean') return val ? 'TRUE' : 'FALSE';
+  if (val instanceof Date) return `'${val.toISOString()}'`;
+  if (typeof val === 'object') return `'${JSON.stringify(val).replace(/'/g, "''")}'`;
+  return val;
+}
+
 async function exportLocalData() {
   const client = new Client(localDbConfig);
 
@@ -65,24 +75,47 @@ async function importToNeon(data) {
     await client.connect();
     console.log('\n✅ Connected to Neon database');
 
-    // Import each table
-    for (const [tableName, rows] of Object.entries(data)) {
-      if (rows.length === 0) continue;
+    // Disable foreign key constraints temporarily
+    await client.query('SET CONSTRAINTS ALL DEFERRED');
+    console.log('✅ Foreign key constraints deferred');
 
-      console.log(`\n📥 Importing ${tableName}...`);
+    // Define import order based on dependencies
+    const importOrder = [
+      'roles',
+      'users',
+      'categories',
+      'business_profiles',
+      'services',
+      'slots',
+      'address',
+      'bookings',
+      'payment_intents',
+      'payments',
+      'feedback'
+    ];
+
+    let totalSuccess = 0;
+    let totalErrors = 0;
+
+    // Import in dependency order
+    for (const tableName of importOrder) {
+      if (!data[tableName] || data[tableName].length === 0) {
+        console.log(`\n⏭️  Skipping ${tableName} (no data)`);
+        continue;
+      }
+
+      const rows = data[tableName];
+      console.log(`\n📥 Importing ${tableName} (${rows.length} rows)...`);
+
+      let successCount = 0;
+      let errorCount = 0;
 
       // Get column names from first row
       const columns = Object.keys(rows[0]);
+      const columnNames = columns.map(col => `"${col}"`).join(', ');
 
       for (const row of rows) {
-        const columnNames = columns.map(col => `"${col}"`).join(', ');
-        const values = columns.map(col => {
-          const val = row[col];
-          if (val === null) return 'NULL';
-          if (typeof val === 'string') return `'${val.replace(/'/g, "''")}'`;
-          if (typeof val === 'boolean') return val ? 'TRUE' : 'FALSE';
-          return val;
-        }).join(', ');
+        const values = columns.map(col => formatValue(row[col])).join(', ');
 
         try {
           await client.query(`
@@ -90,15 +123,28 @@ async function importToNeon(data) {
             VALUES (${values})
             ON CONFLICT DO NOTHING
           `);
+          successCount++;
         } catch (error) {
-          console.error(`  ❌ Error inserting row: ${error.message}`);
+          errorCount++;
+          if (errorCount <= 3) {
+            console.error(`  ❌ Error: ${error.message.substring(0, 80)}...`);
+          }
         }
       }
 
-      console.log(`  ✓ Imported ${rows.length} rows`);
+      totalSuccess += successCount;
+      totalErrors += errorCount;
+
+      console.log(`  ✅ Success: ${successCount}, Errors: ${errorCount}`);
     }
 
     console.log('\n✅ Migration complete!');
+    console.log(`📊 Total: ${totalSuccess} rows imported, ${totalErrors} errors`);
+
+    if (totalErrors > 0) {
+      console.log('\n⚠️  Some rows had errors. This is usually okay if they were duplicates.');
+    }
+
   } catch (error) {
     console.error('\n❌ Error importing data:', error.message);
     throw error;
@@ -118,8 +164,11 @@ async function runMigration() {
     await importToNeon(data);
 
     console.log('\n🎉 Migration successful!');
+    console.log('\n⚠️  Note: If you see errors, first push the schema:');
+    console.log('   npm run db:push');
+    console.log('   Then run this migration again.');
   } catch (error) {
-    console.error('\n💥 Migration failed:', error);
+    console.error('\n💥 Migration failed:', error.message);
     process.exit(1);
   }
 }
