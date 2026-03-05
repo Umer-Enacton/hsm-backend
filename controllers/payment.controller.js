@@ -145,6 +145,7 @@ const createPaymentOrder = async (req, res) => {
       .where(
         and(
           eq(paymentIntents.slotId, slotId),
+          eq(paymentIntents.serviceId, serviceId), // ✅ Add serviceId check
           eq(paymentIntents.status, "pending")
         )
       )
@@ -159,6 +160,7 @@ const createPaymentOrder = async (req, res) => {
         existingDate: existingDate,
         requestDate: requestDate,
         slotId: slotId,
+        serviceId: existingPendingIntent.serviceId,
         userId: existingPendingIntent.userId,
         expiresAt: existingPendingIntent.expiresAt
       });
@@ -182,7 +184,7 @@ const createPaymentOrder = async (req, res) => {
       } else if (existingDate === requestDate) {
         // Intent is still valid and for the same date - block the slot
         const timeRemaining = Math.max(0, Math.floor((expiresAt.getTime() - now.getTime()) / 1000));
-        console.log(`❌ Slot ${slotId} already locked for ${bookingDate} by user ${existingPendingIntent.userId} (${timeRemaining}s remaining)`);
+        console.log(`❌ Slot ${slotId} already locked for Service ${existingPendingIntent.serviceId} on ${bookingDate} by user ${existingPendingIntent.userId} (${timeRemaining}s remaining)`);
         return res.status(409).json({
           message: "Another customer is currently booking this slot. Please wait a moment and try again, or choose a different slot.",
           code: "SLOT_LOCKED",
@@ -1434,13 +1436,14 @@ const validatePaymentIntent = async (req, res) => {
       });
     }
 
-    // CRITICAL: Check if another payment intent exists for the same slot+date
+    // CRITICAL: Check if another payment intent exists for the same slot+date+service
     const [otherPendingIntent] = await db
       .select()
       .from(paymentIntents)
       .where(
         and(
           eq(paymentIntents.slotId, paymentIntent.slotId),
+          eq(paymentIntents.serviceId, paymentIntent.serviceId), // ✅ Add serviceId check
           eq(paymentIntents.status, "pending"),
           // Different intent ID
           sql`${paymentIntents.id} != ${paymentIntentId}`
@@ -1453,7 +1456,7 @@ const validatePaymentIntent = async (req, res) => {
       const thisDate = new Date(paymentIntent.bookingDate).toISOString().split('T')[0];
 
       if (otherDate === thisDate) {
-        console.log(`❌ [VALIDATE] Another payment intent ${otherPendingIntent.id} exists for slot ${paymentIntent.slotId} on ${thisDate}`);
+        console.log(`❌ [VALIDATE] Another payment intent ${otherPendingIntent.id} exists for Service ${paymentIntent.serviceId}, slot ${paymentIntent.slotId} on ${thisDate}`);
 
         return res.status(409).json({
           valid: false,

@@ -203,10 +203,10 @@ const paymentIntents = pgTable("payment_intents", {
   completedAt: timestamp("completed_at"),
   failureReason: varchar("failure_reason", { length: 500 }),
 }, (table) => ({
-  // Partial unique index: Only one pending intent per slot per date
-  // This prevents double booking race conditions
-  slotDatePendingUnique: uniqueIndex("payment_intents_slot_date_pending_unique")
-    .on(table.slotId, table.bookingDate)
+  // Partial unique index: Only one pending intent per slot per date per service
+  // This prevents double booking race conditions while allowing different services
+  slotDateServicePendingUnique: uniqueIndex("payment_intents_slot_date_service_pending_unique")
+    .on(table.slotId, table.bookingDate, table.serviceId)
     .where(sql`${table.status} = 'pending'`),
 }));
 const feedback = pgTable("feedback", {
