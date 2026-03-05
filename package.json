@@ -7,7 +7,8 @@
     "start": "node index.js",
     "dev": "node --watch index.js",
     "db:generate": "npx drizzle-kit generate",
-    "db:push": "npx drizzle-kit push"
+    "db:push": "npx drizzle-kit push",
+    "migrate": "node migrate-to-neon.js"
   },
   "keywords": [],
   "author": "",
