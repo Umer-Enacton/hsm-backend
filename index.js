@@ -26,22 +26,34 @@ const allowedOrigins = [
   process.env.FRONTEND_URL,
 ].filter(Boolean);
 
+console.log("=== CORS Configuration ===");
+console.log("Allowed origins:", allowedOrigins);
+console.log("========================");
+
 app.use(
   cors({
     origin: function (origin, callback) {
       // Allow requests with no origin (like mobile apps, curl, Postman, server-to-server)
-      if (!origin) return callback(null, true);
+      if (!origin) {
+        console.log("CORS: Allowing request with no origin");
+        return callback(null, true);
+      }
+
+      console.log("CORS: Request from origin:", origin);
 
       if (allowedOrigins.indexOf(origin) !== -1) {
+        console.log("CORS: ✅ Allowed");
         callback(null, true);
       } else {
-        console.log("CORS blocked origin:", origin);
+        console.log("CORS: ❌ Blocked - Origin not in allowed list");
+        console.log("CORS: Allowed origins are:", allowedOrigins);
         callback(new Error("Not allowed by CORS"));
       }
     },
     credentials: true,
     methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
+    exposedHeaders: ["Set-Cookie"],
   }),
 );
 
