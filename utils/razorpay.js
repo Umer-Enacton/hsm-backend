@@ -74,9 +74,13 @@ const verifySignature = (orderId, paymentId, signature) => {
 const initiateRefund = async (paymentId, amount = null, notes = {}) => {
   try {
     const options = {
-      amount: amount, // If null, full refund is processed
       notes: notes,
     };
+
+    // Only add amount if specified (Razorpay does full refund if amount is omitted)
+    if (amount !== null) {
+      options.amount = amount;
+    }
 
     const refund = await razorpay.payments.refund(paymentId, options);
     return refund;

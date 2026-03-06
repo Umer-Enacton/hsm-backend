@@ -1172,7 +1172,7 @@ const declineReschedule = async (req, res) => {
           await tx
             .update(payments)
             .set({
-              refundId: refundResult.refundId,
+              refundId: refundResult.id, // Razorpay returns 'id', not 'refundId'
               refundAmount: reschedulePayment.amount,
               refundReason: reason || "Reschedule request declined by provider",
               refundedAt: new Date(),
@@ -1180,7 +1180,7 @@ const declineReschedule = async (req, res) => {
             })
             .where(eq(payments.id, reschedulePayment.id));
 
-          console.log(`✅ Refund initiated for reschedule fee: ${refundResult.refundId}`);
+          console.log(`✅ Refund initiated for reschedule fee: ${refundResult.id}`);
         } catch (refundError) {
           console.error("Failed to initiate refund:", refundError);
           throw new Error("Reschedule declined but failed to process refund. Please contact support.");
