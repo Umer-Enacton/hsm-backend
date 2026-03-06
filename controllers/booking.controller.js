@@ -1164,7 +1164,8 @@ const declineReschedule = async (req, res) => {
         try {
           const refundResult = await initiateRefund(
             reschedulePayment.razorpayPaymentId,
-            reason || "Reschedule request declined by provider"
+            null, // Full refund (amount in paise)
+            { reason: reason || "Reschedule request declined by provider" }
           );
 
           // Update payment record with refund details
