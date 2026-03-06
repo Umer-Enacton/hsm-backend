@@ -9,7 +9,7 @@ const {
   paymentIntents,
   users,
 } = require("../models/schema");
-const { eq, and, gte, lte, desc, or, sql } = require("drizzle-orm");
+const { eq, and, gte, lte, desc, or, sql, ne } = require("drizzle-orm");
 const {
   createRazorpayOrder,
   verifySignature,
@@ -33,14 +33,39 @@ const {
 const createPaymentOrder = async (req, res) => {
   const client = await db.client; // Get transaction client
 
+  // Declare these at the top so they're in scope for error handling
+  let paymentIntent = null;
+  let razorpayOrder = null;
+
   try {
     const userId = req.token.id;
-    const { serviceId, slotId, addressId, bookingDate } = req.body;
+    const { serviceId, slotId, addressId, bookingDate, reschedule, bookingId, reason } = req.body;
+
+    // Check if this is a reschedule payment
+    const isReschedule = reschedule === true;
+
+    console.log(`💰 Payment order request - ${isReschedule ? 'RESCHEDULE' : 'NEW BOOKING'}`);
+    if (isReschedule) {
+      console.log(`📅 Reschedule bookingId: ${bookingId}, newSlotId: ${slotId}`);
+    }
 
     // Validate required fields
-    if (!serviceId || !slotId || !bookingDate || !addressId) {
+    if (!serviceId || !slotId || !bookingDate) {
       return res.status(400).json({
-        message: "All fields are required: serviceId, slotId, addressId, bookingDate"
+        message: "All fields are required: serviceId, slotId, bookingDate"
+      });
+    }
+
+    // For reschedule, bookingId is required; for new booking, addressId is required
+    if (isReschedule && !bookingId) {
+      return res.status(400).json({
+        message: "bookingId is required for reschedule"
+      });
+    }
+
+    if (!isReschedule && !addressId) {
+      return res.status(400).json({
+        message: "addressId is required for new booking"
       });
     }
 
@@ -65,14 +90,17 @@ const createPaymentOrder = async (req, res) => {
         .json({ message: "Cannot book slots for past dates" });
     }
 
-    // Verify address belongs to user
-    const [address] = await db
-      .select()
-      .from(Address)
-      .where(and(eq(Address.id, addressId), eq(Address.userId, userId)));
+    // For new bookings, verify address belongs to user (skip for reschedule)
+    let address = null;
+    if (!isReschedule) {
+      [address] = await db
+        .select()
+        .from(Address)
+        .where(and(eq(Address.id, addressId), eq(Address.userId, userId)));
 
-    if (!address) {
-      return res.status(404).json({ message: "Please add an address first" });
+      if (!address) {
+        return res.status(404).json({ message: "Please add an address first" });
+      }
     }
 
     // Verify service exists and is active
@@ -116,13 +144,69 @@ const createPaymentOrder = async (req, res) => {
       return res.status(403).json({ message: "Business is not verified" });
     }
 
+    // ============================================
+    // RESCHEDULE SPECIFIC VALIDATIONS
+    // ============================================
+    let existingBooking = null;
+    let rescheduleFeeInPaise = 0;
+
+    if (isReschedule) {
+      // Verify the existing booking exists and belongs to this user
+      [existingBooking] = await db
+        .select()
+        .from(bookings)
+        .where(and(eq(bookings.id, bookingId), eq(bookings.customerId, userId)));
+
+      if (!existingBooking) {
+        return res.status(404).json({ message: "Booking not found" });
+      }
+
+      // Check if booking is in a reschedule-eligible status
+      const eligibleStatuses = ["confirmed", "pending"];
+      if (!eligibleStatuses.includes(existingBooking.status)) {
+        return res.status(400).json({
+          message: `Cannot reschedule booking with status "${existingBooking.status}". Only confirmed or pending bookings can be rescheduled.`
+        });
+      }
+
+      // Calculate reschedule fee (10% of service price)
+      const servicePrice = service.price || 0;
+      rescheduleFeeInPaise = rupeesToPaise(Math.ceil(servicePrice * 0.1)); // 10% fee, rounded up
+
+      console.log(`💰 Reschedule fee calculation:`, {
+        servicePrice,
+        feePercentage: 10,
+        rescheduleFee: servicePrice * 0.1,
+        rescheduleFeeInPaise
+      });
+
+      // Use existing booking's address (don't need to validate new address)
+    } else {
+      // NEW BOOKING: Verify address belongs to user
+      const [address] = await db
+        .select()
+        .from(Address)
+        .where(and(eq(Address.id, addressId), eq(Address.userId, userId)));
+
+      if (!address) {
+        return res.status(404).json({ message: "Please add an address first" });
+      }
+    }
+
+    // ============================================
+    // CALCULATE AMOUNT
+    // ============================================
+    let amountInPaise;
+    if (isReschedule) {
+      amountInPaise = rescheduleFeeInPaise;
+    } else {
+      amountInPaise = rupeesToPaise(service.price);
+    }
+
     // OPTIMISTIC LOCKING: Try to insert payment_intent directly
     // Unique constraint prevents duplicate locks for same slot+date+status=pending
     console.log(`🔒 ATOMIC LOCK: Attempting to lock slot ${slotId} for ${bookingDate}`);
-    console.log(`📍 User ${userId} trying to book slot ${slotId} on ${bookingDate}`);
-
-    // Calculate amount BEFORE transaction (needed for error handling)
-    const amountInPaise = rupeesToPaise(service.price);
+    console.log(`📍 User ${userId} trying to ${isReschedule ? 'reschedule' : 'book'} slot ${slotId} on ${bookingDate}`);
 
     // Calculate expiry time for payment intent (1 minute from now)
     const expiresAt = new Date(now.getTime() + 1 * 60 * 1000);
@@ -205,7 +289,8 @@ const createPaymentOrder = async (req, res) => {
 
     // Check if slot is already booked (confirmed bookings block new payment attempts)
     // IMPORTANT: Check both slotId AND serviceId to allow different services to share slots
-    const [existingBooking] = await db
+    // For reschedule: EXCLUDE the current booking being rescheduled
+    const [bookedSlot] = await db
       .select()
       .from(bookings)
       .where(
@@ -218,21 +303,20 @@ const createPaymentOrder = async (req, res) => {
             eq(bookings.status, "pending"),
             eq(bookings.status, "payment_pending"),
             eq(bookings.status, "confirmed")
-          )
+          ),
+          // For reschedule: exclude the current booking (user is selecting a NEW slot)
+          ...(isReschedule ? [ne(bookings.id, bookingId)] : [])
         )
       )
       .limit(1);
 
-    if (existingBooking) {
+    if (bookedSlot) {
       console.log(`❌ Slot ${slotId} already booked for service ${serviceId} on ${bookingDate}`);
       return res.status(409).json({
         message: "This slot has already been booked for this service. Please select a different time.",
         code: "SLOT_ALREADY_BOOKED",
       });
     }
-
-    let paymentIntent = null;
-    let razorpayOrder = null;
 
     try {
       // Try to create payment_intent - unique constraint prevents race conditions
@@ -241,26 +325,36 @@ const createPaymentOrder = async (req, res) => {
         userId,
         serviceId,
         slotId,
-        addressId,
+        addressId: isReschedule ? existingBooking?.addressId : addressId,
         bookingDate: bookingDateObj.toISOString(),
         amount: amountInPaise,
         status: "pending",
-        expiresAt: expiresAt.toISOString()
+        expiresAt: expiresAt.toISOString(),
+        isReschedule: isReschedule,
+        rescheduleBookingId: isReschedule ? bookingId : null
       });
+
+      const intentValues = {
+        userId: userId,
+        serviceId: serviceId,
+        slotId: slotId,
+        addressId: isReschedule ? existingBooking?.addressId : addressId,
+        bookingDate: bookingDateObj,
+        amount: amountInPaise,
+        razorpayOrderId: `temp_${userId}_${Date.now()}`, // Temporary, will update after Razorpay order creation
+        status: "pending",
+        expiresAt: expiresAt,
+      };
+
+      // Add reschedule-specific fields if applicable
+      if (isReschedule) {
+        intentValues.isReschedule = true;
+        intentValues.rescheduleBookingId = bookingId;
+      }
 
       const [newIntent] = await db
         .insert(paymentIntents)
-        .values({
-          userId: userId,
-          serviceId: serviceId,
-          slotId: slotId,
-          addressId: addressId,
-          bookingDate: bookingDateObj,
-          amount: amountInPaise,
-          razorpayOrderId: `temp_${userId}_${Date.now()}`, // Temporary, will update after Razorpay order creation
-          status: "pending",
-          expiresAt: expiresAt,
-        })
+        .values(intentValues)
         .returning();
 
       paymentIntent = newIntent;
@@ -302,6 +396,7 @@ const createPaymentOrder = async (req, res) => {
       userId: userId.toString(),
       slotId: slotId.toString(),
       bookingDate: bookingDate,
+      ...(isReschedule && reason ? { reason } : {}),
     };
 
     try {
@@ -422,6 +517,18 @@ const verifyPayment = async (req, res) => {
       hasSignature: !!signature,
       intentId: paymentIntentId,
     });
+
+    // Fetch Razorpay order details to get notes (contains reason for reschedule)
+    let reason = null;
+    try {
+      const { fetchOrderDetails } = require("../utils/razorpay");
+      const razorpayOrder = await fetchOrderDetails(razorpayOrderId);
+      reason = razorpayOrder.notes?.reason || null;
+      console.log("📝 Retrieved reason from Razorpay order notes:", reason);
+    } catch (orderError) {
+      console.warn("⚠️ Could not fetch Razorpay order details:", orderError.message);
+      // Continue without reason - it's optional
+    }
 
     // If signature is provided, verify it
     if (signature && signature.trim() !== "") {
@@ -557,12 +664,18 @@ const verifyPayment = async (req, res) => {
       return res.status(404).json({ message: "Slot not found" });
     }
 
+    // Check if this is a reschedule payment
+    const isReschedule = paymentIntent.isReschedule === true;
+    const rescheduleBookingId = paymentIntent.rescheduleBookingId;
+
+    console.log(`${isReschedule ? '🔄' : '🆕'} Payment verification - ${isReschedule ? `RESCHEDULE for booking ${rescheduleBookingId}` : 'NEW BOOKING'}`);
+
     // Use transaction for atomicity
-    let createdBookingId = null;
+    let bookingId = null; // Can be new booking ID or existing booking ID (for reschedule)
 
     await db.transaction(async (tx) => {
-      // CRITICAL: Check for existing booking for this slot+date BEFORE creating new one
-      // This prevents race conditions when multiple users book the same slot simultaneously
+      // CRITICAL: Check for existing booking for this slot+date BEFORE proceeding
+      // This prevents race conditions when multiple users try to book the same slot simultaneously
       console.log(`🔒 Checking for existing bookings for slot ${paymentIntent.slotId} on ${paymentIntent.bookingDate}`);
 
       // Create date range for the selected date
@@ -572,6 +685,7 @@ const verifyPayment = async (req, res) => {
       const endOfDay = new Date(bookingDate);
       endOfDay.setHours(23, 59, 59, 999);
 
+      // For reschedule, exclude the current booking from the "already booked" check
       const [existingBooking] = await tx
         .select()
         .from(bookings)
@@ -586,7 +700,9 @@ const verifyPayment = async (req, res) => {
             or(
               eq(bookings.status, "pending"),
               eq(bookings.status, "confirmed")
-            )
+            ),
+            // For reschedule: exclude the current booking being rescheduled
+            ...(isReschedule ? [ne(bookings.id, rescheduleBookingId)] : [])
           )
         )
         .limit(1);
@@ -597,7 +713,7 @@ const verifyPayment = async (req, res) => {
         throw new Error("This slot is no longer available. It was just booked by another customer.");
       }
 
-      console.log(`✅ Slot ${paymentIntent.slotId} is available, proceeding with booking`);
+      console.log(`✅ Slot ${paymentIntent.slotId} is available, proceeding with ${isReschedule ? 'reschedule' : 'booking'}`);
 
       // Get business profile ID from slot
       const [slot] = await tx
@@ -609,42 +725,113 @@ const verifyPayment = async (req, res) => {
         throw new Error("Slot not found");
       }
 
-      // 1. Create booking record with status PENDING (NOT confirmed)
-      const [newBooking] = await tx
-        .insert(bookings)
-        .values({
-          customerId: userId,
-          businessProfileId: slot.businessProfileId,
-          serviceId: paymentIntent.serviceId,
+      if (isReschedule) {
+        // ===========================
+        // RESCHEDULE: Update existing booking
+        // ===========================
+        console.log(`🔄 Updating existing booking ${rescheduleBookingId} with new slot ${paymentIntent.slotId}`);
+
+        // Verify the booking exists and belongs to the user
+        const [bookingToReschedule] = await tx
+          .select()
+          .from(bookings)
+          .where(
+            and(
+              eq(bookings.id, rescheduleBookingId),
+              eq(bookings.customerId, userId)
+            )
+          )
+          .limit(1);
+
+        if (!bookingToReschedule) {
+          throw new Error("Booking to reschedule not found or does not belong to you");
+        }
+
+        // Update the booking with new slot and date
+        // Store previous values for potential revert if provider declines
+        const updateData = {
           slotId: paymentIntent.slotId,
-          addressId: paymentIntent.addressId,
           bookingDate: paymentIntent.bookingDate,
-          totalPrice: paiseToRupees(paymentIntent.amount),
-          status: "pending", // PENDING - provider will confirm
-          paymentStatus: "paid",
-        })
-        .returning();
+          status: "reschedule_pending", // Customer rescheduled, waiting provider approval
+          paymentStatus: "paid", // Reschedule fee paid
+          // Store original values for revert if provider declines
+          previousSlotId: bookingToReschedule.slotId,
+          previousBookingDate: bookingToReschedule.bookingDate,
+          rescheduledBy: "customer",
+          rescheduledAt: new Date(),
+        };
 
-      // Store the booking ID
-      createdBookingId = newBooking.id;
+        // Add reason if provided
+        if (reason) {
+          updateData.rescheduleReason = reason;
+        }
 
-      // 2. Create payment record
-      await tx
-        .insert(payments)
-        .values({
-          bookingId: newBooking.id,
-          userId: userId,
-          razorpayOrderId: razorpayOrderId,
-          razorpayPaymentId: razorpayPaymentId,
-          razorpaySignature: signature,
-          amount: paymentIntent.amount,
-          currency: "INR",
-          status: "paid",
-          paymentMethod: "razorpay",
-          completedAt: new Date(),
-        });
+        const [updatedBooking] = await tx
+          .update(bookings)
+          .set(updateData)
+          .where(eq(bookings.id, rescheduleBookingId))
+          .returning();
 
-      // 3. Update payment_intent to completed
+        bookingId = updatedBooking.id;
+
+        console.log(`✅ Booking ${rescheduleBookingId} rescheduled successfully, status: reschedule_pending`);
+
+        // Create payment record for the reschedule fee
+        await tx
+          .insert(payments)
+          .values({
+            bookingId: rescheduleBookingId,
+            userId: userId,
+            razorpayOrderId: razorpayOrderId,
+            razorpayPaymentId: razorpayPaymentId,
+            razorpaySignature: signature,
+            amount: paymentIntent.amount, // 10% reschedule fee
+            currency: "INR",
+            status: "paid",
+            paymentMethod: "razorpay",
+            completedAt: new Date(),
+          });
+      } else {
+        // ===========================
+        // NEW BOOKING: Create new booking
+        // ===========================
+        // 1. Create booking record with status PENDING (NOT confirmed)
+        const [newBooking] = await tx
+          .insert(bookings)
+          .values({
+            customerId: userId,
+            businessProfileId: slot.businessProfileId,
+            serviceId: paymentIntent.serviceId,
+            slotId: paymentIntent.slotId,
+            addressId: paymentIntent.addressId,
+            bookingDate: paymentIntent.bookingDate,
+            totalPrice: paiseToRupees(paymentIntent.amount),
+            status: "pending", // PENDING - provider will confirm
+            paymentStatus: "paid",
+          })
+          .returning();
+
+        // Store the booking ID
+        bookingId = newBooking.id;
+
+        // 2. Create payment record
+        await tx
+          .insert(payments)
+          .values({
+            bookingId: newBooking.id,
+            userId: userId,
+            razorpayOrderId: razorpayOrderId,
+            razorpayPaymentId: razorpayPaymentId,
+            razorpaySignature: signature,
+            amount: paymentIntent.amount,
+            currency: "INR",
+            status: "paid",
+            paymentMethod: "razorpay",
+            completedAt: new Date(),
+          });
+      }
+
+      // Update payment_intent to completed (common for both cases)
       await tx
         .update(paymentIntents)
         .set({
@@ -655,8 +842,11 @@ const verifyPayment = async (req, res) => {
     });
 
     res.status(200).json({
-      message: "Payment verified successfully! Your booking is pending confirmation from the service provider.",
-      bookingId: createdBookingId,
+      message: isReschedule
+        ? "Reschedule fee paid successfully! Your booking has been rescheduled and is awaiting approval from the service provider."
+        : "Payment verified successfully! Your booking is pending confirmation from the service provider.",
+      bookingId: bookingId,
+      isReschedule: isReschedule,
     });
   } catch (error) {
     console.error("Error verifying payment:", error);

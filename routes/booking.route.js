@@ -9,6 +9,9 @@ const {
   rejectBooking,
   completeBooking,
   rescheduleBooking,
+  approveReschedule,
+  declineReschedule,
+  providerReschedule,
 } = require("../controllers/booking.controller");
 const authorizeRole = require("../middleware/roleBasedRoutes");
 const { CUSTOMER, PROVIDER } = require("../config/roles");
@@ -26,8 +29,14 @@ router.post(
 );
 router.patch("/booking/:id", authorizeRole(CUSTOMER), rescheduleBooking);
 
+// Provider booking management
 router.put("/accept-booking/:id", authorizeRole(PROVIDER), acceptBooking);
 router.put("/reject-booking/:id", authorizeRole(PROVIDER), rejectBooking);
 router.put("/complete-booking/:id", authorizeRole(PROVIDER), completeBooking);
+
+// Provider reschedule management
+router.put("/booking/:id/reschedule-approve", authorizeRole(PROVIDER), approveReschedule);
+router.put("/booking/:id/reschedule-decline", authorizeRole(PROVIDER), declineReschedule);
+router.put("/booking/:id/provider-reschedule", authorizeRole(PROVIDER), providerReschedule);
 
 module.exports = router;

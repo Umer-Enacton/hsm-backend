@@ -19,8 +19,10 @@ const bookingStatusEnum = pgEnum("booking_status", [
   "pending",
   "payment_pending",
   "confirmed",
+  "reschedule_pending", // Customer rescheduled, waiting provider approval
   "completed",
   "cancelled",
+  "rejected", // Provider rejected the booking
   "refunded",
 ]);
 
@@ -154,6 +156,12 @@ const bookings = pgTable("bookings", {
   status: bookingStatusEnum("status").default("pending").notNull(),
   totalPrice: integer("total_price").notNull(),
   paymentStatus: paymentStatusEnum("payment_status").default("pending").notNull(),
+  // Reschedule tracking fields
+  previousSlotId: integer("previous_slot_id"), // Stores original slot before reschedule (for revert if declined)
+  previousBookingDate: timestamp("previous_booking_date"), // Stores original date before reschedule
+  rescheduleReason: varchar("reschedule_reason", { length: 500 }), // Reason for reschedule
+  rescheduledBy: varchar("rescheduled_by", { length: 20 }), // "customer" or "provider"
+  rescheduledAt: timestamp("rescheduled_at"), // When reschedule was initiated
 });
 
 const payments = pgTable("payments", {
@@ -202,6 +210,9 @@ const paymentIntents = pgTable("payment_intents", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
   completedAt: timestamp("completed_at"),
   failureReason: varchar("failure_reason", { length: 500 }),
+  // Reschedule fields
+  isReschedule: boolean("is_reschedule").default(false),
+  rescheduleBookingId: integer("reschedule_booking_id"), // References bookings.id for reschedule
 }, (table) => ({
   // Partial unique index: Only one pending intent per slot per date per service
   // This allows different services to be booked simultaneously at the same time slot
