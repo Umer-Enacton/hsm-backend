@@ -84,9 +84,10 @@ const users = pgTable("users", {
     .references(() => Roles.id, { onDelete: "cascade" })
     .default(1),
   email: varchar("email", { length: 255 }).notNull().unique(),
-  phone: varchar("phone", { length: 20 }).notNull(),
-  password: varchar("password", { length: 255 }).notNull(),
+  phone: varchar("phone", { length: 20 }), // Made nullable for OAuth users
+  password: varchar("password", { length: 255 }), // Made nullable for OAuth users
   avatar: varchar("avatar", { length: 500 }), // Cloudinary URL for profile picture
+  googleId: varchar("google_id", { length: 255 }).unique(), // Google OAuth ID
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
@@ -234,6 +235,14 @@ const feedback = pgTable("feedback", {
   rating: decimal("rating", { precision: 2, scale: 1 }).notNull(),
   comments: varchar("comments", { length: 2000 }),
   createdAt: timestamp("created_at").defaultNow().notNull(),
+  // Visibility control - provider can hide reviews from customers
+  isVisible: boolean("is_visible").default(true).notNull(),
+  // Provider reply to review
+  providerReply: varchar("provider_reply", { length: 1000 }),
+  repliedAt: timestamp("replied_at"),
+  // Track who hid the review (provider who hid it)
+  hiddenBy: integer("hidden_by").references(() => users.id, { onDelete: "set null" }),
+  hiddenAt: timestamp("hidden_at"),
 });
 module.exports = {
   Roles,

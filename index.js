@@ -1,6 +1,7 @@
 const express = require("express");
 const cors = require("cors");
 const authRoutes = require("./routes/auth.route");
+const googleAuthRoutes = require("./routes/googleAuth.route");
 const invoiceRoutes = require("./routes/invoice.route");
 const addressRoutes = require("./routes/address.route");
 const userRoutes = require("./routes/user.route");
@@ -12,6 +13,8 @@ const bookingRoutes = require("./routes/booking.route");
 const feedbackRoutes = require("./routes/feedback.route");
 const uploadRoutes = require("./routes/upload.route");
 const paymentRoutes = require("./routes/payment.route");
+const adminBookingsRoutes = require("./routes/adminBookings.route");
+const cronRoutes = require("./routes/cron.route");
 const auth = require("./middleware/auth");
 const { startPeriodicCleanup } = require("./utils/cleanupExpiredIntents");
 const app = express();
@@ -72,9 +75,12 @@ app.get("/", (req, res) => {
 });
 
 app.use("/", authRoutes);
+app.use("/auth", googleAuthRoutes);
+app.use("/cron", cronRoutes);
 app.use(auth);
 app.use("/payment", paymentRoutes);
 app.use("/invoice", invoiceRoutes);
+app.use("/admin", adminBookingsRoutes);
 app.use("/", addressRoutes);
 app.use("/", userRoutes);
 app.use("/", categoryRoutes);

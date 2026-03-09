@@ -9,7 +9,7 @@ const {
   feedback,
   payments,
 } = require("../models/schema");
-const { eq, and, gte, lte, desc, or } = require("drizzle-orm");
+const { eq, and, gte, lte, desc, or, isNull } = require("drizzle-orm");
 const { initiateRefund, paiseToRupees } = require("../utils/razorpay");
 
 // Get booking by ID
@@ -1153,7 +1153,7 @@ const declineReschedule = async (req, res) => {
         .where(
           and(
             eq(payments.bookingId, bookingId),
-            eq(payments.refundId, null) // Not already refunded
+            isNull(payments.refundId) // Not already refunded
           )
         )
         .orderBy(desc(payments.createdAt))
