@@ -79,7 +79,7 @@ router.post("/auto-reject-bookings", verifyCronSecret, async (req, res) => {
             const refundResult = await initiateRefund(
               booking.razorpayPaymentId,
               booking.totalPrice,
-              "Auto-refund: Booking time expired - Provider did not respond"
+              "Auto-refund: Booking time expired"
             );
 
             // Update payment status

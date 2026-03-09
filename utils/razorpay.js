@@ -68,16 +68,15 @@ const verifySignature = (orderId, paymentId, signature) => {
  * Initiate refund for a payment
  * @param {string} paymentId - Razorpay payment ID to refund
  * @param {number} amount - Amount to refund in paise (optional, full refund if not provided)
- * @param {string} notes - Notes for the refund
+ * @param {string} reason - Reason for the refund
  * @returns {Promise<object>} Refund details
  */
-const initiateRefund = async (paymentId, amount = null, notes = {}) => {
+const initiateRefund = async (paymentId, amount = null, reason = "Refund") => {
   try {
-    const options = {
-      notes: notes,
-    };
+    const options = {};
 
-    // Only add amount if specified (Razorpay does full refund if amount is omitted)
+    // For partial refunds, add amount
+    // For full refunds, omit amount (Razorpay refunds entire captured amount)
     if (amount !== null) {
       options.amount = amount;
     }
