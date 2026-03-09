@@ -1,6 +1,13 @@
 const jwt = require("jsonwebtoken");
 const JWT_SECRET = process.env.JWT_SECRET;
 const auth = (req, res, next) => {
+  // Skip auth for cron endpoints
+  if (req.path.startsWith('/cron')) {
+    console.log("⏰ Skipping auth for cron endpoint:", req.path);
+    return next();
+  }
+
+  console.log("🔍 Auth middleware called for path:", req.path, "method:", req.method);
   try {
     let token = null;
     let tokenSource = "";

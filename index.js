@@ -77,7 +77,9 @@ app.get("/", (req, res) => {
 app.use("/", authRoutes);
 app.use("/auth", googleAuthRoutes);
 app.use("/cron", cronRoutes);
+console.log("⏰ Cron routes registered BEFORE auth middleware");
 app.use(auth);
+console.log("🔒 Global auth middleware registered");
 app.use("/payment", paymentRoutes);
 app.use("/invoice", invoiceRoutes);
 app.use("/admin", adminBookingsRoutes);
