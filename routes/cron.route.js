@@ -1,7 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const db = require("../config/db");
-const { bookings, payments, services } = require("../models/schema");
+const { bookings, payments, services, users, slots } = require("../models/schema");
 const { eq, and, lt, sql } = require("drizzle-orm");
 const { initiateRefund } = require("../utils/razorpay");
 
