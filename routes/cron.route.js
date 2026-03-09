@@ -42,11 +42,8 @@ router.post("/auto-reject-bookings", verifyCronSecret, async (req, res) => {
         customerName: users.name,
         customerEmail: users.email,
         serviceName: services.name,
-        slotTime: slots.startTime,
-        providerId: services.providerId,
       })
       .from(bookings)
-      .innerJoin(slots, eq(bookings.slotId, slots.id))
       .innerJoin(services, eq(bookings.serviceId, services.id))
       .innerJoin(payments, eq(bookings.id, payments.bookingId))
       .innerJoin(users, eq(bookings.customerId, users.id))
