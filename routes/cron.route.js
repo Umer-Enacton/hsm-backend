@@ -25,7 +25,7 @@ const verifyCronSecret = (req, res, next) => {
  * Internal endpoint for cron jobs to process expired bookings
  * Protected by CRON_SECRET
  */
-router.post("/cron/auto-reject-bookings", verifyCronSecret, async (req, res) => {
+router.post("/auto-reject-bookings", verifyCronSecret, async (req, res) => {
   console.log("Cron job: Processing expired bookings...");
 
   try {
@@ -141,7 +141,7 @@ router.post("/cron/auto-reject-bookings", verifyCronSecret, async (req, res) => 
  * GET /cron/health
  * Health check endpoint for cron jobs
  */
-router.get("/cron/health", (req, res) => {
+router.get("/health", (req, res) => {
   res.status(200).json({
     status: "ok",
     timestamp: new Date().toISOString(),
