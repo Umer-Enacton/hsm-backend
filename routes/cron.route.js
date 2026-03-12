@@ -30,6 +30,7 @@ router.post("/auto-reject-bookings", verifyCronSecret, async (req, res) => {
 
   try {
     // Get pending bookings where scheduled time has passed
+    // Need to join with slots to get the time for accurate comparison
     const expiredBookings = await db
       .select({
         bookingId: bookings.id,
@@ -44,13 +45,15 @@ router.post("/auto-reject-bookings", verifyCronSecret, async (req, res) => {
         serviceName: services.name,
       })
       .from(bookings)
+      .innerJoin(slots, eq(bookings.slotId, slots.id))
       .innerJoin(services, eq(bookings.serviceId, services.id))
       .innerJoin(payments, eq(bookings.id, payments.bookingId))
       .innerJoin(users, eq(bookings.customerId, users.id))
       .where(
         and(
           eq(bookings.status, "pending"),
-          lt(bookings.bookingDate, sql`NOW()`) // Booking time has passed
+          // Compare actual booking time (date + slot time) - reject exactly when slot starts
+          sql`${bookings.bookingDate} + ${slots.startTime} < NOW()`
         )
       );
 
@@ -68,7 +71,13 @@ router.post("/auto-reject-bookings", verifyCronSecret, async (req, res) => {
         // Update booking status to rejected
         await db
           .update(bookings)
-          .set({ status: "rejected" })
+          .set({
+            status: "rejected",
+            isRefunded: sql`CASE WHEN ${booking.razorpayPaymentId} IS NOT NULL THEN true ELSE false END`,
+            cancelledAt: new Date(),
+            cancellationReason: "Auto-rejected: Booking time expired - Provider did not respond",
+            cancelledBy: "system",
+          })
           .where(eq(bookings.id, booking.bookingId));
 
         console.log(`Booking ${booking.bookingId} marked as rejected`);
@@ -137,15 +146,15 @@ router.post("/auto-reject-bookings", verifyCronSecret, async (req, res) => {
 /**
  * POST /cron/auto-handle-reschedule-requests
  * Internal endpoint for cron jobs to auto-revert expired reschedule requests
- * If provider doesn't respond to reschedule request within 2 hours, revert to original slot
+ * If provider doesn't respond to reschedule request within 30 minutes, revert to original slot
  * Protected by CRON_SECRET
  */
 router.post("/auto-handle-reschedule-requests", verifyCronSecret, async (req, res) => {
   console.log("Cron job: Processing expired reschedule requests...");
 
   try {
-    // Get reschedule_pending bookings where rescheduledAt is older than 2 hours
-    const TWO_HOURS_AGO = sql`NOW() - INTERVAL '2 hours'`;
+    // Get reschedule_pending bookings where rescheduledAt is older than 30 minutes
+    const THIRTY_MINUTES_AGO = sql`NOW() - INTERVAL '30 minutes'`;
 
     const expiredRescheduleRequests = await db
       .select({
@@ -171,7 +180,7 @@ router.post("/auto-handle-reschedule-requests", verifyCronSecret, async (req, re
       .where(
         and(
           eq(bookings.status, "reschedule_pending"),
-          lt(bookings.rescheduledAt, TWO_HOURS_AGO)
+          lt(bookings.rescheduledAt, THIRTY_MINUTES_AGO)
         )
       );
 

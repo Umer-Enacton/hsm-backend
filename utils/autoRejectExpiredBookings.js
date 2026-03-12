@@ -42,7 +42,8 @@ async function autoRejectExpiredBookings() {
       .where(
         and(
           eq(bookings.status, "pending"),
-          lt(bookings.bookingDate, sql`NOW()`) // Booking date/time has passed
+          // Compare actual booking time (date + slot time) - reject exactly when slot starts
+          sql`${bookings.bookingDate} + ${slots.startTime} < NOW()`
         )
       );
 

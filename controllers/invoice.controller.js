@@ -726,9 +726,9 @@ const generateInvoice = async (req, res) => {
     // Totals Box
     const totalsBoxWidth = 170;
     const totalsBoxX = pageWidth - marginRight - totalsBoxWidth;
-    const totalsBoxHeight = 115;
-    const totalsPadding = 20; // was 12, pushes everything more inside
-    const totalsInnerWidth = totalsBoxWidth - totalsPadding * 2; // usable width inside box
+    const totalsBoxHeight = booking.rescheduleOutcome ? 145 : 115; // Extra height for reschedule fee
+    const totalsPadding = 20;
+    const totalsInnerWidth = totalsBoxWidth - totalsPadding * 2;
 
     doc
       .roundedRect(totalsBoxX, currentY - 5, totalsBoxWidth, totalsBoxHeight, 6)
@@ -736,20 +736,71 @@ const generateInvoice = async (req, res) => {
 
     let totalsY = currentY + 8;
 
-    // Subtotal
+    // Service Charge
+    const servicePrice = service?.price || booking.totalPrice;
     doc.fontSize(10).fillColor("#64748b").font("Helvetica");
-    doc.text("Subtotal", totalsBoxX + totalsPadding, totalsY, {
+    doc.text("Service Charge", totalsBoxX + totalsPadding, totalsY, {
       width: totalsInnerWidth,
       align: "left",
     });
     doc.text(
-      formatCurrency(booking.totalPrice),
+      formatCurrency(servicePrice),
       totalsBoxX + totalsPadding,
       totalsY,
       { width: totalsInnerWidth, align: "right" },
     );
 
     totalsY += 22;
+
+    // Reschedule Fee (if applicable)
+    let rescheduleFeeAmount = 0;
+    let hasRescheduleRefund = false;
+
+    if (booking.rescheduleOutcome === "pending" || booking.rescheduleOutcome === "accepted") {
+      rescheduleFeeAmount = booking.lastRescheduleFee ? booking.lastRescheduleFee / 100 : 100; // Convert paise to rupees
+      doc.text("Reschedule Fee", totalsBoxX + totalsPadding, totalsY, {
+        width: totalsInnerWidth,
+        align: "left",
+      });
+      doc.text(
+        formatCurrency(rescheduleFeeAmount),
+        totalsBoxX + totalsPadding,
+        totalsY,
+        { width: totalsInnerWidth, align: "right" },
+      );
+      totalsY += 22;
+    } else if (booking.rescheduleOutcome === "rejected" || booking.rescheduleOutcome === "cancelled") {
+      rescheduleFeeAmount = booking.lastRescheduleFee ? booking.lastRescheduleFee / 100 : 100;
+      hasRescheduleRefund = true;
+
+      // Show the fee that was charged
+      doc.text("Reschedule Fee", totalsBoxX + totalsPadding, totalsY, {
+        width: totalsInnerWidth,
+        align: "left",
+      });
+      doc.text(
+        formatCurrency(rescheduleFeeAmount),
+        totalsBoxX + totalsPadding,
+        totalsY,
+        { width: totalsInnerWidth, align: "right" },
+      );
+      totalsY += 22;
+
+      // Show the refund
+      doc.fontSize(9).fillColor("#16a34a"); // Green for refund
+      doc.text("Refund", totalsBoxX + totalsPadding, totalsY, {
+        width: totalsInnerWidth,
+        align: "left",
+      });
+      doc.text(
+        `-${formatCurrency(rescheduleFeeAmount)}`,
+        totalsBoxX + totalsPadding,
+        totalsY,
+        { width: totalsInnerWidth, align: "right" },
+      );
+      doc.fontSize(10).fillColor("#64748b"); // Reset color
+      totalsY += 22;
+    }
 
     // Tax
     doc.text("Tax (Included)", totalsBoxX + totalsPadding, totalsY, {
@@ -775,6 +826,7 @@ const generateInvoice = async (req, res) => {
     totalsY += 12;
 
     // Total
+    const finalTotal = hasRescheduleRefund ? servicePrice : (servicePrice + rescheduleFeeAmount);
     doc.fontSize(11).fillColor("#0f172a").font("Helvetica-Bold");
     doc.text("TOTAL", totalsBoxX + totalsPadding, totalsY + 2, {
       width: totalsInnerWidth,
@@ -782,11 +834,36 @@ const generateInvoice = async (req, res) => {
     });
     doc.fontSize(16).fillColor("#ec5b13");
     doc.text(
-      formatCurrency(booking.totalPrice),
+      formatCurrency(finalTotal),
       totalsBoxX + totalsPadding,
       totalsY,
       { width: totalsInnerWidth, align: "right" },
     );
+
+    // Reschedule Details Note (if applicable)
+    if (booking.rescheduleOutcome && booking.previousBookingDate) {
+      currentY += totalsBoxHeight + 15;
+      doc.fontSize(8).fillColor("#94a3b8").font("Helvetica-Bold");
+      doc.text("RESCHEDULE DETAILS", marginLeft, currentY);
+      currentY += 12;
+
+      doc.fontSize(8).fillColor("#64748b").font("Helvetica");
+      const prevDate = formatDate(booking.previousBookingDate);
+      const prevTime = booking.previousSlotTime ? formatTime(booking.previousSlotTime) : "";
+
+      const rescheduleStatusText =
+        booking.rescheduleOutcome === "pending" ? "Pending approval" :
+        booking.rescheduleOutcome === "accepted" ? "Approved" :
+        booking.rescheduleOutcome === "rejected" ? "Declined by provider" :
+        "Cancelled by customer";
+
+      doc.text(
+        `Previous: ${prevDate}${prevTime ? ` at ${prevTime}` : ""} → ${formatDate(booking.bookingDate)} at ${formatTime(slot?.startTime)} (${rescheduleStatusText})`,
+        marginLeft,
+        currentY,
+        { width: contentWidth, ellipsis: true }
+      );
+    }
 
     // ============================================
     // FOOTER

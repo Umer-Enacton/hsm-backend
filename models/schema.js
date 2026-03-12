@@ -158,11 +158,27 @@ const bookings = pgTable("bookings", {
   totalPrice: integer("total_price").notNull(),
   paymentStatus: paymentStatusEnum("payment_status").default("pending").notNull(),
   // Reschedule tracking fields
+  rescheduleCount: integer("reschedule_count").default(0).notNull(), // Number of times rescheduled
+  lastRescheduleFee: integer("last_reschedule_fee"), // Last reschedule fee charged (in paise)
+  rescheduleOutcome: varchar("reschedule_outcome", { length: 20 }), // "pending", "accepted", "rejected", "cancelled"
   previousSlotId: integer("previous_slot_id"), // Stores original slot before reschedule (for revert if declined)
+  previousSlotTime: varchar("previous_slot_time", { length: 20 }), // Stores original slot time (e.g., "09:00:00") before reschedule
   previousBookingDate: timestamp("previous_booking_date"), // Stores original date before reschedule
   rescheduleReason: varchar("reschedule_reason", { length: 500 }), // Reason for reschedule
   rescheduledBy: varchar("rescheduled_by", { length: 20 }), // "customer" or "provider"
   rescheduledAt: timestamp("rescheduled_at"), // When reschedule was initiated
+  // Refund tracking
+  isRefunded: boolean("is_refunded").default(false).notNull(), // Whether payment has been refunded
+  refundAmount: integer("refund_amount"), // Amount refunded to customer (in paise)
+  // Provider payout tracking (15% when customer cancels confirmed booking)
+  providerPayoutAmount: integer("provider_payout_amount"), // Amount paid to provider (in paise)
+  providerPayoutStatus: varchar("provider_payout_status", { length: 20 }), // "pending", "paid", "failed"
+  providerPayoutId: varchar("provider_payout_id", { length: 100 }), // Razorpay payout ID
+  providerPayoutAt: timestamp("provider_payout_at"), // When payout was processed
+  // Cancellation tracking
+  cancelledAt: timestamp("cancelled_at"), // When booking was cancelled
+  cancellationReason: varchar("cancellation_reason", { length: 500 }), // Reason for cancellation
+  cancelledBy: varchar("cancelled_by", { length: 20 }), // "customer", "provider", or "system"
 });
 
 const payments = pgTable("payments", {

@@ -9,8 +9,12 @@ const {
   feedback,
   payments,
 } = require("../models/schema");
-const { eq, and, gte, lte, desc, or, isNull } = require("drizzle-orm");
-const { initiateRefund, paiseToRupees } = require("../utils/razorpay");
+const { eq, and, gte, lte, desc, or, isNull, sql } = require("drizzle-orm");
+const {
+  initiateRefund,
+  paiseToRupees,
+  rupeesToPaise,
+} = require("../utils/razorpay");
 
 // Get booking by ID
 const getBookingById = async (req, res) => {
@@ -38,8 +42,13 @@ const getBookingById = async (req, res) => {
       .where(eq(businessProfiles.id, booking.businessProfileId))
       .limit(1);
 
-    if (booking.customerId !== userId && (!business[0] || business[0].providerId !== userId)) {
-      return res.status(403).json({ message: "You are not authorized to view this booking" });
+    if (
+      booking.customerId !== userId &&
+      (!business[0] || business[0].providerId !== userId)
+    ) {
+      return res
+        .status(403)
+        .json({ message: "You are not authorized to view this booking" });
     }
 
     // Fetch related data
@@ -77,39 +86,49 @@ const getBookingById = async (req, res) => {
     // Enrich booking with related data
     const enrichedBooking = {
       ...booking,
-      service: service ? {
-        id: service.id,
-        name: service.name,
-        description: service.description,
-        price: service.price,
-        duration: service.EstimateDuration || service.duration,
-        EstimateDuration: service.EstimateDuration || service.duration,
-        imageUrl: service.imageUrl,
-        provider: serviceBusinessProfile ? {
-          id: serviceBusinessProfile.id,
-          businessName: serviceBusinessProfile.businessName,
-          rating: serviceBusinessProfile.rating,
-          totalReviews: serviceBusinessProfile.totalReviews,
-          isVerified: serviceBusinessProfile.isVerified,
-        } : undefined,
-      } : null,
-      address: address ? {
-        id: address.id,
-        street: address.street,
-        city: address.city,
-        state: address.state,
-        zipCode: address.zipCode,
-      } : null,
-      slot: slot ? {
-        id: slot.id,
-        startTime: slot.startTime,
-        endTime: slot.endTime,
-      } : null,
-      feedback: bookingFeedback ? {
-        id: bookingFeedback.id,
-        rating: bookingFeedback.rating,
-        comments: bookingFeedback.comments,
-      } : null,
+      service: service
+        ? {
+            id: service.id,
+            name: service.name,
+            description: service.description,
+            price: service.price,
+            duration: service.EstimateDuration || service.duration,
+            EstimateDuration: service.EstimateDuration || service.duration,
+            imageUrl: service.imageUrl,
+            provider: serviceBusinessProfile
+              ? {
+                  id: serviceBusinessProfile.id,
+                  businessName: serviceBusinessProfile.businessName,
+                  rating: serviceBusinessProfile.rating,
+                  totalReviews: serviceBusinessProfile.totalReviews,
+                  isVerified: serviceBusinessProfile.isVerified,
+                }
+              : undefined,
+          }
+        : null,
+      address: address
+        ? {
+            id: address.id,
+            street: address.street,
+            city: address.city,
+            state: address.state,
+            zipCode: address.zipCode,
+          }
+        : null,
+      slot: slot
+        ? {
+            id: slot.id,
+            startTime: slot.startTime,
+            endTime: slot.endTime,
+          }
+        : null,
+      feedback: bookingFeedback
+        ? {
+            id: bookingFeedback.id,
+            rating: bookingFeedback.rating,
+            comments: bookingFeedback.comments,
+          }
+        : null,
     };
 
     res.status(200).json({ booking: enrichedBooking });
@@ -168,40 +187,50 @@ const getCustomerBookings = async (req, res) => {
 
         return {
           ...booking,
-          service: service ? {
-            id: service.id,
-            name: service.name,
-            description: service.description,
-            price: service.price,
-            duration: service.duration,
-            imageUrl: service.imageUrl,
-            provider: businessProfile ? {
-              id: businessProfile.id,
-              businessName: businessProfile.businessName,
-              rating: businessProfile.rating,
-              totalReviews: businessProfile.totalReviews,
-              isVerified: businessProfile.isVerified,
-            } : undefined,
-          } : null,
-          address: address ? {
-            id: address.id,
-            street: address.street,
-            city: address.city,
-            state: address.state,
-            zipCode: address.zipCode,
-          } : null,
-          slot: slot ? {
-            id: slot.id,
-            startTime: slot.startTime,
-            endTime: slot.endTime,
-          } : null,
-          feedback: bookingFeedback ? {
-            id: bookingFeedback.id,
-            rating: bookingFeedback.rating,
-            comments: bookingFeedback.comments,
-          } : null,
+          service: service
+            ? {
+                id: service.id,
+                name: service.name,
+                description: service.description,
+                price: service.price,
+                duration: service.duration,
+                imageUrl: service.imageUrl,
+                provider: businessProfile
+                  ? {
+                      id: businessProfile.id,
+                      businessName: businessProfile.businessName,
+                      rating: businessProfile.rating,
+                      totalReviews: businessProfile.totalReviews,
+                      isVerified: businessProfile.isVerified,
+                    }
+                  : undefined,
+              }
+            : null,
+          address: address
+            ? {
+                id: address.id,
+                street: address.street,
+                city: address.city,
+                state: address.state,
+                zipCode: address.zipCode,
+              }
+            : null,
+          slot: slot
+            ? {
+                id: slot.id,
+                startTime: slot.startTime,
+                endTime: slot.endTime,
+              }
+            : null,
+          feedback: bookingFeedback
+            ? {
+                id: bookingFeedback.id,
+                rating: bookingFeedback.rating,
+                comments: bookingFeedback.comments,
+              }
+            : null,
         };
-      })
+      }),
     );
 
     res.status(200).json({ bookings: bookingsWithDetails });
@@ -296,7 +325,7 @@ const getProviderBookings = async (req, res) => {
             : "Unknown Address",
           feedback: feedbackData,
         };
-      })
+      }),
     );
 
     res.status(200).json({ bookings: bookingsWithCustomers });
@@ -336,19 +365,19 @@ const addBooking = async (req, res) => {
     const todayStart = new Date(
       now.getFullYear(),
       now.getMonth(),
-      now.getDate()
+      now.getDate(),
     );
     const bookingDateStart = new Date(
       bookingDateObj.getFullYear(),
       bookingDateObj.getMonth(),
-      bookingDateObj.getDate()
+      bookingDateObj.getDate(),
     );
 
     console.log("todayStart:", todayStart);
     console.log("bookingDateStart:", bookingDateStart);
     console.log(
       "Are they the same day?",
-      bookingDateStart.getTime() === todayStart.getTime()
+      bookingDateStart.getTime() === todayStart.getTime(),
     );
 
     if (bookingDateStart < todayStart) {
@@ -401,7 +430,7 @@ const addBooking = async (req, res) => {
         "Minutes:",
         slotMinutes,
         "Seconds:",
-        slotSeconds
+        slotSeconds,
       );
 
       // Create slot datetime in local timezone using today's date
@@ -411,7 +440,7 @@ const addBooking = async (req, res) => {
         now.getDate(),
         slotHours,
         slotMinutes,
-        slotSeconds
+        slotSeconds,
       );
 
       console.log("slotDateTime:", slotDateTime);
@@ -421,7 +450,7 @@ const addBooking = async (req, res) => {
       console.log("Is slotDateTime <= now?", slotDateTime <= now);
       console.log(
         "Time difference (minutes):",
-        (slotDateTime - now) / (1000 * 60)
+        (slotDateTime - now) / (1000 * 60),
       );
       console.log("=== DEBUG END ===");
 
@@ -457,8 +486,8 @@ const addBooking = async (req, res) => {
         and(
           eq(bookings.slotId, slotId),
           gte(bookings.bookingDate, startOfDay),
-          lte(bookings.bookingDate, endOfDay)
-        )
+          lte(bookings.bookingDate, endOfDay),
+        ),
       );
 
     if (existingBooking.length > 0) {
@@ -664,13 +693,22 @@ const rejectBooking = async (req, res) => {
       return res.status(404).json({ message: "Booking not found" });
     }
 
-    // 2. Check booking status - allow cancelling pending or confirmed bookings
-    if (!["pending", "confirmed"].includes(booking[0].status)) {
-      return res
-        .status(400)
-        .json({
-          message: `Cannot cancel ${booking[0].status} bookings. Only pending and confirmed bookings can be cancelled.`
+    // 2. Check booking status - providers can only reject PENDING bookings
+    // For confirmed bookings, providers must reschedule instead
+    if (booking[0].status !== "pending") {
+      if (booking[0].status === "confirmed") {
+        return res.status(400).json({
+          message:
+            "Cannot reject confirmed bookings. Please use the reschedule option instead.",
+          currentStatus: booking[0].status,
+          bookingId: bookingId,
         });
+      }
+      return res.status(400).json({
+        message: `This booking cannot be rejected. Current status: ${booking[0].status}. Only pending bookings can be rejected.`,
+        currentStatus: booking[0].status,
+        bookingId: bookingId,
+      });
     }
 
     // 3. Fetch business profile
@@ -704,7 +742,10 @@ const rejectBooking = async (req, res) => {
         const refund = await initiateRefund(
           payment.razorpayPaymentId,
           payment.amount, // Full refund
-          { reason: "Booking cancelled by provider", bookingId: bookingId.toString() }
+          {
+            reason: "Booking cancelled by provider",
+            bookingId: bookingId.toString(),
+          },
         );
 
         // Update payment record
@@ -726,11 +767,15 @@ const rejectBooking = async (req, res) => {
       }
     }
 
-    // 6. Update booking status
+    // 6. Update booking status - provider rejection always sets status to "rejected"
     const [updatedBooking] = await db
       .update(bookings)
       .set({
-        status: refundDetails ? "refunded" : "cancelled",
+        status: "rejected",
+        isRefunded: !!refundDetails,
+        cancelledAt: new Date(),
+        cancellationReason: "Rejected by provider",
+        cancelledBy: "provider",
       })
       .where(eq(bookings.id, bookingId))
       .returning();
@@ -751,19 +796,107 @@ const rejectBooking = async (req, res) => {
   }
 };
 
-// Reschedule booking - customer can reschedule pending or confirmed bookings
-const rescheduleBooking = async (req, res) => {
+// ============================================
+// Helper Functions
+// ============================================
+
+/**
+ * Calculate reschedule fee - Flat ₹100 per reschedule
+ * @param {number} rescheduleCount - Current number of reschedules
+ * @param {number} bookingAmount - Booking amount in paise (unused, kept for compatibility)
+ * @param {object} settings - Provider settings (unused, kept for compatibility)
+ * @returns {object} - { feeAmount, feePercentage, nextRescheduleNumber }
+ */
+function calculateRescheduleFee(rescheduleCount, bookingAmount, settings) {
+  // Flat ₹100 reschedule fee (10000 paise)
+  const RESCHEDULE_FEE = 10000; // ₹100 in paise
+  const MAX_RESCHEDULES = 2; // Maximum 2 reschedules per booking
+
+  const nextRescheduleNumber = rescheduleCount + 1;
+
+  // Check if max reschedules reached
+  if (rescheduleCount >= MAX_RESCHEDULES) {
+    throw new Error(
+      `Maximum reschedule limit (${MAX_RESCHEDULES}) reached for this booking`,
+    );
+  }
+
+  return {
+    feeAmount: RESCHEDULE_FEE,
+    feePercentage: null, // Flat fee, not percentage-based
+    nextRescheduleNumber,
+  };
+}
+
+/**
+ * Calculate cancellation refund based on booking status
+ * New simplified rules:
+ * - Pending/Reschedule_Pending: 100% refund
+ * - Confirmed: 85% refund to customer, 15% payout to provider
+ * @param {string} bookingStatus - Current booking status
+ * @param {number} servicePrice - Service price in paise
+ * @returns {object} - { customerRefundAmount, customerRefundPercentage, providerPayoutAmount, providerPayoutPercentage }
+ */
+function calculateCancellationRefund(bookingStatus, servicePrice) {
+  // Fixed refund percentages
+  const PENDING_REFUND = 100; // 100% refund for pending
+  const CONFIRMED_CUSTOMER_REFUND = 85; // 85% refund to customer for confirmed
+  const CONFIRMED_PROVIDER_PAYOUT = 15; // 15% payout to provider for confirmed
+
+  let customerRefundAmount = 0;
+  let customerRefundPercentage = 0;
+  let providerPayoutAmount = 0;
+  let providerPayoutPercentage = 0;
+
+  if (bookingStatus === "pending" || bookingStatus === "reschedule_pending") {
+    // Full refund for pending bookings
+    customerRefundPercentage = PENDING_REFUND;
+    customerRefundAmount = servicePrice; // 100%
+  } else if (bookingStatus === "confirmed") {
+    // 85% refund to customer, 15% to provider for confirmed bookings
+    customerRefundPercentage = CONFIRMED_CUSTOMER_REFUND;
+    customerRefundAmount = Math.round(
+      (servicePrice * CONFIRMED_CUSTOMER_REFUND) / 100,
+    );
+    providerPayoutPercentage = CONFIRMED_PROVIDER_PAYOUT;
+    providerPayoutAmount = Math.round(
+      (servicePrice * CONFIRMED_PROVIDER_PAYOUT) / 100,
+    );
+  }
+
+  return {
+    customerRefundAmount,
+    customerRefundPercentage,
+    providerPayoutAmount,
+    providerPayoutPercentage,
+  };
+}
+
+// ============================================
+// Provider Settings Management
+// ============================================
+
+// ============================================
+// Reschedule Functions with Fee Logic
+// ============================================
+
+/**
+ * Customer request reschedule - initiates reschedule with fee
+ * PUT /booking/:id/reschedule-request
+ */
+const requestReschedule = async (req, res) => {
   try {
     const bookingId = Number(req.params.id);
     const userId = req.token.id;
-    const { slotId, bookingDate } = req.body;
+    const { slotId, bookingDate, reason } = req.body;
 
-    // Validate input
     if (!bookingId) {
       return res.status(400).json({ message: "Booking ID is required" });
     }
     if (!slotId || !bookingDate) {
-      return res.status(400).json({ message: "slotId and bookingDate are required" });
+      return res
+        .status(400)
+        .json({ message: "slotId and bookingDate are required" });
     }
 
     // Validate booking date format
@@ -774,11 +907,15 @@ const rescheduleBooking = async (req, res) => {
 
     // Check if booking date is in the past
     const now = new Date();
-    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const todayStart = new Date(
+      now.getFullYear(),
+      now.getMonth(),
+      now.getDate(),
+    );
     const bookingDateStart = new Date(
       bookingDateObj.getFullYear(),
       bookingDateObj.getMonth(),
-      bookingDateObj.getDate()
+      bookingDateObj.getDate(),
     );
 
     if (bookingDateStart < todayStart) {
@@ -807,15 +944,685 @@ const rescheduleBooking = async (req, res) => {
     // Check if booking can be rescheduled (only pending or confirmed)
     if (!["pending", "confirmed"].includes(booking.status)) {
       return res.status(400).json({
-        message: `Cannot reschedule ${booking.status} bookings. Only pending and confirmed bookings can be rescheduled.`
+        message: `Cannot reschedule ${booking.status} bookings. Only pending and confirmed bookings can be rescheduled.`,
+      });
+    }
+
+    // Get provider settings
+    const [business] = await db
+      .select()
+      .from(businessProfiles)
+      .where(eq(businessProfiles.id, booking.businessProfileId))
+      .limit(1);
+
+    if (!business) {
+      return res.status(404).json({ message: "Business profile not found" });
+    }
+
+    // Fixed reschedule settings (not configurable by provider)
+    const MAX_RESCHEDULES = 2;
+    const RESCHEDULE_HOURS_BEFORE_SLOT = 1; // Cannot reschedule within 1 hour of slot
+
+    // Check if reschedule count limit reached
+    if (booking.rescheduleCount >= MAX_RESCHEDULES) {
+      return res.status(400).json({
+        message: `Maximum reschedule limit (${MAX_RESCHEDULES}) reached for this booking`,
+      });
+    }
+
+    // Check if current slot is within 1 hour from now (prevent last-minute reschedule)
+    const currentSlotTime = await db
+      .select({ startTime: slots.startTime })
+      .from(slots)
+      .where(eq(slots.id, booking.slotId))
+      .limit(1);
+
+    if (currentSlotTime.length > 0) {
+      const slotDateTime = new Date(booking.bookingDate);
+      const [hours, minutes] = currentSlotTime[0].startTime
+        .split(":")
+        .map(Number);
+      slotDateTime.setHours(hours, minutes, 0, 0);
+
+      const now = new Date();
+      const hoursUntilSlot = (slotDateTime - now) / (1000 * 60 * 60);
+
+      if (hoursUntilSlot < RESCHEDULE_HOURS_BEFORE_SLOT) {
+        return res.status(400).json({
+          message: `Cannot reschedule within ${RESCHEDULE_HOURS_BEFORE_SLOT} hour(s) of the booking time`,
+        });
+      }
+    }
+
+    // Validate the new slot exists
+    const [slot] = await db.select().from(slots).where(eq(slots.id, slotId));
+
+    if (!slot) {
+      return res.status(404).json({ message: "Slot not found" });
+    }
+
+    // Verify slot belongs to the same business
+    if (slot.businessProfileId !== booking.businessProfileId) {
+      return res.status(400).json({
+        message: "Selected slot does not belong to the service provider",
+      });
+    }
+
+    // Check if new slot is available for the selected date
+    const startOfDay = new Date(bookingDateObj);
+    startOfDay.setHours(0, 0, 0, 0);
+    const endOfDay = new Date(bookingDateObj);
+    endOfDay.setHours(23, 59, 59, 999);
+
+    const [conflictingBooking] = await db
+      .select()
+      .from(bookings)
+      .where(
+        and(
+          eq(bookings.slotId, slotId),
+          gte(bookings.bookingDate, startOfDay),
+          lte(bookings.bookingDate, endOfDay),
+          or(eq(bookings.status, "pending"), eq(bookings.status, "confirmed")),
+        ),
+      )
+      .limit(1);
+
+    if (conflictingBooking) {
+      return res
+        .status(400)
+        .json({ message: "Slot is already booked for the selected date" });
+    }
+
+    // Calculate reschedule fee (flat ₹100)
+    const { feeAmount, feePercentage, nextRescheduleNumber } =
+      calculateRescheduleFee(
+        booking.rescheduleCount,
+        booking.totalPrice,
+        null, // Settings no longer used
+      );
+
+    // Store current slot/date as previous before updating
+    const [updatedBooking] = await db
+      .update(bookings)
+      .set({
+        slotId: slotId,
+        bookingDate: bookingDateObj,
+        status: "reschedule_pending",
+        // Store original values in case of decline
+        previousSlotId: booking.slotId,
+        previousBookingDate: booking.bookingDate,
+        rescheduleReason: reason,
+        rescheduledBy: "customer",
+        rescheduledAt: new Date(),
+        // Increment reschedule count
+        rescheduleCount: booking.rescheduleCount + 1,
+        lastRescheduleFee: feeAmount,
+      })
+      .where(eq(bookings.id, bookingId))
+      .returning();
+
+    return res.status(200).json({
+      message:
+        "Reschedule request submitted. Provider will review your request.",
+      booking: updatedBooking,
+      rescheduleFee: {
+        amount: paiseToRupees(feeAmount), // Flat ₹100
+        rescheduleNumber: nextRescheduleNumber,
+        maxReschedules: MAX_RESCHEDULES,
+      },
+      requiresPayment: feeAmount > 0,
+    });
+  } catch (error) {
+    console.error("Error requesting reschedule:", error);
+    return res
+      .status(500)
+      .json({ message: "Server error", error: error.message });
+  }
+};
+
+/**
+ * Customer cancels their reschedule request
+ * PUT /booking/:id/cancel-reschedule
+ * Reverts to original slot and refunds reschedule fee
+ */
+const cancelRescheduleRequest = async (req, res) => {
+  try {
+    const bookingId = Number(req.params.id);
+    const userId = req.token.id;
+
+    if (!bookingId) {
+      return res.status(400).json({ message: "Booking ID is required" });
+    }
+
+    // Fetch the booking
+    const [booking] = await db
+      .select()
+      .from(bookings)
+      .where(eq(bookings.id, bookingId));
+
+    if (!booking) {
+      return res.status(404).json({ message: "Booking not found" });
+    }
+
+    // Verify user owns this booking
+    if (booking.customerId !== userId) {
+      return res
+        .status(403)
+        .json({
+          message: "You are not authorized to cancel this reschedule request",
+        });
+    }
+
+    // Check if booking is in reschedule_pending status
+    if (booking.status !== "reschedule_pending") {
+      return res.status(400).json({
+        message: `No pending reschedule request to cancel. Current status: ${booking.status}`,
+      });
+    }
+
+    // Check if there are previous slot values to restore
+    if (!booking.previousSlotId || !booking.previousBookingDate) {
+      return res.status(400).json({
+        message:
+          "Cannot restore previous slot details. Please contact support.",
+      });
+    }
+
+    // Start transaction to revert booking and process refund
+    await db.transaction(async (tx) => {
+      // Restore original slot and date
+      await tx
+        .update(bookings)
+        .set({
+          slotId: booking.previousSlotId,
+          bookingDate: booking.previousBookingDate,
+          status: booking.previousStatus || "confirmed", // Restore to previous status
+          rescheduleOutcome: "cancelled", // Mark reschedule as cancelled by customer
+          // Keep reschedule tracking fields for invoice/history - don't clear them
+          // previousSlotId/previousBookingDate now represent the original slot that was restored
+          // Note: Don't decrement rescheduleCount - customer attempted reschedule (counts toward limit)
+        })
+        .where(eq(bookings.id, bookingId));
+
+      // Find and refund the reschedule fee payment
+      const [reschedulePayment] = await tx
+        .select()
+        .from(payments)
+        .where(
+          and(eq(payments.bookingId, bookingId), isNull(payments.refundId)),
+        )
+        .orderBy(desc(payments.createdAt))
+        .limit(1);
+
+      if (reschedulePayment && reschedulePayment.amount > 0) {
+        try {
+          const refundResult = await initiateRefund(
+            reschedulePayment.razorpayPaymentId,
+            null, // Full refund
+            "Reschedule fee refunded - Customer cancelled reschedule request",
+          );
+
+          await tx
+            .update(payments)
+            .set({
+              refundId: refundResult.id,
+              refundAmount: reschedulePayment.amount,
+              refundReason:
+                "Reschedule fee refunded - Customer cancelled reschedule request",
+              refundedAt: new Date(),
+              status: "refunded",
+            })
+            .where(eq(payments.id, reschedulePayment.id));
+
+          console.log(
+            `✅ Refund initiated for reschedule fee: ${refundResult.id}`,
+          );
+        } catch (refundError) {
+          console.error("Failed to initiate refund:", refundError);
+          // Don't throw - allow booking revert even if refund fails
+        }
+      }
+    });
+
+    return res.status(200).json({
+      message: "Reschedule request cancelled. Original booking time restored.",
+    });
+  } catch (error) {
+    console.error("Error cancelling reschedule request:", error);
+    return res
+      .status(500)
+      .json({ message: "Server error", error: error.message });
+  }
+};
+
+/**
+ * Customer cancels booking with refund calculation
+ * DELETE /booking/:id/cancel
+ * Optional query param: ?reason=...
+ */
+const cancelBooking = async (req, res) => {
+  try {
+    const bookingId = Number(req.params.id);
+    const userId = req.token.id;
+    // Get reason from query param or body (for flexibility)
+    const reason =
+      req.query.reason || req.body?.reason || "Cancelled by customer";
+
+    if (!bookingId) {
+      return res.status(400).json({ message: "Booking ID is required" });
+    }
+
+    // Fetch the booking
+    const [booking] = await db
+      .select()
+      .from(bookings)
+      .where(eq(bookings.id, bookingId));
+
+    if (!booking) {
+      return res.status(404).json({ message: "Booking not found" });
+    }
+
+    // Verify user owns this booking
+    if (booking.customerId !== userId) {
+      return res
+        .status(403)
+        .json({ message: "You are not authorized to cancel this booking" });
+    }
+
+    // Check if booking can be cancelled
+    if (
+      !["pending", "confirmed", "reschedule_pending"].includes(booking.status)
+    ) {
+      return res.status(400).json({
+        message: `Cannot cancel ${booking.status} bookings.`,
+      });
+    }
+
+    // Get provider business profile (for provider payout info)
+    const [business] = await db
+      .select()
+      .from(businessProfiles)
+      .where(eq(businessProfiles.id, booking.businessProfileId))
+      .limit(1);
+
+    if (!business) {
+      return res.status(404).json({ message: "Business profile not found" });
+    }
+
+    // Calculate refund and provider payout based on new simplified rules
+    const {
+      customerRefundAmount,
+      customerRefundPercentage,
+      providerPayoutAmount,
+      providerPayoutPercentage,
+    } = calculateCancellationRefund(booking.status, booking.totalPrice);
+
+    // Check if payment exists and process refund
+    let refundDetails = null;
+    let providerPayoutDetails = null;
+    const [payment] = await db
+      .select()
+      .from(payments)
+      .where(
+        and(eq(payments.bookingId, bookingId), eq(payments.status, "paid")),
+      )
+      .limit(1);
+
+    if (payment && payment.razorpayPaymentId && customerRefundAmount > 0) {
+      try {
+        // Refund customer portion
+        const refund = await initiateRefund(
+          payment.razorpayPaymentId,
+          customerRefundAmount,
+          `Booking cancelled by customer - ${customerRefundPercentage}% refund`,
+        );
+
+        await db
+          .update(payments)
+          .set({
+            status: "refunded",
+            refundId: refund.id,
+            refundAmount: refund.amount,
+            refundReason: `Booking cancelled by customer - ${customerRefundPercentage}% refund`,
+            refundedAt: new Date(),
+          })
+          .where(eq(payments.id, payment.id));
+
+        refundDetails = {
+          refundId: refund.id,
+          refundAmount: paiseToRupees(refund.amount),
+          refundPercentage: customerRefundPercentage,
+        };
+      } catch (refundError) {
+        console.error("Refund failed:", refundError);
+        return res.status(500).json({
+          message:
+            "Failed to process refund. Please try again or contact support.",
+          error: refundError.message,
+        });
+      }
+    }
+
+    // For confirmed bookings, track provider payout (15%)
+    // Note: Actual payout to provider would be processed via Razorpay Payouts API
+    // or settled separately. For now, we track it as pending.
+    if (booking.status === "confirmed" && providerPayoutAmount > 0) {
+      providerPayoutDetails = {
+        amount: paiseToRupees(providerPayoutAmount),
+        percentage: providerPayoutPercentage,
+        status: "pending", // To be processed via payout system
+      };
+    }
+
+    // Update booking status - customer cancellation sets status to "cancelled"
+    const [updatedBooking] = await db
+      .update(bookings)
+      .set({
+        status: "cancelled",
+        isRefunded: customerRefundAmount > 0,
+        refundAmount: customerRefundAmount, // Track customer refund amount
+        // Provider payout tracking
+        providerPayoutAmount: providerPayoutAmount || null,
+        providerPayoutStatus: providerPayoutAmount > 0 ? "pending" : null,
+        // Cancellation details
+        cancelledAt: new Date(),
+        cancellationReason: reason || "Cancelled by customer",
+        cancelledBy: "customer",
+      })
+      .where(eq(bookings.id, bookingId))
+      .returning();
+
+    return res.status(200).json({
+      message: refundDetails
+        ? "Booking cancelled and refund initiated successfully"
+        : "Booking cancelled successfully",
+      booking: updatedBooking,
+      refund: refundDetails,
+      providerPayout: providerPayoutDetails,
+    });
+  } catch (error) {
+    console.error("Error cancelling booking:", error);
+    return res
+      .status(500)
+      .json({ message: "Server error", error: error.message });
+  }
+};
+
+// ============================================
+// Updated Approve/Decline Reschedule
+// ============================================
+
+/**
+ * Approve customer's reschedule request
+ * PUT /booking/:id/reschedule-approve
+ * Provider confirms the new time requested by customer
+ */
+const approveReschedule = async (req, res) => {
+  try {
+    const bookingId = Number(req.params.id);
+    const userId = req.token.id;
+
+    if (!bookingId) {
+      return res.status(400).json({ message: "Booking ID is required" });
+    }
+
+    // Fetch the booking
+    const [booking] = await db
+      .select()
+      .from(bookings)
+      .where(eq(bookings.id, bookingId));
+
+    if (!booking) {
+      return res.status(404).json({ message: "Booking not found" });
+    }
+
+    // Verify user is the provider for this booking
+    const [business] = await db
+      .select()
+      .from(businessProfiles)
+      .where(eq(businessProfiles.id, booking.businessProfileId))
+      .limit(1);
+
+    if (!business || business.providerId !== userId) {
+      return res
+        .status(403)
+        .json({ message: "Only the provider can approve reschedule requests" });
+    }
+
+    // Check if booking is in reschedule_pending status
+    if (booking.status !== "reschedule_pending") {
+      return res.status(400).json({
+        message: `Cannot approve reschedule. Booking status is ${booking.status}, expected reschedule_pending.`,
+      });
+    }
+
+    // Update booking status to confirmed with accepted reschedule
+    const [updatedBooking] = await db
+      .update(bookings)
+      .set({
+        status: "confirmed",
+        rescheduleOutcome: "accepted", // Mark reschedule as accepted
+        // Keep previousSlotId and previousBookingDate for invoice/history
+        // Don't clear them - we need them to show "Previous → New" slot
+      })
+      .where(eq(bookings.id, bookingId))
+      .returning();
+
+    return res.status(200).json({
+      message:
+        "Reschedule approved successfully. Booking is now confirmed with the new time.",
+      booking: updatedBooking,
+    });
+  } catch (error) {
+    console.error("Error approving reschedule:", error);
+    return res.status(500).json({
+      message: "Server error",
+      error: error.message,
+    });
+  }
+};
+
+/**
+ * Decline customer's reschedule request
+ * PUT /booking/:id/reschedule-decline
+ * Provider rejects the reschedule - restores original slot and initiates refund
+ */
+const declineReschedule = async (req, res) => {
+  try {
+    const bookingId = Number(req.params.id);
+    const userId = req.token.id;
+    const { reason } = req.body; // Optional reason for declining
+
+    if (!bookingId) {
+      return res.status(400).json({ message: "Booking ID is required" });
+    }
+
+    // Fetch the booking
+    const [booking] = await db
+      .select()
+      .from(bookings)
+      .where(eq(bookings.id, bookingId));
+
+    if (!booking) {
+      return res.status(404).json({ message: "Booking not found" });
+    }
+
+    // Verify user is the provider for this booking
+    const [business] = await db
+      .select()
+      .from(businessProfiles)
+      .where(eq(businessProfiles.id, booking.businessProfileId))
+      .limit(1);
+
+    if (!business || business.providerId !== userId) {
+      return res
+        .status(403)
+        .json({ message: "Only the provider can decline reschedule requests" });
+    }
+
+    // Check if booking is in reschedule_pending status
+    if (booking.status !== "reschedule_pending") {
+      return res.status(400).json({
+        message: `Cannot decline reschedule. Booking status is ${booking.status}, expected reschedule_pending.`,
+      });
+    }
+
+    // Check if there are previous slot values to restore
+    if (!booking.previousSlotId || !booking.previousBookingDate) {
+      return res.status(400).json({
+        message:
+          "Cannot restore previous slot details. Please contact support.",
+      });
+    }
+
+    // Start transaction to revert booking and process refund
+    await db.transaction(async (tx) => {
+      // Store the requested slot before reverting (for invoice/history)
+      const requestedSlotId = booking.slotId;
+      const requestedDate = booking.bookingDate;
+
+      // Restore original slot and date
+      await tx
+        .update(bookings)
+        .set({
+          slotId: booking.previousSlotId,
+          bookingDate: booking.previousBookingDate,
+          status: "confirmed", // Back to confirmed with original time
+          rescheduleOutcome: "rejected", // Mark reschedule as rejected
+          // Keep reschedule tracking fields for invoice/history - don't clear them
+          // previousSlotId/previousBookingDate now represent the original slot that was restored
+          // The current slotId/bookingDate are the original confirmed slot
+          // We need to store what was requested - use rescheduleReason field or add comment
+          // For now, keep all fields for invoice display
+          // Note: Don't decrement rescheduleCount - customer attempted reschedule
+        })
+        .where(eq(bookings.id, bookingId));
+
+      // Find the reschedule fee payment
+      const [reschedulePayment] = await tx
+        .select()
+        .from(payments)
+        .where(
+          and(eq(payments.bookingId, bookingId), isNull(payments.refundId)),
+        )
+        .orderBy(desc(payments.createdAt))
+        .limit(1);
+
+      if (reschedulePayment) {
+        try {
+          const refundResult = await initiateRefund(
+            reschedulePayment.razorpayPaymentId,
+            null, // Full refund
+            reason || "Reschedule request declined by provider",
+          );
+
+          await tx
+            .update(payments)
+            .set({
+              refundId: refundResult.id,
+              refundAmount: reschedulePayment.amount,
+              refundReason: reason || "Reschedule request declined by provider",
+              refundedAt: new Date(),
+              status: "refunded",
+            })
+            .where(eq(payments.id, reschedulePayment.id));
+
+          console.log(
+            `✅ Refund initiated for reschedule fee: ${refundResult.id}`,
+          );
+        } catch (refundError) {
+          console.error("Failed to initiate refund:", refundError);
+          throw new Error(
+            "Reschedule declined but failed to process refund. Please contact support.",
+          );
+        }
+      }
+    });
+
+    return res.status(200).json({
+      message:
+        "Reschedule declined. Original booking time restored and refund initiated.",
+    });
+  } catch (error) {
+    console.error("Error declining reschedule:", error);
+    return res.status(500).json({
+      message: error.message || "Server error",
+    });
+  }
+};
+
+// ============================================
+// Legacy Functions (kept for backward compatibility)
+// ============================================
+
+// Reschedule booking - customer can reschedule pending or confirmed bookings
+const rescheduleBooking = async (req, res) => {
+  try {
+    const bookingId = Number(req.params.id);
+    const userId = req.token.id;
+    const { slotId, bookingDate } = req.body;
+
+    // Validate input
+    if (!bookingId) {
+      return res.status(400).json({ message: "Booking ID is required" });
+    }
+    if (!slotId || !bookingDate) {
+      return res
+        .status(400)
+        .json({ message: "slotId and bookingDate are required" });
+    }
+
+    // Validate booking date format
+    const bookingDateObj = new Date(bookingDate);
+    if (isNaN(bookingDateObj.getTime())) {
+      return res.status(400).json({ message: "Invalid bookingDate format" });
+    }
+
+    // Check if booking date is in the past
+    const now = new Date();
+    const todayStart = new Date(
+      now.getFullYear(),
+      now.getMonth(),
+      now.getDate(),
+    );
+    const bookingDateStart = new Date(
+      bookingDateObj.getFullYear(),
+      bookingDateObj.getMonth(),
+      bookingDateObj.getDate(),
+    );
+
+    if (bookingDateStart < todayStart) {
+      return res
+        .status(400)
+        .json({ message: "Cannot reschedule to past dates" });
+    }
+
+    // Fetch the booking
+    const [booking] = await db
+      .select()
+      .from(bookings)
+      .where(eq(bookings.id, bookingId));
+
+    if (!booking) {
+      return res.status(404).json({ message: "Booking not found" });
+    }
+
+    // Verify user owns this booking
+    if (booking.customerId !== userId) {
+      return res
+        .status(403)
+        .json({ message: "You are not authorized to reschedule this booking" });
+    }
+
+    // Check if booking can be rescheduled (only pending or confirmed)
+    if (!["pending", "confirmed"].includes(booking.status)) {
+      return res.status(400).json({
+        message: `Cannot reschedule ${booking.status} bookings. Only pending and confirmed bookings can be rescheduled.`,
       });
     }
 
     // Validate the new slot exists
-    const [slot] = await db
-      .select()
-      .from(slots)
-      .where(eq(slots.id, slotId));
+    const [slot] = await db.select().from(slots).where(eq(slots.id, slotId));
 
     if (!slot) {
       return res.status(404).json({ message: "Slot not found" });
@@ -824,7 +1631,7 @@ const rescheduleBooking = async (req, res) => {
     // Verify slot belongs to the same business as original booking
     if (slot.businessProfileId !== booking.businessProfileId) {
       return res.status(400).json({
-        message: "Selected slot does not belong to the service provider"
+        message: "Selected slot does not belong to the service provider",
       });
     }
 
@@ -843,8 +1650,8 @@ const rescheduleBooking = async (req, res) => {
           gte(bookings.bookingDate, startOfDay),
           lte(bookings.bookingDate, endOfDay),
           // Exclude the current booking itself
-          eq(bookings.id, bookingId)
-        )
+          eq(bookings.id, bookingId),
+        ),
       );
 
     // Check if there's any other booking for this slot on this date
@@ -855,12 +1662,12 @@ const rescheduleBooking = async (req, res) => {
         and(
           eq(bookings.slotId, slotId),
           gte(bookings.bookingDate, startOfDay),
-          lte(bookings.bookingDate, endOfDay)
-        )
+          lte(bookings.bookingDate, endOfDay),
+        ),
       );
 
     // Filter out the current booking from the results
-    const conflictingBookings = otherBookings.filter(b => b.id !== bookingId);
+    const conflictingBookings = otherBookings.filter((b) => b.id !== bookingId);
 
     if (conflictingBookings.length > 0) {
       return res
@@ -880,14 +1687,15 @@ const rescheduleBooking = async (req, res) => {
         now.getDate(),
         slotHours,
         slotMinutes,
-        slotSeconds
+        slotSeconds,
       );
 
       // Allow rescheduling if slot is at least 30 minutes in the future
       const bufferMinutes = 30;
       if (slotDateTime <= new Date(now.getTime() + bufferMinutes * 60 * 1000)) {
         return res.status(400).json({
-          message: "Cannot reschedule to a slot that has already passed or is too soon"
+          message:
+            "Cannot reschedule to a slot that has already passed or is too soon",
         });
       }
     }
@@ -905,13 +1713,13 @@ const rescheduleBooking = async (req, res) => {
 
     return res.status(200).json({
       message: "Booking rescheduled successfully",
-      booking: updatedBooking
+      booking: updatedBooking,
     });
   } catch (error) {
     console.error("Reschedule booking error:", error);
     return res.status(500).json({
       message: "Server error",
-      error: error.message
+      error: error.message,
     });
   }
 };
@@ -1008,197 +1816,6 @@ const completeBooking = async (req, res) => {
   }
 };
 
-// ============================================
-// Provider Reschedule Management
-// ============================================
-
-/**
- * Approve customer's reschedule request
- * PUT /booking/:id/reschedule-approve
- * Provider confirms the new time requested by customer
- */
-const approveReschedule = async (req, res) => {
-  try {
-    const bookingId = Number(req.params.id);
-    const userId = req.token.id;
-
-    if (!bookingId) {
-      return res.status(400).json({ message: "Booking ID is required" });
-    }
-
-    // Fetch the booking
-    const [booking] = await db
-      .select()
-      .from(bookings)
-      .where(eq(bookings.id, bookingId));
-
-    if (!booking) {
-      return res.status(404).json({ message: "Booking not found" });
-    }
-
-    // Verify user is the provider for this booking
-    const [business] = await db
-      .select()
-      .from(businessProfiles)
-      .where(eq(businessProfiles.id, booking.businessProfileId))
-      .limit(1);
-
-    if (!business || business.providerId !== userId) {
-      return res.status(403).json({ message: "Only the provider can approve reschedule requests" });
-    }
-
-    // Check if booking is in reschedule_pending status
-    if (booking.status !== "reschedule_pending") {
-      return res.status(400).json({
-        message: `Cannot approve reschedule. Booking status is ${booking.status}, expected reschedule_pending.`
-      });
-    }
-
-    // Update booking status to confirmed
-    const [updatedBooking] = await db
-      .update(bookings)
-      .set({
-        status: "confirmed",
-        // Clear the previous slot fields since reschedule is approved
-        previousSlotId: null,
-        previousBookingDate: null,
-      })
-      .where(eq(bookings.id, bookingId))
-      .returning();
-
-    return res.status(200).json({
-      message: "Reschedule approved successfully. Booking is now confirmed with the new time.",
-      booking: updatedBooking,
-    });
-  } catch (error) {
-    console.error("Error approving reschedule:", error);
-    return res.status(500).json({
-      message: "Server error",
-      error: error.message,
-    });
-  }
-};
-
-/**
- * Decline customer's reschedule request
- * PUT /booking/:id/reschedule-decline
- * Provider rejects the reschedule - restores original slot and initiates refund
- */
-const declineReschedule = async (req, res) => {
-  try {
-    const bookingId = Number(req.params.id);
-    const userId = req.token.id;
-    const { reason } = req.body; // Optional reason for declining
-
-    if (!bookingId) {
-      return res.status(400).json({ message: "Booking ID is required" });
-    }
-
-    // Fetch the booking
-    const [booking] = await db
-      .select()
-      .from(bookings)
-      .where(eq(bookings.id, bookingId));
-
-    if (!booking) {
-      return res.status(404).json({ message: "Booking not found" });
-    }
-
-    // Verify user is the provider for this booking
-    const [business] = await db
-      .select()
-      .from(businessProfiles)
-      .where(eq(businessProfiles.id, booking.businessProfileId))
-      .limit(1);
-
-    if (!business || business.providerId !== userId) {
-      return res.status(403).json({ message: "Only the provider can decline reschedule requests" });
-    }
-
-    // Check if booking is in reschedule_pending status
-    if (booking.status !== "reschedule_pending") {
-      return res.status(400).json({
-        message: `Cannot decline reschedule. Booking status is ${booking.status}, expected reschedule_pending.`
-      });
-    }
-
-    // Check if there are previous slot values to restore
-    if (!booking.previousSlotId || !booking.previousBookingDate) {
-      return res.status(400).json({
-        message: "Cannot restore previous slot details. Please contact support."
-      });
-    }
-
-    // Start transaction to revert booking and process refund
-    await db.transaction(async (tx) => {
-      // Restore original slot and date
-      const [updatedBooking] = await tx
-        .update(bookings)
-        .set({
-          slotId: booking.previousSlotId,
-          bookingDate: booking.previousBookingDate,
-          status: "confirmed", // Back to confirmed with original time
-          // Clear reschedule tracking fields
-          previousSlotId: null,
-          previousBookingDate: null,
-          rescheduleReason: null,
-        })
-        .where(eq(bookings.id, bookingId))
-        .returning();
-
-      // Find the reschedule fee payment (look for recent payment for this booking)
-      const [reschedulePayment] = await tx
-        .select()
-        .from(payments)
-        .where(
-          and(
-            eq(payments.bookingId, bookingId),
-            isNull(payments.refundId) // Not already refunded
-          )
-        )
-        .orderBy(desc(payments.createdAt))
-        .limit(1);
-
-      if (reschedulePayment) {
-        // Initiate refund for the reschedule fee
-        try {
-          const refundResult = await initiateRefund(
-            reschedulePayment.razorpayPaymentId,
-            null, // Full refund (amount in paise)
-            { reason: reason || "Reschedule request declined by provider" }
-          );
-
-          // Update payment record with refund details
-          await tx
-            .update(payments)
-            .set({
-              refundId: refundResult.id, // Razorpay returns 'id', not 'refundId'
-              refundAmount: reschedulePayment.amount,
-              refundReason: reason || "Reschedule request declined by provider",
-              refundedAt: new Date(),
-              status: "refunded",
-            })
-            .where(eq(payments.id, reschedulePayment.id));
-
-          console.log(`✅ Refund initiated for reschedule fee: ${refundResult.id}`);
-        } catch (refundError) {
-          console.error("Failed to initiate refund:", refundError);
-          throw new Error("Reschedule declined but failed to process refund. Please contact support.");
-        }
-      }
-    });
-
-    return res.status(200).json({
-      message: "Reschedule declined. Original booking time restored and refund initiated.",
-    });
-  } catch (error) {
-    console.error("Error declining reschedule:", error);
-    return res.status(500).json({
-      message: error.message || "Server error",
-    });
-  }
-};
-
 /**
  * Provider-initiated reschedule
  * PUT /booking/:id/provider-reschedule
@@ -1214,10 +1831,14 @@ const providerReschedule = async (req, res) => {
       return res.status(400).json({ message: "Booking ID is required" });
     }
     if (!slotId || !bookingDate) {
-      return res.status(400).json({ message: "slotId and bookingDate are required" });
+      return res
+        .status(400)
+        .json({ message: "slotId and bookingDate are required" });
     }
     if (!reason) {
-      return res.status(400).json({ message: "Reason is required for provider reschedule" });
+      return res
+        .status(400)
+        .json({ message: "Reason is required for provider reschedule" });
     }
 
     // Validate booking date format
@@ -1244,21 +1865,20 @@ const providerReschedule = async (req, res) => {
       .limit(1);
 
     if (!business || business.providerId !== userId) {
-      return res.status(403).json({ message: "Only the provider can reschedule bookings" });
+      return res
+        .status(403)
+        .json({ message: "Only the provider can reschedule bookings" });
     }
 
     // Check if booking can be rescheduled
     if (!["pending", "confirmed"].includes(booking.status)) {
       return res.status(400).json({
-        message: `Cannot reschedule ${booking.status} bookings.`
+        message: `Cannot reschedule ${booking.status} bookings.`,
       });
     }
 
     // Validate the new slot exists
-    const [slot] = await db
-      .select()
-      .from(slots)
-      .where(eq(slots.id, slotId));
+    const [slot] = await db.select().from(slots).where(eq(slots.id, slotId));
 
     if (!slot) {
       return res.status(404).json({ message: "Slot not found" });
@@ -1267,7 +1887,7 @@ const providerReschedule = async (req, res) => {
     // Verify slot belongs to the same business
     if (slot.businessProfileId !== booking.businessProfileId) {
       return res.status(400).json({
-        message: "Selected slot does not belong to your business"
+        message: "Selected slot does not belong to your business",
       });
     }
 
@@ -1285,17 +1905,14 @@ const providerReschedule = async (req, res) => {
           eq(bookings.slotId, slotId),
           gte(bookings.bookingDate, startOfDay),
           lte(bookings.bookingDate, endOfDay),
-          or(
-            eq(bookings.status, "pending"),
-            eq(bookings.status, "confirmed")
-          )
-        )
+          or(eq(bookings.status, "pending"), eq(bookings.status, "confirmed")),
+        ),
       )
       .limit(1);
 
     if (conflictingBooking) {
       return res.status(409).json({
-        message: "This slot is already booked. Please select a different time."
+        message: "This slot is already booked. Please select a different time.",
       });
     }
 
@@ -1335,6 +1952,11 @@ module.exports = {
   rejectBooking,
   completeBooking,
   rescheduleBooking,
+  // New reschedule functions with fee logic
+  requestReschedule,
+  cancelRescheduleRequest,
+  cancelBooking,
+  // Existing reschedule management
   approveReschedule,
   declineReschedule,
   providerReschedule,

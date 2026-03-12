@@ -169,14 +169,13 @@ const createPaymentOrder = async (req, res) => {
         });
       }
 
-      // Calculate reschedule fee (10% of service price)
-      const servicePrice = service.price || 0;
-      rescheduleFeeInPaise = rupeesToPaise(Math.ceil(servicePrice * 0.1)); // 10% fee, rounded up
+      // Flat reschedule fee (₹100)
+      const RESCHEDULE_FEE = 100; // in rupees
+      rescheduleFeeInPaise = rupeesToPaise(RESCHEDULE_FEE); // Convert to paise
 
       console.log(`💰 Reschedule fee calculation:`, {
-        servicePrice,
-        feePercentage: 10,
-        rescheduleFee: servicePrice * 0.1,
+        feeType: "flat",
+        rescheduleFee: `${RESCHEDULE_FEE}₹`,
         rescheduleFeeInPaise
       });
 
@@ -577,17 +576,30 @@ const verifyPayment = async (req, res) => {
           return res.status(400).json({ message: "Payment does not match the order" });
         }
 
-        // Verify payment is captured/completed
-        if (razorpayPayment.status !== "captured") {
+        // Verify payment is captured/authorized (with auto-capture, status should be "captured")
+        // But sometimes it's "authorized" temporarily, accept both
+        if (!["captured", "authorized"].includes(razorpayPayment.status)) {
           await db
             .update(paymentIntents)
             .set({
               status: "failed",
-              failureReason: `Payment not captured. Status: ${razorpayPayment.status}`,
+              failureReason: `Payment not completed. Status: ${razorpayPayment.status}`,
             })
             .where(eq(paymentIntents.id, paymentIntentId));
 
           return res.status(400).json({ message: `Payment not completed. Status: ${razorpayPayment.status}` });
+        }
+
+        // If payment is authorized but not captured, try to capture it
+        if (razorpayPayment.status === "authorized") {
+          try {
+            const { capturePayment } = require("../utils/razorpay");
+            await capturePayment(razorpayPaymentId, razorpayPayment.amount);
+            console.log("✅ Payment captured successfully");
+          } catch (captureError) {
+            console.error("Error capturing payment:", captureError);
+            // Continue anyway - payment is authorized, will settle automatically
+          }
         }
 
         console.log("✅ Payment verified via Razorpay API");
@@ -722,8 +734,11 @@ const verifyPayment = async (req, res) => {
         .where(eq(slots.id, paymentIntent.slotId));
 
       if (!slot) {
-        throw new Error("Slot not found");
+        console.error(`❌ Slot ${paymentIntent.slotId} not found in database`);
+        throw new Error(`Slot ${paymentIntent.slotId} not found. Please try again.`);
       }
+
+      console.log(`✅ Slot found: businessProfileId=${slot.businessProfileId}`);
 
       if (isReschedule) {
         // ===========================
@@ -747,6 +762,13 @@ const verifyPayment = async (req, res) => {
           throw new Error("Booking to reschedule not found or does not belong to you");
         }
 
+        // Fetch the current slot's time to store before updating
+        const [currentSlot] = await tx
+          .select()
+          .from(slots)
+          .where(eq(slots.id, bookingToReschedule.slotId))
+          .limit(1);
+
         // Update the booking with new slot and date
         // Store previous values for potential revert if provider declines
         const updateData = {
@@ -754,8 +776,12 @@ const verifyPayment = async (req, res) => {
           bookingDate: paymentIntent.bookingDate,
           status: "reschedule_pending", // Customer rescheduled, waiting provider approval
           paymentStatus: "paid", // Reschedule fee paid
+          rescheduleCount: bookingToReschedule.rescheduleCount + 1, // INCREMENT reschedule count
+          lastRescheduleFee: paymentIntent.amount, // Store the fee charged (₹100)
+          rescheduleOutcome: "pending", // Track that reschedule is pending
           // Store original values for revert if provider declines
           previousSlotId: bookingToReschedule.slotId,
+          previousSlotTime: currentSlot?.startTime || null, // Store the current slot's time (e.g., "09:00:00")
           previousBookingDate: bookingToReschedule.bookingDate,
           rescheduledBy: "customer",
           rescheduledAt: new Date(),
@@ -774,61 +800,93 @@ const verifyPayment = async (req, res) => {
 
         bookingId = updatedBooking.id;
 
-        console.log(`✅ Booking ${rescheduleBookingId} rescheduled successfully, status: reschedule_pending`);
+        console.log(`✅ Booking ${rescheduleBookingId} rescheduled successfully, status: reschedule_pending, rescheduleCount: ${updatedBooking.rescheduleCount}`);
 
         // Create payment record for the reschedule fee
-        await tx
-          .insert(payments)
-          .values({
-            bookingId: rescheduleBookingId,
-            userId: userId,
-            razorpayOrderId: razorpayOrderId,
-            razorpayPaymentId: razorpayPaymentId,
-            razorpaySignature: signature,
-            amount: paymentIntent.amount, // 10% reschedule fee
-            currency: "INR",
-            status: "paid",
-            paymentMethod: "razorpay",
-            completedAt: new Date(),
-          });
+        const paymentValues = {
+          bookingId: rescheduleBookingId,
+          userId: userId,
+          razorpayOrderId: razorpayOrderId,
+          razorpayPaymentId: razorpayPaymentId,
+          amount: paymentIntent.amount, // Flat ₹100 reschedule fee
+          currency: "INR",
+          status: "paid",
+          paymentMethod: "razorpay",
+          completedAt: new Date(),
+        };
+
+        // Only include signature if it exists (not empty string)
+        if (signature && signature.trim() !== "") {
+          paymentValues.razorpaySignature = signature;
+        }
+
+        console.log("💰 Inserting payment record:", paymentValues);
+
+        await tx.insert(payments).values(paymentValues);
+        console.log("✅ Payment record inserted successfully");
       } else {
         // ===========================
         // NEW BOOKING: Create new booking
         // ===========================
+        console.log("🆕 Creating new booking with data:", {
+          customerId: userId,
+          businessProfileId: slot.businessProfileId,
+          serviceId: paymentIntent.serviceId,
+          slotId: paymentIntent.slotId,
+          addressId: paymentIntent.addressId,
+          bookingDate: paymentIntent.bookingDate,
+          amount: paiseToRupees(paymentIntent.amount),
+        });
+
         // 1. Create booking record with status PENDING (NOT confirmed)
-        const [newBooking] = await tx
-          .insert(bookings)
-          .values({
-            customerId: userId,
-            businessProfileId: slot.businessProfileId,
-            serviceId: paymentIntent.serviceId,
-            slotId: paymentIntent.slotId,
-            addressId: paymentIntent.addressId,
-            bookingDate: paymentIntent.bookingDate,
-            totalPrice: paiseToRupees(paymentIntent.amount),
-            status: "pending", // PENDING - provider will confirm
-            paymentStatus: "paid",
-          })
-          .returning();
+        let newBooking;
+        try {
+          [newBooking] = await tx
+            .insert(bookings)
+            .values({
+              customerId: userId,
+              businessProfileId: slot.businessProfileId,
+              serviceId: paymentIntent.serviceId,
+              slotId: paymentIntent.slotId,
+              addressId: paymentIntent.addressId,
+              bookingDate: paymentIntent.bookingDate,
+              totalPrice: paiseToRupees(paymentIntent.amount),
+              status: "pending", // PENDING - provider will confirm
+              paymentStatus: "paid",
+            })
+            .returning();
+          console.log("✅ New booking created with ID:", newBooking?.id);
+        } catch (insertError) {
+          console.error("❌ Error inserting booking:", insertError);
+          console.error("Insert error details:", insertError.message);
+          throw new Error(`Failed to create booking: ${insertError.message}`);
+        }
 
         // Store the booking ID
         bookingId = newBooking.id;
 
         // 2. Create payment record
-        await tx
-          .insert(payments)
-          .values({
-            bookingId: newBooking.id,
-            userId: userId,
-            razorpayOrderId: razorpayOrderId,
-            razorpayPaymentId: razorpayPaymentId,
-            razorpaySignature: signature,
-            amount: paymentIntent.amount,
-            currency: "INR",
-            status: "paid",
-            paymentMethod: "razorpay",
-            completedAt: new Date(),
-          });
+        const paymentValues = {
+          bookingId: newBooking.id,
+          userId: userId,
+          razorpayOrderId: razorpayOrderId,
+          razorpayPaymentId: razorpayPaymentId,
+          amount: paymentIntent.amount,
+          currency: "INR",
+          status: "paid",
+          paymentMethod: "razorpay",
+          completedAt: new Date(),
+        };
+
+        // Only include signature if it exists (not empty string)
+        if (signature && signature.trim() !== "") {
+          paymentValues.razorpaySignature = signature;
+        }
+
+        console.log("💰 Inserting payment record:", paymentValues);
+
+        await tx.insert(payments).values(paymentValues);
+        console.log("✅ Payment record inserted successfully");
       }
 
       // Update payment_intent to completed (common for both cases)
@@ -849,10 +907,17 @@ const verifyPayment = async (req, res) => {
       isReschedule: isReschedule,
     });
   } catch (error) {
-    console.error("Error verifying payment:", error);
+    console.error("❌ Error verifying payment:", error.message);
+    console.error("Error stack:", error.stack);
+    console.error("Error cause:", error.cause);
+    console.error("Error code:", error.code);
+    console.error("Request body:", { ...req.body, razorpayPaymentId: req.body.razorpayPaymentId?.substring(0, 10) + '...' });
 
     // Check if this is a "slot already booked" error
     const isSlotBookedError = error.message && error.message.includes("no longer available");
+
+    // Truncate error message to fit in varchar(500)
+    const truncatedError = error.message?.substring(0, 450) || "Payment verification failed";
 
     // Update payment_intent as failed
     const { paymentIntentId, razorpayPaymentId } = req.body;
@@ -862,7 +927,7 @@ const verifyPayment = async (req, res) => {
           .update(paymentIntents)
           .set({
             status: "failed",
-            failureReason: error.message,
+            failureReason: truncatedError,
           })
           .where(eq(paymentIntents.id, paymentIntentId));
 

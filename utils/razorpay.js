@@ -90,6 +90,25 @@ const initiateRefund = async (paymentId, amount = null, reason = "Refund") => {
 };
 
 /**
+ * Capture a payment that is in authorized state
+ * @param {string} paymentId - Razorpay payment ID to capture
+ * @param {number} amount - Amount to capture in paise
+ * @returns {Promise<object>} Captured payment details
+ */
+const capturePayment = async (paymentId, amount) => {
+  try {
+    const captured = await razorpay.payments.capture(paymentId, amount, {
+      currency: "INR",
+    });
+    console.log("✅ Payment captured:", captured.id);
+    return captured;
+  } catch (error) {
+    console.error("Error capturing payment:", error);
+    throw new Error(`Failed to capture payment: ${error.message}`);
+  }
+};
+
+/**
  * Verify Razorpay webhook signature
  * @param {string} body - Raw request body (string)
  * @param {string} signature - X-Razorpay-Signature header value
@@ -168,6 +187,7 @@ module.exports = {
   createRazorpayOrder,
   verifySignature,
   initiateRefund,
+  capturePayment,
   verifyWebhookSignature,
   fetchPaymentDetails,
   fetchOrderDetails,

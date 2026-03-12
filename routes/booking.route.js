@@ -9,6 +9,11 @@ const {
   rejectBooking,
   completeBooking,
   rescheduleBooking,
+  // New reschedule functions with fee logic
+  requestReschedule,
+  cancelRescheduleRequest,
+  cancelBooking,
+  // Existing reschedule management
   approveReschedule,
   declineReschedule,
   providerReschedule,
@@ -28,6 +33,11 @@ router.post(
   addBooking
 );
 router.patch("/booking/:id", authorizeRole(CUSTOMER), rescheduleBooking);
+
+// Customer booking management - new endpoints
+router.delete("/booking/:id/cancel", authorizeRole(CUSTOMER), cancelBooking);
+router.put("/booking/:id/reschedule-request", authorizeRole(CUSTOMER), requestReschedule);
+router.put("/booking/:id/cancel-reschedule", authorizeRole(CUSTOMER), cancelRescheduleRequest);
 
 // Provider booking management
 router.put("/accept-booking/:id", authorizeRole(PROVIDER), acceptBooking);
