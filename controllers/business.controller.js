@@ -23,6 +23,7 @@ const getAllBusinesses = async (req, res) => {
         logo: businessProfiles.logo,
         coverImage: businessProfiles.coverImage,
         isVerified: businessProfiles.isVerified,
+        hasPaymentDetails: businessProfiles.hasPaymentDetails,
         createdAt: businessProfiles.createdAt,
         // Provider fields
         providerName: users.name,
@@ -77,6 +78,7 @@ const getBusinessByProviderId = async (req, res) => {
         logo: businessProfiles.logo,
         coverImage: businessProfiles.coverImage,
         isVerified: businessProfiles.isVerified,
+        hasPaymentDetails: businessProfiles.hasPaymentDetails,
         createdAt: businessProfiles.createdAt,
         // Provider (user) fields - for reference only
         providerName: users.name, // Provider's personal name
@@ -135,6 +137,7 @@ const getBusinessById = async (req, res) => {
         logo: businessProfiles.logo,
         coverImage: businessProfiles.coverImage,
         isVerified: businessProfiles.isVerified,
+        hasPaymentDetails: businessProfiles.hasPaymentDetails,
         createdAt: businessProfiles.createdAt,
         // Provider fields
         providerName: users.name,
@@ -268,6 +271,7 @@ const addBusiness = async (req, res) => {
         logo: businessProfiles.logo,
         coverImage: businessProfiles.coverImage,
         isVerified: businessProfiles.isVerified,
+        hasPaymentDetails: businessProfiles.hasPaymentDetails,
         createdAt: businessProfiles.createdAt,
         // Provider fields
         providerName: users.name,
@@ -361,6 +365,7 @@ const updateBusiness = async (req, res) => {
         logo: businessProfiles.logo,
         coverImage: businessProfiles.coverImage,
         isVerified: businessProfiles.isVerified,
+        hasPaymentDetails: businessProfiles.hasPaymentDetails,
         createdAt: businessProfiles.createdAt,
         // Provider fields
         providerName: users.name,

@@ -9,6 +9,7 @@ const {
   time,
   pgEnum,
   uniqueIndex,
+  text,
 } = require("drizzle-orm/pg-core");
 const { sql } = require("drizzle-orm");
 
@@ -108,6 +109,7 @@ const businessProfiles = pgTable("business_profiles", {
   logo: varchar("logo", { length: 500 }), // Cloudinary URL for business logo
   coverImage: varchar("cover_image", { length: 500 }), // Cloudinary URL for cover/banner image
   isVerified: boolean("is_verified").default(false).notNull(),
+  hasPaymentDetails: boolean("has_payment_details").default(false).notNull(), // Provider has added payment details
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
@@ -198,6 +200,15 @@ const payments = pgTable("payments", {
   currency: varchar("currency", { length: 10 }).default("INR").notNull(),
   status: paymentStatusEnum("status").default("pending").notNull(),
   paymentMethod: varchar("payment_method", { length: 50 }), // razorpay, upi, card, etc.
+  // Split Payment Tracking
+  platformFee: integer("platform_fee").default(0), // Platform commission in paise
+  providerShare: integer("provider_share").default(0), // Provider amount in paise
+  paymentSplitType: varchar("payment_split_type", { length: 20 }), // 'split', 'manual'
+  splitStatus: varchar("split_status", { length: 20 }), // 'pending', 'completed', 'failed'
+  // Provider Payout Tracking
+  providerPayoutStatus: varchar("provider_payout_status", { length: 20 }), // "pending", "paid", "failed"
+  providerPayoutId: varchar("provider_payout_id", { length: 100 }), // Razorpay payout ID
+  providerPayoutAt: timestamp("provider_payout_at"), // When payout was processed
   // Timestamps
   createdAt: timestamp("created_at").defaultNow().notNull(),
   completedAt: timestamp("completed_at"),
@@ -237,6 +248,33 @@ const paymentIntents = pgTable("payment_intents", {
     .on(table.slotId, table.bookingDate, table.serviceId)
     .where(sql`${table.status} = 'pending'`),
 }));
+// Payment Details - Stores UPI/Bank details for admin and providers
+const paymentDetails = pgTable("payment_details", {
+  id: serial("id").primaryKey(),
+  userId: integer("user_id")
+    .notNull()
+    .references(() => users.id, { onDelete: "cascade" }),
+  paymentType: varchar("payment_type", { length: 10 }).notNull(), // 'upi' or 'bank'
+  upiId: varchar("upi_id", { length: 100 }), // For UPI payments
+  bankAccount: varchar("bank_account", { length: 30 }), // For bank payments (masked)
+  ifscCode: varchar("ifsc_code", { length: 15 }), // For bank payments
+  accountHolderName: varchar("account_holder_name", { length: 255 }), // For bank payments
+  razorpayContactId: varchar("razorpay_contact_id", { length: 100 }), // Razorpay contact ID
+  razorpayFundAccountId: varchar("razorpay_fund_account_id", { length: 100 }), // Razorpay fund account ID
+  isActive: boolean("is_active").default(true).notNull(), // Can have multiple, one active
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+// Admin Settings - Platform configuration
+const adminSettings = pgTable("admin_settings", {
+  id: serial("id").primaryKey(),
+  key: varchar("key", { length: 50 }).notNull().unique(),
+  value: text("value").notNull(),
+  description: varchar("description", { length: 255 }),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
 const feedback = pgTable("feedback", {
   id: serial("id").primaryKey(),
   bookingId: integer("booking_id")
@@ -272,6 +310,8 @@ module.exports = {
   payments,
   paymentIntents,
   feedback,
+  paymentDetails,
+  adminSettings,
   roleEnum,
   bookingStatusEnum,
   paymentStatusEnum,

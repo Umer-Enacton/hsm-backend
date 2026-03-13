@@ -1,6 +1,6 @@
 const db = require("../config/db");
-const { services, businessProfiles, feedback, users } = require("../models/schema");
-const { eq, and, or, ilike, gte, lte, count } = require("drizzle-orm");
+const { services, businessProfiles, feedback, users, bookings, payments } = require("../models/schema");
+const { eq, and, or, ilike, gte, lte, count, sql } = require("drizzle-orm");
 
 const getAllServices = async (req, res) => {
   try {
@@ -363,6 +363,90 @@ const deleteService = async (req, res) => {
     res.status(500).json({ message: "Server error", error: error.message });
   }
 };
+
+/**
+ * Get service statistics for a business
+ * GET /services/business/:businessId/stats
+ */
+const getServiceStatsForBusiness = async (req, res) => {
+  try {
+    const { businessId } = req.params;
+
+    // Get all services for this business
+    const allServices = await db
+      .select()
+      .from(services)
+      .where(eq(services.businessProfileId, businessId));
+
+    const activeServices = allServices.filter((s) => s.isActive || s.is_active);
+    const inactiveServices = allServices.filter((s) => !s.isActive && !s.is_active);
+
+    // Calculate average price
+    const totalPrice = allServices.reduce((sum, s) => sum + (s.price || 0), 0);
+    const averagePrice = allServices.length > 0 ? Math.round(totalPrice / allServices.length) : 0;
+
+    // Calculate stats per service
+    const serviceStatsArray = await Promise.all(
+      allServices.map(async (service) => {
+        // Get booking counts for this service
+        const [bookingCounts] = await db
+          .select({
+            totalBookings: count(),
+            completedBookings: count(bookings.id),
+          })
+          .from(bookings)
+          .where(eq(bookings.serviceId, service.id));
+
+        // Get revenue for this service (provider's 95% share)
+        // IMPORTANT: Must filter by businessProfileId to avoid counting other providers' revenue
+        const [revenueData] = await db
+          .select({
+            totalRevenue: sql`COALESCE(SUM(${payments.providerShare}), 0)`,
+          })
+          .from(payments)
+          .innerJoin(bookings, eq(payments.bookingId, bookings.id))
+          .where(
+            and(
+              eq(bookings.serviceId, service.id),
+              eq(bookings.businessProfileId, businessId),  // Critical: only count this business's bookings
+              eq(payments.status, "paid")
+            )
+          );
+
+        return {
+          id: service.id,
+          name: service.name,
+          isActive: service.isActive || service.is_active || false,
+          price: service.price,
+          totalBookings: bookingCounts?.totalBookings || 0,
+          completedBookings: bookingCounts?.completedBookings || 0,
+          revenue: Number(revenueData?.totalRevenue) || 0, // in paise
+        };
+      })
+    );
+
+    // Calculate totals
+    const totalBookings = serviceStatsArray.reduce((sum, s) => sum + s.totalBookings, 0);
+    const totalRevenue = serviceStatsArray.reduce((sum, s) => sum + s.revenue, 0);
+
+    res.json({
+      total: allServices.length,
+      active: activeServices.length,
+      inactive: inactiveServices.length,
+      averagePrice,
+      totalBookings,
+      totalRevenue, // in paise
+      services: serviceStatsArray,
+    });
+  } catch (error) {
+    console.error("Error fetching service stats:", error);
+    res.status(500).json({
+      message: "Server error",
+      error: error.message,
+    });
+  }
+};
+
 module.exports = {
   getAllServices,
   getServiceById,
@@ -370,4 +454,5 @@ module.exports = {
   addService,
   updateService,
   deleteService,
+  getServiceStatsForBusiness,
 };

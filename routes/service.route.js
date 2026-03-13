@@ -7,6 +7,7 @@ const {
   addService,
   deleteService,
   updateService,
+  getServiceStatsForBusiness,
 } = require("../controllers/service.controller");
 const authorizeRole = require("../middleware/roleBasedRoutes");
 const { PROVIDER } = require("../config/roles");
@@ -16,6 +17,7 @@ const { serviceSchema, serviceUpdateSchema } = require("../helper/validation");
 router.get("/services", getAllServices);
 router.get("/services/:id", getServiceById);
 router.get("/services/business/:businessId", getServicesByBusiness);
+router.get("/services/business/:businessId/stats", getServiceStatsForBusiness);
 
 router.post(
   "/services/:businessId",

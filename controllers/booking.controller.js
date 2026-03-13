@@ -244,6 +244,7 @@ const getCustomerBookings = async (req, res) => {
 const getProviderBookings = async (req, res) => {
   try {
     const userId = req.token.id;
+    console.log("[getProviderBookings] Fetching bookings for userId:", userId);
 
     // First get the business profile for this provider
     const business = await db
@@ -252,15 +253,25 @@ const getProviderBookings = async (req, res) => {
       .where(eq(businessProfiles.providerId, userId))
       .limit(1);
 
+    console.log("[getProviderBookings] Found business profiles:", business.length);
+
     if (business.length === 0) {
-      return res.status(404).json({ message: "Business profile not found" });
+      console.log("[getProviderBookings] No business profile found for userId:", userId);
+      return res.status(404).json({
+        message: "Business profile not found",
+        debug: { userId, hint: "Your account may not be linked to a business profile" }
+      });
     }
+
+    console.log("[getProviderBookings] Using business ID:", business[0].id, "name:", business[0].businessName);
 
     const providerBookings = await db
       .select()
       .from(bookings)
       .where(eq(bookings.businessProfileId, business[0].id))
       .orderBy(desc(bookings.bookingDate));
+
+    console.log("[getProviderBookings] Found bookings:", providerBookings.length);
 
     // Fetch customer details for each booking
     const bookingsWithCustomers = await Promise.all(
@@ -471,6 +482,14 @@ const addBooking = async (req, res) => {
       return res
         .status(404)
         .json({ message: "Business profile for the slot not found" });
+    }
+
+    // Check if provider has payment details (required for receiving payments)
+    if (!businessProfile[0].hasPaymentDetails) {
+      return res.status(400).json({
+        message: "Service provider is not accepting bookings at this time. Please try again later.",
+        code: "PROVIDER_NO_PAYMENT_DETAILS",
+      });
     }
 
     // Check if slot is not already booked for the booking date
@@ -1804,6 +1823,23 @@ const completeBooking = async (req, res) => {
       .set({ status: "completed" })
       .where(eq(bookings.id, bookingId))
       .returning();
+
+    // 6. Set provider payout status to "pending" for the payment
+    // This marks that the provider has earned the money and is ready for payout
+    const [payment] = await db
+      .select()
+      .from(payments)
+      .where(eq(payments.bookingId, bookingId))
+      .limit(1);
+
+    if (payment && payment.status === "paid") {
+      await db
+        .update(payments)
+        .set({ providerPayoutStatus: "pending" })
+        .where(eq(payments.id, payment.id));
+      console.log(`✅ Payment ${payment.id} marked as "pending" for payout`);
+    }
+
     return res.status(200).json({
       message: "Booking completed successfully",
       booking: updatedBooking,
@@ -1943,10 +1979,107 @@ const providerReschedule = async (req, res) => {
   }
 };
 
+/**
+ * Get all bookings (admin only)
+ * GET /admin/bookings/all
+ */
+const getAllBookingsForAdmin = async (req, res) => {
+  try {
+    const { status, limit = 50, offset = 0 } = req.query;
+
+    // Fetch all bookings
+    let allBookings = await db
+      .select()
+      .from(bookings)
+      .orderBy(desc(bookings.bookingDate))
+      .limit(Number(limit))
+      .offset(Number(offset));
+
+    // Enrich bookings with related data
+    const enrichedBookings = await Promise.all(
+      allBookings.map(async (booking) => {
+        // Get customer info (note: bookings table uses customerId, not userId)
+        const [customer] = await db
+          .select({ id: users.id, name: users.name, email: users.email, phone: users.phone })
+          .from(users)
+          .where(eq(users.id, booking.customerId))
+          .limit(1);
+
+        // Get business profile
+        const [business] = await db
+          .select({
+            id: businessProfiles.id,
+            name: businessProfiles.businessName,
+            phone: businessProfiles.phone,
+            city: businessProfiles.city,
+            state: businessProfiles.state,
+          })
+          .from(businessProfiles)
+          .where(eq(businessProfiles.id, booking.businessProfileId))
+          .limit(1);
+
+        // Get service info
+        const [service] = await db
+          .select({ id: services.id, name: services.name, price: services.price })
+          .from(services)
+          .where(eq(services.id, booking.serviceId))
+          .limit(1);
+
+        // Get address info
+        const [address] = await db
+          .select()
+          .from(Address)
+          .where(eq(Address.id, booking.addressId))
+          .limit(1);
+
+        return {
+          ...booking,
+          // Map bookingDate to createdAt for frontend compatibility
+          createdAt: booking.bookingDate,
+          user: customer || null,
+          businessProfile: business || null,
+          service: service || null,
+          address: address || null,
+          slot: booking.bookingDate ? {
+            date: booking.bookingDate,
+            startTime: booking.slotStartTime,
+            endTime: booking.slotEndTime,
+          } : null,
+        };
+      })
+    );
+
+    // Apply status filter if provided
+    let filteredBookings = enrichedBookings;
+    if (status && status !== "all") {
+      filteredBookings = enrichedBookings.filter((b) => b.status === status);
+    }
+
+    // Get total count
+    const [{ count }] = await db
+      .select({ count: sql`count(*)` })
+      .from(bookings);
+
+    return res.status(200).json({
+      bookings: filteredBookings,
+      total: count,
+      limit: Number(limit),
+      offset: Number(offset),
+    });
+  } catch (error) {
+    console.error("Error fetching all bookings:", error);
+    return res.status(500).json({
+      message: "Server error",
+      error: error.message,
+    });
+  }
+};
+
 module.exports = {
   getBookingById,
   getCustomerBookings,
   getProviderBookings,
+  getAllBookingsForAdmin,
   addBooking,
   acceptBooking,
   rejectBooking,

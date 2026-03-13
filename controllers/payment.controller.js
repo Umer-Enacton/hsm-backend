@@ -8,15 +8,42 @@ const {
   payments,
   paymentIntents,
   users,
+  paymentDetails,
+  adminSettings,
 } = require("../models/schema");
 const { eq, and, gte, lte, desc, or, sql, ne } = require("drizzle-orm");
 const {
   createRazorpayOrder,
+  createSplitOrder,
   verifySignature,
   initiateRefund,
   rupeesToPaise,
   paiseToRupees,
 } = require("../utils/razorpay");
+
+// ============================================
+// HELPER FUNCTIONS
+// ============================================
+
+/**
+ * Get admin setting value by key
+ * @param {string} key - Setting key
+ * @param {string} defaultValue - Default value if not found
+ * @returns {Promise<string>} Setting value
+ */
+async function getAdminSetting(key, defaultValue = "0") {
+  try {
+    const [setting] = await db
+      .select()
+      .from(adminSettings)
+      .where(eq(adminSettings.key, key))
+      .limit(1);
+    return setting ? setting.value : defaultValue;
+  } catch (error) {
+    console.error(`Error fetching admin setting ${key}:`, error);
+    return defaultValue;
+  }
+}
 
 /**
  * Create payment order for a booking
@@ -398,9 +425,94 @@ const createPaymentOrder = async (req, res) => {
       ...(isReschedule && reason ? { reason } : {}),
     };
 
+    // ============================================
+    // PAYMENT DETAILS CHECK & SPLIT PAYMENT SETUP
+    // ============================================
+    let providerPayment = null;
+    let adminPayment = null;
+
+    // Skip payment details check for reschedules (no additional fee split needed)
+    if (!isReschedule) {
+      // Check if provider has payment details
+      if (!businessProfile.hasPaymentDetails) {
+        // Clean up payment intent
+        await db
+          .delete(paymentIntents)
+          .where(eq(paymentIntents.id, paymentIntent.id));
+
+        return res.status(400).json({
+          message: "Service provider is not accepting bookings at this time. Please try again later.",
+          code: "PROVIDER_NO_PAYMENT_DETAILS",
+        });
+      }
+
+      // Check if admin has payment details
+      const [adminUser] = await db
+        .select()
+        .from(users)
+        .where(eq(users.roleId, 3))
+        .limit(1);
+
+      if (!adminUser) {
+        return res.status(500).json({
+          message: "System error: Admin configuration not found. Please contact support.",
+          code: "ADMIN_NOT_FOUND",
+        });
+      }
+
+      adminPayment = await db
+        .select()
+        .from(paymentDetails)
+        .where(and(eq(paymentDetails.userId, adminUser.id), eq(paymentDetails.isActive, true)))
+        .limit(1);
+
+      if (!adminPayment || adminPayment.length === 0) {
+        return res.status(500).json({
+          message: "System error: Payment processing is temporarily unavailable. Please contact support.",
+          code: "ADMIN_NO_PAYMENT_DETAILS",
+        });
+      }
+
+      adminPayment = adminPayment[0];
+
+      // Get provider's active payment details
+      const providerPaymentResult = await db
+        .select()
+        .from(paymentDetails)
+        .where(and(eq(paymentDetails.userId, businessProfile.providerId), eq(paymentDetails.isActive, true)))
+        .limit(1);
+
+      if (!providerPaymentResult || providerPaymentResult.length === 0) {
+        // This shouldn't happen if hasPaymentDetails is true, but check anyway
+        return res.status(500).json({
+          message: "Service provider payment details not found. Please contact support.",
+          code: "PROVIDER_PAYMENT_DETAILS_MISMATCH",
+        });
+      }
+
+      providerPayment = providerPaymentResult[0];
+    }
+
     try {
-      razorpayOrder = await createRazorpayOrder(amountInPaise, tempReceipt, notes);
-      console.log(`✅ Razorpay order created: ${razorpayOrder.id}`);
+      // For new bookings, use split payment; for reschedules, use regular order
+      if (!isReschedule) {
+        // Get platform fee percentage
+        const platformFeePercentage = Number(await getAdminSetting("platform_fee_percentage", "5"));
+
+        razorpayOrder = await createSplitOrder(
+          amountInPaise,
+          tempReceipt,
+          providerPayment.razorpayFundAccountId,
+          adminPayment.razorpayFundAccountId,
+          platformFeePercentage,
+          notes
+        );
+        console.log(`✅ Razorpay split order created: ${razorpayOrder.id}`);
+      } else {
+        // Reschedule fees don't use split (they're flat fees to platform)
+        razorpayOrder = await createRazorpayOrder(amountInPaise, tempReceipt, notes);
+        console.log(`✅ Razorpay order created: ${razorpayOrder.id}`);
+      }
     } catch (razorpayError) {
       console.error("❌ Razorpay order creation failed:", razorpayError);
 
@@ -519,18 +631,29 @@ const verifyPayment = async (req, res) => {
 
     // Fetch Razorpay order details to get notes (contains reason for reschedule)
     let reason = null;
+    let isMockOrder = razorpayOrderId?.startsWith("mock_order_") || razorpayPaymentId?.startsWith("mock_payment_");
+
     try {
       const { fetchOrderDetails } = require("../utils/razorpay");
       const razorpayOrder = await fetchOrderDetails(razorpayOrderId);
       reason = razorpayOrder.notes?.reason || null;
+      // Check if this is a mock order
+      if (razorpayOrder.notes?.mock_order === "true") {
+        isMockOrder = true;
+      }
       console.log("📝 Retrieved reason from Razorpay order notes:", reason);
     } catch (orderError) {
       console.warn("⚠️ Could not fetch Razorpay order details:", orderError.message);
       // Continue without reason - it's optional
     }
 
-    // If signature is provided, verify it
-    if (signature && signature.trim() !== "") {
+    // If this is a mock order (development mode), skip verification
+    if (isMockOrder) {
+      console.log("⚠️ Mock order detected, skipping Razorpay verification");
+      // Continue to booking creation below
+    }
+    // If signature is provided, verify it (only for real orders)
+    else if (signature && signature.trim() !== "") {
       const isValidSignature = verifySignature(razorpayOrderId, razorpayPaymentId, signature);
 
       if (!isValidSignature) {
@@ -547,7 +670,8 @@ const verifyPayment = async (req, res) => {
       }
 
       console.log("✅ Signature verified");
-    } else {
+    } else if (!isMockOrder) {
+      // Only fetch from Razorpay for real orders, not mock orders
       console.log("⚠️ No signature provided, fetching payment details from Razorpay...");
 
       // No signature - fetch payment from Razorpay to verify it exists and matches the order
@@ -803,12 +927,15 @@ const verifyPayment = async (req, res) => {
         console.log(`✅ Booking ${rescheduleBookingId} rescheduled successfully, status: reschedule_pending, rescheduleCount: ${updatedBooking.rescheduleCount}`);
 
         // Create payment record for the reschedule fee
+        // Note: Reschedule fees are flat ₹100 and go entirely to platform (no split)
         const paymentValues = {
           bookingId: rescheduleBookingId,
           userId: userId,
           razorpayOrderId: razorpayOrderId,
           razorpayPaymentId: razorpayPaymentId,
           amount: paymentIntent.amount, // Flat ₹100 reschedule fee
+          platformFee: paymentIntent.amount, // 100% to platform for reschedule fees
+          providerShare: 0, // No provider share for reschedule fees
           currency: "INR",
           status: "paid",
           paymentMethod: "razorpay",
@@ -865,13 +992,20 @@ const verifyPayment = async (req, res) => {
         // Store the booking ID
         bookingId = newBooking.id;
 
-        // 2. Create payment record
+        // 2. Create payment record with platform fee and provider share
+        // Calculate platform fee (5%) and provider share (95%)
+        const platformFeePercentage = await getAdminSetting("platform_fee_percentage", "5");
+        const platformFee = Math.round(paymentIntent.amount * (Number(platformFeePercentage) / 100));
+        const providerShare = paymentIntent.amount - platformFee;
+
         const paymentValues = {
           bookingId: newBooking.id,
           userId: userId,
           razorpayOrderId: razorpayOrderId,
           razorpayPaymentId: razorpayPaymentId,
           amount: paymentIntent.amount,
+          platformFee: platformFee, // 5% platform commission
+          providerShare: providerShare, // 95% to provider
           currency: "INR",
           status: "paid",
           paymentMethod: "razorpay",
@@ -1314,7 +1448,12 @@ const handlePaymentCaptured = async (paymentEntity) => {
         })
         .returning();
 
-      // Create payment record
+      // Create payment record with platform fee split
+      // Default 5% platform fee, 95% provider share
+      const platformFeePercentage = 5;
+      const platformFee = Math.round(paymentIntent.amount * (platformFeePercentage / 100));
+      const providerShare = paymentIntent.amount - platformFee;
+
       await tx
         .insert(payments)
         .values({
@@ -1323,6 +1462,8 @@ const handlePaymentCaptured = async (paymentEntity) => {
           razorpayOrderId: order_id,
           razorpayPaymentId: id,
           amount: paymentIntent.amount,
+          platformFee: platformFee, // 5% platform commission
+          providerShare: providerShare, // 95% to provider
           currency: "INR",
           status: "paid",
           paymentMethod: "razorpay",

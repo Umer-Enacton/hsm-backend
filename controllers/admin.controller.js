@@ -1,0 +1,853 @@
+const db = require("../config/db");
+const { payments, bookings, users, adminSettings, businessProfiles, services } = require("../models/schema");
+const { eq, and, sql, desc, inArray } = require("drizzle-orm");
+
+// ============================================
+// HELPER FUNCTIONS
+// ============================================
+
+/**
+ * Get admin setting value by key
+ * @param {string} key - Setting key
+ * @param {string} defaultValue - Default value if not found
+ * @returns {Promise<string>} Setting value
+ */
+async function getAdminSetting(key, defaultValue = "0") {
+  try {
+    const [setting] = await db
+      .select()
+      .from(adminSettings)
+      .where(eq(adminSettings.key, key))
+      .limit(1);
+    return setting ? setting.value : defaultValue;
+  } catch (error) {
+    console.error(`Error fetching admin setting ${key}:`, error);
+    return defaultValue;
+  }
+}
+
+/**
+ * Set admin setting value
+ * @param {string} key - Setting key
+ * @param {string} value - Setting value
+ * @param {string} description - Optional description
+ */
+async function setAdminSetting(key, value, description = null) {
+  try {
+    const [existing] = await db
+      .select()
+      .from(adminSettings)
+      .where(eq(adminSettings.key, key))
+      .limit(1);
+
+    if (existing) {
+      await db
+        .update(adminSettings)
+        .set({ value, updatedAt: new Date() })
+        .where(eq(adminSettings.key, key));
+    } else {
+      await db.insert(adminSettings).values({
+        key,
+        value,
+        description,
+      });
+    }
+  } catch (error) {
+    console.error(`Error setting admin setting ${key}:`, error);
+    throw error;
+  }
+}
+
+// ============================================
+// CONTROLLER FUNCTIONS
+// ============================================
+
+/**
+ * Get platform settings
+ * GET /admin/settings
+ */
+const getPlatformSettings = async (req, res) => {
+  try {
+    // Only admin can access settings
+    if (req.token.roleId !== 3) {
+      return res.status(403).json({
+        message: "Access denied: Only admin can access platform settings",
+      });
+    }
+
+    const platformFee = await getAdminSetting("platform_fee_percentage", "5");
+    const minimumPayout = await getAdminSetting("minimum_payout_amount", "30000"); // Default ₹300
+
+    res.json({
+      platformFeePercentage: Number(platformFee),
+      minimumPayoutAmount: Number(minimumPayout),
+    });
+  } catch (error) {
+    console.error("Error fetching platform settings:", error);
+    res.status(500).json({ message: "Server error", error: error.message });
+  }
+};
+
+/**
+ * Update platform fee percentage
+ * PUT /admin/settings
+ */
+const updatePlatformSettings = async (req, res) => {
+  try {
+    // Only admin can update settings
+    if (req.token.roleId !== 3) {
+      return res.status(403).json({
+        message: "Access denied: Only admin can update platform settings",
+      });
+    }
+
+    const { platformFeePercentage, minimumPayoutAmount } = req.body;
+
+    // Validate platform fee percentage (1-10%)
+    if (platformFeePercentage !== undefined) {
+      if (platformFeePercentage < 1 || platformFeePercentage > 10) {
+        return res.status(400).json({
+          message: "Platform fee percentage must be between 1% and 10%",
+        });
+      }
+      await setAdminSetting(
+        "platform_fee_percentage",
+        platformFeePercentage.toString(),
+        "Platform commission percentage charged on each booking (1-10%)"
+      );
+    }
+
+    // Validate minimum payout amount (₹300 - ₹1000 in paise)
+    if (minimumPayoutAmount !== undefined) {
+      const minInRupees = minimumPayoutAmount / 100; // Convert to rupees for validation
+      if (minInRupees < 300 || minInRupees > 1000) {
+        return res.status(400).json({
+          message: "Minimum payout amount must be between ₹300 and ₹1,000",
+        });
+      }
+      await setAdminSetting(
+        "minimum_payout_amount",
+        minimumPayoutAmount.toString(),
+        "Minimum amount required for provider payout in paise (₹300-₹1000)"
+      );
+    }
+
+    // Return updated values
+    const updatedPlatformFee = platformFeePercentage !== undefined
+      ? platformFeePercentage
+      : Number(await getAdminSetting("platform_fee_percentage", "5"));
+    const updatedMinPayout = minimumPayoutAmount !== undefined
+      ? minimumPayoutAmount
+      : Number(await getAdminSetting("minimum_payout_amount", "30000"));
+
+    res.json({
+      message: "Platform settings updated successfully",
+      platformFeePercentage: updatedPlatformFee,
+      minimumPayoutAmount: updatedMinPayout,
+    });
+  } catch (error) {
+    console.error("Error updating platform settings:", error);
+    res.status(500).json({ message: "Server error", error: error.message });
+  }
+};
+
+/**
+ * Get revenue statistics
+ * GET /admin/revenue
+ */
+const getRevenueStats = async (req, res) => {
+  try {
+    // Only admin can access revenue stats
+    if (req.token.roleId !== 3) {
+      return res.status(403).json({
+        message: "Access denied: Only admin can access revenue statistics",
+      });
+    }
+
+    const { startDate, endDate, groupBy } = req.query;
+
+    // Get platform fee percentage
+    const platformFeePercentage = Number(await getAdminSetting("platform_fee_percentage", "5"));
+
+    // Build date filter
+    let dateFilter = sql`TRUE`;
+    if (startDate) {
+      dateFilter = sql`${payments.createdAt} >= ${new Date(startDate)}`;
+    }
+    if (endDate) {
+      dateFilter = sql`${dateFilter} AND ${payments.createdAt} <= ${new Date(endDate)}`;
+    }
+
+    // Get completed payments for revenue calculation
+    const completedPayments = await db
+      .select({
+        id: payments.id,
+        amount: payments.amount,
+        platformFee: payments.platformFee,
+        providerShare: payments.providerShare,
+        status: payments.status,
+        createdAt: payments.createdAt,
+      })
+      .from(payments)
+      .where(
+        and(
+          eq(payments.status, "paid"),
+          dateFilter
+        )
+      );
+
+    // Calculate totals
+    let totalRevenue = 0;
+    let totalPlatformFee = 0;
+    let totalProviderShare = 0;
+    let totalPayments = completedPayments.length;
+
+    completedPayments.forEach((payment) => {
+      totalRevenue += payment.amount;
+
+      // Use stored split values if available, otherwise calculate
+      if (payment.platformFee) {
+        totalPlatformFee += payment.platformFee;
+        totalProviderShare += payment.providerShare || 0;
+      } else {
+        // Fallback calculation for older payments
+        const fee = Math.round(payment.amount * (platformFeePercentage / 100));
+        totalPlatformFee += fee;
+        totalProviderShare += payment.amount - fee;
+      }
+    });
+
+    // Get monthly breakdown (always returned)
+    const monthlyData = await db
+      .select({
+        month: sql`DATE_TRUNC('month', ${payments.createdAt})::DATE`,
+        total: sql`SUM(${payments.amount})`,
+        count: sql`COUNT(*)`,
+      })
+      .from(payments)
+      .where(
+        and(
+          eq(payments.status, "paid"),
+          dateFilter
+        )
+      )
+      .groupBy(sql`DATE_TRUNC('month', ${payments.createdAt})`)
+      .orderBy(desc(sql`DATE_TRUNC('month', ${payments.createdAt})`));
+
+    const monthlyBreakdown = monthlyData.map((item) => ({
+      month: item.month,
+      total: Number(item.total),
+      count: Number(item.count),
+      platformFee: Math.round(Number(item.total) * (platformFeePercentage / 100)),
+    }));
+
+    // Get top providers by revenue
+    const topProviders = await db
+      .select({
+        providerId: businessProfiles.providerId,
+        businessName: businessProfiles.businessName,
+        totalBookings: sql`COUNT(*)`,
+        totalRevenue: sql`SUM(${payments.amount})`,
+      })
+      .from(bookings)
+      .innerJoin(payments, eq(payments.bookingId, bookings.id))
+      .innerJoin(businessProfiles, eq(businessProfiles.id, bookings.businessProfileId))
+      .where(
+        and(
+          eq(payments.status, "paid"),
+          dateFilter
+        )
+      )
+      .groupBy(businessProfiles.id, businessProfiles.providerId, businessProfiles.businessName)
+      .orderBy(desc(sql`SUM(${payments.amount})`))
+      .limit(10);
+
+    // Get booking status breakdown
+    const statusBreakdown = await db
+      .select({
+        status: bookings.status,
+        count: sql`COUNT(*)`,
+      })
+      .from(bookings)
+      .where(dateFilter)
+      .groupBy(bookings.status);
+
+    // Format monthly breakdown for frontend
+    const breakdown = monthlyBreakdown.map((item) => ({
+      period: item.month,
+      revenue: Number(item.total),
+      platformFees: item.platformFee,
+      bookings: Number(item.count),
+    }));
+
+    res.json({
+      totalRevenue,
+      platformFees: totalPlatformFee,
+      providerPayouts: totalProviderShare,
+      totalBookings: totalPayments,
+      breakdown,
+      topProviders: topProviders.map((p) => ({
+        ...p,
+        totalRevenue: Number(p.totalRevenue),
+        totalBookings: Number(p.totalBookings),
+      })),
+      statusBreakdown: statusBreakdown.map((s) => ({
+        status: s.status,
+        count: Number(s.count),
+      })),
+    });
+  } catch (error) {
+    console.error("Error fetching revenue stats:", error);
+    res.status(500).json({ message: "Server error", error: error.message });
+  }
+};
+
+// ============================================
+// PAYOUT MANAGEMENT FUNCTIONS
+// ============================================
+
+/**
+ * Get all payouts with optional filters
+ * GET /admin/payouts?status=pending|paid|all&providerId=X
+ */
+const getPayouts = async (req, res) => {
+  try {
+    if (req.token.roleId !== 3) {
+      return res.status(403).json({ message: "Access denied: Admin only" });
+    }
+
+    const { status = "all", providerId } = req.query;
+
+    // Get minimum payout amount from settings
+    const minimumPayoutAmount = Number(await getAdminSetting("minimum_payout_amount", "30000")); // Default ₹300
+
+    // Build query conditions
+    let query = db
+      .select({
+        // Payment fields
+        paymentId: payments.id,
+        bookingId: payments.bookingId,
+        amount: payments.amount,
+        providerShare: payments.providerShare,
+        platformFee: payments.platformFee,
+        providerPayoutStatus: payments.providerPayoutStatus,
+        paymentCreatedAt: payments.createdAt,
+        paymentCompletedAt: payments.completedAt,
+        // Booking fields
+        bookingStatus: bookings.status,
+        bookingDate: bookings.bookingDate,
+        totalPrice: bookings.totalPrice,
+        // Provider/Business fields
+        providerId: businessProfiles.providerId,
+        providerName: users.name,
+        providerEmail: users.email,
+        providerBusiness: businessProfiles.businessName,
+      })
+      .from(payments)
+      .innerJoin(bookings, eq(payments.bookingId, bookings.id))
+      .innerJoin(businessProfiles, eq(bookings.businessProfileId, businessProfiles.id))
+      .innerJoin(users, eq(businessProfiles.providerId, users.id))
+      .where(eq(payments.status, "paid"));
+
+    // Filter by payout status
+    if (status && status !== "all") {
+      query = query.where(eq(payments.providerPayoutStatus, status));
+    } else {
+      // If "all", only show payments with payout status set (not NULL)
+      query = query.where(sql`${payments.providerPayoutStatus} IS NOT NULL`);
+    }
+
+    // Filter by provider
+    if (providerId) {
+      query = query.where(eq(businessProfiles.providerId, Number(providerId)));
+    }
+
+    const payouts = await query.orderBy(desc(payments.createdAt));
+
+    // Calculate per-provider totals for minimum payout check
+    const providerTotals = new Map();
+    payouts.forEach((p) => {
+      const current = providerTotals.get(p.providerId) || 0;
+      providerTotals.set(p.providerId, current + Number(p.providerShare || 0));
+    });
+
+    // Add metadata to each payout
+    const payoutsWithMeta = payouts.map((p) => {
+      const providerTotal = providerTotals.get(p.providerId) || 0;
+      return {
+        ...p,
+        providerShare: Number(p.providerShare || 0),
+        canProcessPayout: providerTotal >= minimumPayoutAmount,
+        providerTotalEarnings: providerTotal,
+        minimumPayoutAmount,
+      };
+    });
+
+    res.json({
+      payouts: payoutsWithMeta,
+      minimumPayoutAmount,
+    });
+  } catch (error) {
+    console.error("Error fetching payouts:", error);
+    res.status(500).json({ message: "Server error", error: error.message });
+  }
+};
+
+/**
+ * Get payout summary for admin dashboard
+ * GET /admin/payouts/summary
+ */
+const getPayoutsSummary = async (req, res) => {
+  try {
+    if (req.token.roleId !== 3) {
+      return res.status(403).json({ message: "Access denied: Admin only" });
+    }
+
+    const minimumPayoutAmount = Number(await getAdminSetting("minimum_payout_amount", "30000"));
+
+    // Get totals by payout status
+    const [summary] = await db
+      .select({
+        totalPending: sql`COALESCE(SUM(CASE WHEN ${payments.providerPayoutStatus} = 'pending' THEN ${payments.providerShare} ELSE 0 END), 0)`,
+        totalPaid: sql`COALESCE(SUM(CASE WHEN ${payments.providerPayoutStatus} = 'paid' THEN ${payments.providerShare} ELSE 0 END), 0)`,
+        countPending: sql`COUNT(CASE WHEN ${payments.providerPayoutStatus} = 'pending' THEN 1 END)`,
+        countPaid: sql`COUNT(CASE WHEN ${payments.providerPayoutStatus} = 'paid' THEN 1 END)`,
+      })
+      .from(payments)
+      .where(sql`${payments.providerPayoutStatus} IS NOT NULL`);
+
+    // Get unique providers with pending payouts
+    const providersWithPending = await db
+      .select({
+        providerId: businessProfiles.providerId,
+        providerName: users.name,
+        providerBusiness: businessProfiles.businessName,
+        totalPending: sql`SUM(COALESCE(${payments.providerShare}, 0))`,
+      })
+      .from(payments)
+      .innerJoin(bookings, eq(payments.bookingId, bookings.id))
+      .innerJoin(businessProfiles, eq(bookings.businessProfileId, businessProfiles.id))
+      .innerJoin(users, eq(businessProfiles.providerId, users.id))
+      .where(eq(payments.providerPayoutStatus, "pending"))
+      .groupBy(businessProfiles.providerId, users.name, businessProfiles.businessName)
+      .orderBy(desc(sql`SUM(COALESCE(${payments.providerShare}, 0))`));
+
+    // Filter providers who meet minimum payout
+    const providersReadyToPay = providersWithPending
+      .filter((p) => Number(p.totalPending) >= minimumPayoutAmount)
+      .map((p) => ({
+        ...p,
+        totalPending: Number(p.totalPending),
+        canProcess: true,
+      }));
+
+    const providersWaiting = providersWithPending
+      .filter((p) => Number(p.totalPending) < minimumPayoutAmount)
+      .map((p) => ({
+        ...p,
+        totalPending: Number(p.totalPending),
+        canProcess: false,
+      }));
+
+    res.json({
+      totalPendingAmount: Number(summary?.totalPending) || 0,
+      totalPaidAmount: Number(summary?.totalPaid) || 0,
+      pendingCount: Number(summary?.countPending) || 0,
+      paidCount: Number(summary?.countPaid) || 0,
+      providersReadyToPay,
+      providersWaiting,
+      minimumPayoutAmount,
+    });
+  } catch (error) {
+    console.error("Error fetching payout summary:", error);
+    res.status(500).json({ message: "Server error", error: error.message });
+  }
+};
+
+/**
+ * Mark a single payout as paid
+ * PUT /admin/payouts/:id/mark-paid
+ */
+const markPayoutAsPaid = async (req, res) => {
+  try {
+    if (req.token.roleId !== 3) {
+      return res.status(403).json({ message: "Access denied: Admin only" });
+    }
+
+    const { id } = req.params;
+    const { razorpayPayoutId } = req.body;
+
+    const [payment] = await db
+      .select()
+      .from(payments)
+      .where(eq(payments.id, id))
+      .limit(1);
+
+    if (!payment) {
+      return res.status(404).json({ message: "Payment not found" });
+    }
+
+    if (payment.providerPayoutStatus !== "pending") {
+      return res.status(400).json({
+        message: `Cannot mark as paid. Current status: ${payment.providerPayoutStatus || "null"}`
+      });
+    }
+
+    const updateData = {
+      providerPayoutStatus: "paid",
+      providerPayoutAt: new Date(),
+    };
+
+    if (razorpayPayoutId) {
+      updateData.providerPayoutId = razorpayPayoutId;
+    }
+
+    await db
+      .update(payments)
+      .set(updateData)
+      .where(eq(payments.id, id));
+
+    res.json({
+      message: "Payout marked as paid successfully",
+      amount: payment.providerShare,
+    });
+  } catch (error) {
+    console.error("Error marking payout as paid:", error);
+    res.status(500).json({ message: "Server error", error: error.message });
+  }
+};
+
+/**
+ * Bulk process payouts - Mark multiple payouts as paid
+ * PUT /admin/payouts/process-bulk
+ */
+const bulkProcessPayouts = async (req, res) => {
+  try {
+    if (req.token.roleId !== 3) {
+      return res.status(403).json({ message: "Access denied: Admin only" });
+    }
+
+    const { payoutIds, razorpayPayoutId } = req.body;
+
+    if (!payoutIds || !Array.isArray(payoutIds) || payoutIds.length === 0) {
+      return res.status(400).json({ message: "payoutIds array is required" });
+    }
+
+    // Get minimum payout amount
+    const minimumPayoutAmount = Number(await getAdminSetting("minimum_payout_amount", "30000"));
+
+    // Fetch all payments with their provider info
+    const paymentsToProcess = await db
+      .select({
+        paymentId: payments.id,
+        providerShare: payments.providerShare,
+        providerId: businessProfiles.providerId,
+        providerPayoutStatus: payments.providerPayoutStatus,
+      })
+      .from(payments)
+      .innerJoin(bookings, eq(payments.bookingId, bookings.id))
+      .innerJoin(businessProfiles, eq(bookings.businessProfileId, businessProfiles.id))
+      .where(sql`${payments.id} = ANY(${payoutIds})`);
+
+    // Group by provider and check minimum
+    const providerTotals = new Map();
+    const validPaymentIds = new Set();
+    const skippedPayments = [];
+
+    paymentsToProcess.forEach((p) => {
+      if (p.providerPayoutStatus !== "pending") {
+        skippedPayments.push({
+          id: p.paymentId,
+          reason: `Status is "${p.providerPayoutStatus}", not "pending"`
+        });
+        return;
+      }
+
+      const current = providerTotals.get(p.providerId) || 0;
+      const newTotal = current + Number(p.providerShare || 0);
+      providerTotals.set(p.providerId, newTotal);
+
+      // Only include if provider meets minimum
+      if (newTotal >= minimumPayoutAmount) {
+        validPaymentIds.add(p.paymentId);
+      } else {
+        skippedPayments.push({
+          id: p.paymentId,
+          reason: `Provider total (₹${(newTotal / 100).toFixed(2)}) is below minimum (₹${(minimumPayoutAmount / 100).toFixed(2)})`
+        });
+      }
+    });
+
+    // Update all valid payments
+    const updateData = {
+      providerPayoutStatus: "paid",
+      providerPayoutAt: new Date(),
+    };
+
+    if (razorpayPayoutId) {
+      updateData.providerPayoutId = razorpayPayoutId;
+    }
+
+    const result = await db
+      .update(payments)
+      .set(updateData)
+      .where(inArray(payments.id, Array.from(validPaymentIds)))
+      .returning();
+
+    res.json({
+      message: "Bulk payout processed successfully",
+      processedCount: result.length,
+      skippedCount: skippedPayments.length,
+      skippedPayments,
+      totalAmount: result.reduce((sum, p) => sum + Number(p.providerShare || 0), 0),
+    });
+  } catch (error) {
+    console.error("Error processing bulk payouts:", error);
+    res.status(500).json({ message: "Server error", error: error.message });
+  }
+};
+
+/**
+ * Get payouts grouped by provider (for provider-level payouts)
+ * GET /admin/payouts/by-provider?filter=ready|waiting|all
+ */
+const getPayoutsByProvider = async (req, res) => {
+  try {
+    if (req.token.roleId !== 3) {
+      return res.status(403).json({ message: "Access denied: Admin only" });
+    }
+
+    const { filter = "all" } = req.query;
+    const minimumPayoutAmount = Number(await getAdminSetting("minimum_payout_amount", "30000"));
+
+    // Get all pending payouts grouped by provider
+    const providerPayouts = await db
+      .select({
+        providerId: businessProfiles.providerId,
+        providerName: users.name,
+        providerEmail: users.email,
+        businessName: businessProfiles.businessName,
+        businessId: businessProfiles.id,
+        totalPending: sql`SUM(${payments.providerShare})`,
+        bookingCount: sql`COUNT(*)`,
+        paymentIds: sql`array_agg(${payments.id})`,
+      })
+      .from(payments)
+      .innerJoin(bookings, eq(payments.bookingId, bookings.id))
+      .innerJoin(businessProfiles, eq(bookings.businessProfileId, businessProfiles.id))
+      .innerJoin(users, eq(businessProfiles.providerId, users.id))
+      .where(
+        and(
+          eq(payments.providerPayoutStatus, "pending"),
+          eq(payments.status, "paid")
+        )
+      )
+      .groupBy(businessProfiles.providerId, users.name, users.email, businessProfiles.businessName, businessProfiles.id)
+      .orderBy(desc(sql`SUM(${payments.providerShare})`));
+
+    // Add metadata to each provider
+    let providersWithMeta = providerPayouts.map((p) => ({
+      ...p,
+      totalPending: Number(p.totalPending) || 0,
+      bookingCount: Number(p.bookingCount) || 0,
+      paymentIds: p.paymentIds.filter((id) => id !== null),
+      canProcessPayout: Number(p.totalPending) >= minimumPayoutAmount,
+      minimumPayoutAmount,
+    }));
+
+    // Apply filter
+    if (filter === "ready") {
+      providersWithMeta = providersWithMeta.filter((p) => p.canProcessPayout);
+    } else if (filter === "waiting") {
+      providersWithMeta = providersWithMeta.filter((p) => !p.canProcessPayout);
+    }
+
+    res.json({
+      providers: providersWithMeta,
+      minimumPayoutAmount,
+    });
+  } catch (error) {
+    console.error("Error fetching provider payouts:", error);
+    res.status(500).json({ message: "Server error", error: error.message });
+  }
+};
+
+/**
+ * Pay all pending payouts for a specific provider
+ * PUT /admin/payouts/provider/:providerId/pay-all
+ */
+const payProvider = async (req, res) => {
+  try {
+    if (req.token.roleId !== 3) {
+      return res.status(403).json({ message: "Access denied: Admin only" });
+    }
+
+    const { providerId } = req.params;
+    const { razorpayPayoutId } = req.body;
+
+    // Get all pending payments for this provider
+    const providerPayments = await db
+      .select({
+        paymentId: payments.id,
+        providerShare: payments.providerShare,
+        providerPayoutStatus: payments.providerPayoutStatus,
+      })
+      .from(payments)
+      .innerJoin(bookings, eq(payments.bookingId, bookings.id))
+      .innerJoin(businessProfiles, eq(bookings.businessProfileId, businessProfiles.id))
+      .where(
+        and(
+          eq(businessProfiles.providerId, Number(providerId)),
+          eq(payments.providerPayoutStatus, "pending"),
+          eq(payments.status, "paid")
+        )
+      );
+
+    if (providerPayments.length === 0) {
+      return res.status(404).json({ message: "No pending payouts found for this provider" });
+    }
+
+    const paymentIds = providerPayments.map((p) => p.paymentId);
+    const totalAmount = providerPayments.reduce((sum, p) => sum + Number(p.providerShare || 0), 0);
+
+    // Update all payments as paid
+    const updateData = {
+      providerPayoutStatus: "paid",
+      providerPayoutAt: new Date(),
+    };
+
+    if (razorpayPayoutId) {
+      updateData.providerPayoutId = razorpayPayoutId;
+    }
+
+    const result = await db
+      .update(payments)
+      .set(updateData)
+      .where(inArray(payments.id, paymentIds))
+      .returning();
+
+    res.json({
+      message: "Provider payouts processed successfully",
+      providerId: Number(providerId),
+      processedCount: result.length,
+      totalAmount,
+      paymentIds,
+    });
+  } catch (error) {
+    console.error("Error paying provider:", error);
+    res.status(500).json({ message: "Server error", error: error.message });
+  }
+};
+
+/**
+ * Get dashboard stats for admin home page
+ * GET /admin/dashboard/stats
+ */
+const getDashboardStats = async (req, res) => {
+  try {
+    if (req.token.roleId !== 3) {
+      return res.status(403).json({ message: "Access denied: Admin only" });
+    }
+
+    // Get counts for users, businesses, services, bookings
+    const [userCount] = await db
+      .select({ count: sql`COUNT(*)` })
+      .from(users);
+
+    const [businessCount] = await db
+      .select({
+        total: sql`COUNT(*)`,
+        verified: sql`COUNT(*) FILTER (WHERE ${businessProfiles.isVerified} = true)`,
+      })
+      .from(businessProfiles);
+
+    const [serviceCount] = await db
+      .select({
+        total: sql`COUNT(*)`,
+        active: sql`COUNT(*) FILTER (WHERE ${services.isActive} = true)`,
+      })
+      .from(services);
+
+    // Get booking status breakdown
+    const bookingStats = await db
+      .select({
+        status: bookings.status,
+        count: sql`COUNT(*)`,
+      })
+      .from(bookings)
+      .groupBy(bookings.status);
+
+    const totalBookings = bookingStats.reduce((sum, b) => sum + Number(b.count), 0);
+    const completedBookings = Number(bookingStats.find((b) => b.status === "completed")?.count || 0);
+    const pendingBookings = Number(bookingStats.find((b) => b.status === "pending")?.count || 0);
+
+    // Get platform revenue from paid payments
+    const [revenueData] = await db
+      .select({
+        totalRevenue: sql`COALESCE(SUM(${payments.amount}), 0)`,
+        totalPlatformFee: sql`COALESCE(SUM(${payments.platformFee}), 0)`,
+        paymentCount: sql`COUNT(*)`,
+      })
+      .from(payments)
+      .where(eq(payments.status, "paid"));
+
+    // Get payout summary
+    const minimumPayoutAmount = Number(await getAdminSetting("minimum_payout_amount", "30000"));
+    const [payoutSummary] = await db
+      .select({
+        totalPending: sql`COALESCE(SUM(CASE WHEN ${payments.providerPayoutStatus} = 'pending' THEN ${payments.providerShare} ELSE 0 END), 0)`,
+        countPending: sql`COUNT(CASE WHEN ${payments.providerPayoutStatus} = 'pending' THEN 1 END)`,
+      })
+      .from(payments)
+      .where(sql`${payments.providerPayoutStatus} IS NOT NULL`);
+
+    res.json({
+      users: {
+        total: Number(userCount?.count) || 0,
+      },
+      businesses: {
+        total: Number(businessCount?.total) || 0,
+        verified: Number(businessCount?.verified) || 0,
+        pending: (Number(businessCount?.total) || 0) - (Number(businessCount?.verified) || 0),
+      },
+      services: {
+        total: Number(serviceCount?.total) || 0,
+        active: Number(serviceCount?.active) || 0,
+      },
+      bookings: {
+        total: totalBookings,
+        completed: completedBookings,
+        pending: pendingBookings,
+      },
+      revenue: {
+        totalRevenue: Number(revenueData?.totalRevenue) || 0,
+        platformFees: Number(revenueData?.totalPlatformFee) || 0,
+        paymentCount: Number(revenueData?.paymentCount) || 0,
+      },
+      payouts: {
+        pendingAmount: Number(payoutSummary?.totalPending) || 0,
+        pendingCount: Number(payoutSummary?.countPending) || 0,
+        minimumThreshold: minimumPayoutAmount,
+      },
+    });
+  } catch (error) {
+    console.error("Error fetching dashboard stats:", error);
+    res.status(500).json({ message: "Server error", error: error.message });
+  }
+};
+
+module.exports = {
+  // Settings
+  getPlatformSettings,
+  updatePlatformSettings,
+  getRevenueStats,
+  // Dashboard
+  getDashboardStats,
+  // Payout Management
+  getPayouts,
+  getPayoutsSummary,
+  getPayoutsByProvider,
+  payProvider,
+  markPayoutAsPaid,
+  bulkProcessPayouts,
+};

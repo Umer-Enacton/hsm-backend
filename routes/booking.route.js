@@ -4,6 +4,7 @@ const {
   getBookingById,
   getCustomerBookings,
   getProviderBookings,
+  getAllBookingsForAdmin,
   addBooking,
   acceptBooking,
   rejectBooking,
@@ -19,13 +20,14 @@ const {
   providerReschedule,
 } = require("../controllers/booking.controller");
 const authorizeRole = require("../middleware/roleBasedRoutes");
-const { CUSTOMER, PROVIDER } = require("../config/roles");
+const { CUSTOMER, PROVIDER, ADMIN } = require("../config/roles");
 const validate = require("../middleware/validate");
 const { bookingSchema } = require("../helper/validation");
 
 router.get("/booking/:id", getBookingById);
 router.get("/bookings/customer", authorizeRole(CUSTOMER), getCustomerBookings);
 router.get("/bookings/provider", authorizeRole(PROVIDER), getProviderBookings);
+router.get("/admin/bookings/all", authorizeRole(ADMIN), getAllBookingsForAdmin);
 router.post(
   "/add-booking",
   authorizeRole(CUSTOMER),
