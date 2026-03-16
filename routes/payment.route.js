@@ -2,6 +2,12 @@ const express = require("express");
 const router = express.Router();
 const paymentController = require("../controllers/payment.controller");
 
+// LOG ALL INCOMING REQUESTS TO THIS ROUTER
+router.use((req, res, next) => {
+  console.log('🔥🔥🔥 PAYMENT ROUTE HIT:', req.method, req.path);
+  next();
+});
+
 /**
  * Payment Routes
  * Base path: /payment

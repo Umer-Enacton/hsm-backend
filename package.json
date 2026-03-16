@@ -5,7 +5,7 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "dev": "node --watch index.js",
+    "dev": "nodemon index.js",
     "db:generate": "npx drizzle-kit generate",
     "db:push": "npx drizzle-kit push",
     "migrate": "node migrate-to-neon.js"
@@ -23,6 +23,7 @@
     "dotenv": "^17.2.3",
     "drizzle-orm": "^0.45.1",
     "express": "^5.2.1",
+    "firebase-admin": "^13.7.0",
     "jsonwebtoken": "^9.0.3",
     "multer": "^2.0.2",
     "nodemailer": "^8.0.1",
@@ -35,6 +36,7 @@
   },
   "devDependencies": {
     "@types/node": "^25.0.3",
-    "drizzle-kit": "^0.31.8"
+    "drizzle-kit": "^0.31.8",
+    "nodemon": "^3.1.14"
   }
 }

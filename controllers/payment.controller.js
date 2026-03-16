@@ -20,6 +20,10 @@ const {
   rupeesToPaise,
   paiseToRupees,
 } = require("../utils/razorpay");
+const { notificationTemplates } = require("../utils/notificationHelper");
+
+// STARTUP LOG: Confirm this file is loaded
+console.log('✅ payment.controller.js loaded - version 2026-03-16-v2');
 
 // ============================================
 // HELPER FUNCTIONS
@@ -611,6 +615,9 @@ const createPaymentOrder = async (req, res) => {
  * 6. All in a transaction for atomicity
  */
 const verifyPayment = async (req, res) => {
+  console.log('🚀 ============================================ 🚀');
+  console.log('🚀 verifyPayment FUNCTION CALLED');
+  console.log('🚀 ============================================ 🚀');
   try {
     const userId = req.token.id;
     const { razorpayOrderId, razorpayPaymentId, signature, paymentIntentId } = req.body;
@@ -1032,6 +1039,24 @@ const verifyPayment = async (req, res) => {
         })
         .where(eq(paymentIntents.id, paymentIntentId));
     });
+
+    // CRITICAL LOG: Verify we reached this point
+    console.log('✅ Transaction completed successfully. bookingId:', bookingId, 'isReschedule:', isReschedule);
+
+    // Send notification to provider about new booking (only for new bookings, not reschedules)
+    // CRITICAL: Send notification BEFORE responding to ensure it executes
+    if (!isReschedule && bookingId) {
+      console.log('🔔 Sending booking created notification for booking:', bookingId);
+      try {
+        const notifResult = await notificationTemplates.bookingCreated(bookingId);
+        console.log('✅ Notification sent, result:', notifResult);
+      } catch (notifError) {
+        console.error('❌ Failed to send notification:', notifError);
+        console.error('Notification error stack:', notifError.stack);
+      }
+    } else {
+      console.log(`ℹ️ Notification skipped - isReschedule: ${isReschedule}, bookingId: ${bookingId}`);
+    }
 
     res.status(200).json({
       message: isReschedule
@@ -1481,6 +1506,15 @@ const handlePaymentCaptured = async (paymentEntity) => {
     });
 
     console.log("Payment captured successfully via webhook:", paymentIntent.id);
+
+    // Send notification to provider about new booking
+    console.log('🔔 Sending booking created notification for booking:', newBooking.id);
+    try {
+      await notificationTemplates.bookingCreated(newBooking.id);
+      console.log('✅ Notification sent');
+    } catch (notifError) {
+      console.error('❌ Failed to send notification:', notifError);
+    }
   } catch (error) {
     console.error("Error handling payment.captured:", error);
   }

@@ -15,6 +15,7 @@ const {
   paiseToRupees,
   rupeesToPaise,
 } = require("../utils/razorpay");
+const { notificationTemplates } = require("../utils/notificationHelper");
 
 // Get booking by ID
 const getBookingById = async (req, res) => {
@@ -347,9 +348,11 @@ const getProviderBookings = async (req, res) => {
 };
 
 const addBooking = async (req, res) => {
+  console.log('🔔 addBooking called');
   try {
     const userId = req.token.id;
     const { serviceId, slotId, addressId, bookingDate } = req.body;
+    console.log('🔔 Request body:', { serviceId, slotId, addressId, bookingDate });
     if (!serviceId || !slotId || !bookingDate || !addressId) {
       return res.status(400).json({ message: "All fields are required" });
     }
@@ -528,6 +531,18 @@ const addBooking = async (req, res) => {
       })
       .returning();
 
+    console.log('🔔 Booking created successfully, ID:', newBooking.id);
+
+    // Send notification to provider about new booking
+    console.log('🔔 Creating notification for new booking:', newBooking.id);
+    try {
+      await notificationTemplates.bookingCreated(newBooking.id);
+      console.log('✅ Notification sent successfully');
+    } catch (notifError) {
+      console.error('❌ Error sending notification:', notifError);
+      // Don't fail the booking if notification fails
+    }
+
     res
       .status(201)
       .json({ message: "Booking created successfully", booking: newBooking });
@@ -682,6 +697,9 @@ const acceptBooking = async (req, res) => {
       .where(eq(bookings.id, bookingId))
       .returning();
 
+    // 6. Send notification to customer
+    await notificationTemplates.bookingConfirmed(bookingId);
+
     return res.status(200).json({
       message: "Booking accepted successfully",
       booking: updatedBooking,
@@ -799,6 +817,9 @@ const rejectBooking = async (req, res) => {
       .where(eq(bookings.id, bookingId))
       .returning();
 
+    // 7. Send notification to customer
+    await notificationTemplates.bookingRejected(bookingId);
+
     return res.status(200).json({
       message: refundDetails
         ? "Booking cancelled and refund initiated successfully"
@@ -849,30 +870,33 @@ function calculateRescheduleFee(rescheduleCount, bookingAmount, settings) {
 
 /**
  * Calculate cancellation refund based on booking status
- * New simplified rules:
- * - Pending/Reschedule_Pending: 100% refund
- * - Confirmed: 85% refund to customer, 15% payout to provider
+ * NEW RULES:
+ * - Pending/Reschedule_Pending: 100% refund to customer
+ * - Confirmed: 85% refund to customer, 10% payout to provider, 5% platform fee
  * @param {string} bookingStatus - Current booking status
  * @param {number} servicePrice - Service price in paise
- * @returns {object} - { customerRefundAmount, customerRefundPercentage, providerPayoutAmount, providerPayoutPercentage }
+ * @returns {object} - { customerRefundAmount, customerRefundPercentage, providerPayoutAmount, providerPayoutPercentage, platformFeeAmount, platformFeePercentage }
  */
 function calculateCancellationRefund(bookingStatus, servicePrice) {
   // Fixed refund percentages
   const PENDING_REFUND = 100; // 100% refund for pending
   const CONFIRMED_CUSTOMER_REFUND = 85; // 85% refund to customer for confirmed
-  const CONFIRMED_PROVIDER_PAYOUT = 15; // 15% payout to provider for confirmed
+  const CONFIRMED_PROVIDER_PAYOUT = 10; // 10% payout to provider for confirmed
+  const CONFIRMED_PLATFORM_FEE = 5; // 5% platform fee for confirmed
 
   let customerRefundAmount = 0;
   let customerRefundPercentage = 0;
   let providerPayoutAmount = 0;
   let providerPayoutPercentage = 0;
+  let platformFeeAmount = 0;
+  let platformFeePercentage = 0;
 
   if (bookingStatus === "pending" || bookingStatus === "reschedule_pending") {
     // Full refund for pending bookings
     customerRefundPercentage = PENDING_REFUND;
     customerRefundAmount = servicePrice; // 100%
   } else if (bookingStatus === "confirmed") {
-    // 85% refund to customer, 15% to provider for confirmed bookings
+    // 85% refund to customer, 10% to provider, 5% platform fee for confirmed bookings
     customerRefundPercentage = CONFIRMED_CUSTOMER_REFUND;
     customerRefundAmount = Math.round(
       (servicePrice * CONFIRMED_CUSTOMER_REFUND) / 100,
@@ -881,6 +905,10 @@ function calculateCancellationRefund(bookingStatus, servicePrice) {
     providerPayoutAmount = Math.round(
       (servicePrice * CONFIRMED_PROVIDER_PAYOUT) / 100,
     );
+    platformFeePercentage = CONFIRMED_PLATFORM_FEE;
+    platformFeeAmount = Math.round(
+      (servicePrice * CONFIRMED_PLATFORM_FEE) / 100,
+    );
   }
 
   return {
@@ -888,6 +916,8 @@ function calculateCancellationRefund(bookingStatus, servicePrice) {
     customerRefundPercentage,
     providerPayoutAmount,
     providerPayoutPercentage,
+    platformFeeAmount,
+    platformFeePercentage,
   };
 }
 
@@ -1080,6 +1110,9 @@ const requestReschedule = async (req, res) => {
       .where(eq(bookings.id, bookingId))
       .returning();
 
+    // Send notification to provider about reschedule request
+    await notificationTemplates.rescheduleRequested(bookingId);
+
     return res.status(200).json({
       message:
         "Reschedule request submitted. Provider will review your request.",
@@ -1147,7 +1180,10 @@ const cancelRescheduleRequest = async (req, res) => {
       });
     }
 
-    // Start transaction to revert booking and process refund
+    // Start transaction to revert booking and process refund (50/50 split)
+    let refundDetails = null;
+    let providerPayoutDetails = null;
+
     await db.transaction(async (tx) => {
       // Restore original slot and date
       await tx
@@ -1163,7 +1199,7 @@ const cancelRescheduleRequest = async (req, res) => {
         })
         .where(eq(bookings.id, bookingId));
 
-      // Find and refund the reschedule fee payment
+      // Find and process partial refund (50%) for reschedule fee
       const [reschedulePayment] = await tx
         .select()
         .from(payments)
@@ -1174,27 +1210,48 @@ const cancelRescheduleRequest = async (req, res) => {
         .limit(1);
 
       if (reschedulePayment && reschedulePayment.amount > 0) {
+        const rescheduleFeeAmount = reschedulePayment.amount; // Total fee (₹100)
+        const customerRefundAmount = Math.round(rescheduleFeeAmount / 2); // 50% to customer (₹50)
+        const providerPayoutAmount = rescheduleFeeAmount - customerRefundAmount; // 50% to provider (₹50)
+
         try {
+          // Refund 50% to customer
           const refundResult = await initiateRefund(
             reschedulePayment.razorpayPaymentId,
-            null, // Full refund
-            "Reschedule fee refunded - Customer cancelled reschedule request",
+            customerRefundAmount,
+            "Reschedule fee 50% refunded - Customer cancelled reschedule request",
           );
 
           await tx
             .update(payments)
             .set({
               refundId: refundResult.id,
-              refundAmount: reschedulePayment.amount,
+              refundAmount: customerRefundAmount,
               refundReason:
-                "Reschedule fee refunded - Customer cancelled reschedule request",
+                "Reschedule fee 50% refunded - Customer cancelled reschedule request (50% kept by provider)",
               refundedAt: new Date(),
-              status: "refunded",
+              status: "partially_refunded", // New status for partial refunds
+              // Track provider's share of reschedule fee using existing providerShare field
+              providerShare: providerPayoutAmount,
+              // Track that this providerShare is from reschedule fee cancellation
+              rescheduleFeePayoutStatus: "pending",
             })
             .where(eq(payments.id, reschedulePayment.id));
 
+          refundDetails = {
+            refundId: refundResult.id,
+            refundAmount: paiseToRupees(customerRefundAmount),
+            originalFee: paiseToRupees(rescheduleFeeAmount),
+          };
+
+          providerPayoutDetails = {
+            amount: paiseToRupees(providerPayoutAmount),
+            percentage: 50,
+            status: "pending",
+          };
+
           console.log(
-            `✅ Refund initiated for reschedule fee: ${refundResult.id}`,
+            `✅ 50% Refund initiated for reschedule fee: ${refundResult.id}, Provider keeps: ₹${paiseToRupees(providerPayoutAmount)}`,
           );
         } catch (refundError) {
           console.error("Failed to initiate refund:", refundError);
@@ -1204,7 +1261,11 @@ const cancelRescheduleRequest = async (req, res) => {
     });
 
     return res.status(200).json({
-      message: "Reschedule request cancelled. Original booking time restored.",
+      message: refundDetails
+        ? "Reschedule request cancelled. Original booking time restored. 50% refund processed."
+        : "Reschedule request cancelled. Original booking time restored.",
+      refund: refundDetails,
+      providerPayout: providerPayoutDetails,
     });
   } catch (error) {
     console.error("Error cancelling reschedule request:", error);
@@ -1268,17 +1329,20 @@ const cancelBooking = async (req, res) => {
       return res.status(404).json({ message: "Business profile not found" });
     }
 
-    // Calculate refund and provider payout based on new simplified rules
+    // Calculate refund and provider payout based on new rules
     const {
       customerRefundAmount,
       customerRefundPercentage,
       providerPayoutAmount,
       providerPayoutPercentage,
+      platformFeeAmount,
+      platformFeePercentage,
     } = calculateCancellationRefund(booking.status, booking.totalPrice);
 
     // Check if payment exists and process refund
     let refundDetails = null;
     let providerPayoutDetails = null;
+    let platformFeeDetails = null;
     const [payment] = await db
       .select()
       .from(payments)
@@ -1322,15 +1386,24 @@ const cancelBooking = async (req, res) => {
       }
     }
 
-    // For confirmed bookings, track provider payout (15%)
+    // For confirmed bookings, track provider payout (10%) and platform fee (5%)
     // Note: Actual payout to provider would be processed via Razorpay Payouts API
     // or settled separately. For now, we track it as pending.
-    if (booking.status === "confirmed" && providerPayoutAmount > 0) {
-      providerPayoutDetails = {
-        amount: paiseToRupees(providerPayoutAmount),
-        percentage: providerPayoutPercentage,
-        status: "pending", // To be processed via payout system
-      };
+    if (booking.status === "confirmed") {
+      if (providerPayoutAmount > 0) {
+        providerPayoutDetails = {
+          amount: paiseToRupees(providerPayoutAmount),
+          percentage: providerPayoutPercentage,
+          status: "pending", // To be processed via payout system
+        };
+      }
+      if (platformFeeAmount > 0) {
+        platformFeeDetails = {
+          amount: paiseToRupees(platformFeeAmount),
+          percentage: platformFeePercentage,
+          status: "retained", // Platform retains this fee
+        };
+      }
     }
 
     // Update booking status - customer cancellation sets status to "cancelled"
@@ -1343,6 +1416,8 @@ const cancelBooking = async (req, res) => {
         // Provider payout tracking
         providerPayoutAmount: providerPayoutAmount || null,
         providerPayoutStatus: providerPayoutAmount > 0 ? "pending" : null,
+        // Platform fee tracking
+        platformFeeAmount: platformFeeAmount || null,
         // Cancellation details
         cancelledAt: new Date(),
         cancellationReason: reason || "Cancelled by customer",
@@ -1351,6 +1426,9 @@ const cancelBooking = async (req, res) => {
       .where(eq(bookings.id, bookingId))
       .returning();
 
+    // Send notification to provider about cancellation
+    await notificationTemplates.bookingCancelled(bookingId);
+
     return res.status(200).json({
       message: refundDetails
         ? "Booking cancelled and refund initiated successfully"
@@ -1358,6 +1436,7 @@ const cancelBooking = async (req, res) => {
       booking: updatedBooking,
       refund: refundDetails,
       providerPayout: providerPayoutDetails,
+      platformFee: platformFeeDetails,
     });
   } catch (error) {
     console.error("Error cancelling booking:", error);
@@ -1416,21 +1495,28 @@ const approveReschedule = async (req, res) => {
     }
 
     // Update booking status to confirmed with accepted reschedule
+    // Reschedule fee (₹100) goes to provider - track this
     const [updatedBooking] = await db
       .update(bookings)
       .set({
         status: "confirmed",
         rescheduleOutcome: "accepted", // Mark reschedule as accepted
+        rescheduleFeeProviderPayout: booking.lastRescheduleFee || 0, // Track fee going to provider
+        rescheduleFeePayoutStatus: "pending", // Pending payout to provider
         // Keep previousSlotId and previousBookingDate for invoice/history
         // Don't clear them - we need them to show "Previous → New" slot
       })
       .where(eq(bookings.id, bookingId))
       .returning();
 
+    // Send notification to customer about approved reschedule
+    await notificationTemplates.rescheduleApproved(bookingId);
+
     return res.status(200).json({
       message:
         "Reschedule approved successfully. Booking is now confirmed with the new time.",
       booking: updatedBooking,
+      rescheduleFeeToProvider: booking.lastRescheduleFee ? paiseToRupees(booking.lastRescheduleFee) : null,
     });
   } catch (error) {
     console.error("Error approving reschedule:", error);
@@ -1557,6 +1643,9 @@ const declineReschedule = async (req, res) => {
         }
       }
     });
+
+    // Send notification to customer about declined reschedule
+    await notificationTemplates.rescheduleDeclined(bookingId);
 
     return res.status(200).json({
       message:
@@ -1839,6 +1928,9 @@ const completeBooking = async (req, res) => {
         .where(eq(payments.id, payment.id));
       console.log(`✅ Payment ${payment.id} marked as "pending" for payout`);
     }
+
+    // Send notification to customer about booking completion
+    await notificationTemplates.bookingCompleted(bookingId);
 
     return res.status(200).json({
       message: "Booking completed successfully",

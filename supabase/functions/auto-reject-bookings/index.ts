@@ -31,6 +31,8 @@ serve(async (req: Request) => {
     const results = {
       autoRejectBookings: null,
       autoHandleRescheduleRequests: null,
+      sendAcceptReminders: null,
+      sendUpcomingReminders: null,
       timestamp: new Date().toISOString(),
     };
 
@@ -80,6 +82,54 @@ serve(async (req: Request) => {
     } catch (error) {
       console.error('❌ Auto-handle reschedule error:', error);
       results.autoHandleRescheduleRequests = { error: error.message };
+    }
+
+    // 3. Send accept reminders to providers
+    console.log('Step 3: Sending accept reminders...');
+    try {
+      const acceptRemindersResponse = await fetch(`${BACKEND_URL}/cron/send-accept-reminders`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${CRON_SECRET}`,
+        },
+      });
+
+      if (acceptRemindersResponse.ok) {
+        results.sendAcceptReminders = await acceptRemindersResponse.json();
+        console.log('✅ Accept reminders completed:', results.sendAcceptReminders);
+      } else {
+        const errorText = await acceptRemindersResponse.text();
+        console.error('❌ Accept reminders failed:', acceptRemindersResponse.status, errorText);
+        results.sendAcceptReminders = { error: `HTTP ${acceptRemindersResponse.status}` };
+      }
+    } catch (error) {
+      console.error('❌ Accept reminders error:', error);
+      results.sendAcceptReminders = { error: error.message };
+    }
+
+    // 4. Send upcoming service reminders to customers
+    console.log('Step 4: Sending upcoming service reminders...');
+    try {
+      const upcomingRemindersResponse = await fetch(`${BACKEND_URL}/cron/send-upcoming-reminders`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${CRON_SECRET}`,
+        },
+      });
+
+      if (upcomingRemindersResponse.ok) {
+        results.sendUpcomingReminders = await upcomingRemindersResponse.json();
+        console.log('✅ Upcoming service reminders completed:', results.sendUpcomingReminders);
+      } else {
+        const errorText = await upcomingRemindersResponse.text();
+        console.error('❌ Upcoming service reminders failed:', upcomingRemindersResponse.status, errorText);
+        results.sendUpcomingReminders = { error: `HTTP ${upcomingRemindersResponse.status}` };
+      }
+    } catch (error) {
+      console.error('❌ Upcoming service reminders error:', error);
+      results.sendUpcomingReminders = { error: error.message };
     }
 
     console.log('=== Cron job completed ===');

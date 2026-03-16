@@ -163,6 +163,8 @@ const bookings = pgTable("bookings", {
   rescheduleCount: integer("reschedule_count").default(0).notNull(), // Number of times rescheduled
   lastRescheduleFee: integer("last_reschedule_fee"), // Last reschedule fee charged (in paise)
   rescheduleOutcome: varchar("reschedule_outcome", { length: 20 }), // "pending", "accepted", "rejected", "cancelled"
+  rescheduleFeeProviderPayout: integer("reschedule_fee_provider_payout"), // Reschedule fee amount going to provider (in paise)
+  rescheduleFeePayoutStatus: varchar("reschedule_fee_payout_status", { length: 20 }), // "pending", "paid"
   previousSlotId: integer("previous_slot_id"), // Stores original slot before reschedule (for revert if declined)
   previousSlotTime: varchar("previous_slot_time", { length: 20 }), // Stores original slot time (e.g., "09:00:00") before reschedule
   previousBookingDate: timestamp("previous_booking_date"), // Stores original date before reschedule
@@ -172,7 +174,9 @@ const bookings = pgTable("bookings", {
   // Refund tracking
   isRefunded: boolean("is_refunded").default(false).notNull(), // Whether payment has been refunded
   refundAmount: integer("refund_amount"), // Amount refunded to customer (in paise)
-  // Provider payout tracking (15% when customer cancels confirmed booking)
+  // Platform fee tracking (5% when customer cancels confirmed booking)
+  platformFeeAmount: integer("platform_fee_amount"), // Platform fee retained (in paise)
+  // Provider payout tracking (10% when customer cancels confirmed booking)
   providerPayoutAmount: integer("provider_payout_amount"), // Amount paid to provider (in paise)
   providerPayoutStatus: varchar("provider_payout_status", { length: 20 }), // "pending", "paid", "failed"
   providerPayoutId: varchar("provider_payout_id", { length: 100 }), // Razorpay payout ID
@@ -181,6 +185,9 @@ const bookings = pgTable("bookings", {
   cancelledAt: timestamp("cancelled_at"), // When booking was cancelled
   cancellationReason: varchar("cancellation_reason", { length: 500 }), // Reason for cancellation
   cancelledBy: varchar("cancelled_by", { length: 20 }), // "customer", "provider", or "system"
+  // Reminder tracking
+  reminderSent: boolean("reminder_sent").default(false).notNull(), // Accept/Reject reminder sent
+  upcomingReminderSent: boolean("upcoming_reminder_sent").default(false).notNull(), // Upcoming service reminder sent
 });
 
 const payments = pgTable("payments", {
@@ -209,6 +216,8 @@ const payments = pgTable("payments", {
   providerPayoutStatus: varchar("provider_payout_status", { length: 20 }), // "pending", "paid", "failed"
   providerPayoutId: varchar("provider_payout_id", { length: 100 }), // Razorpay payout ID
   providerPayoutAt: timestamp("provider_payout_at"), // When payout was processed
+  // Reschedule Fee Payout Tracking (when customer cancels reschedule, provider keeps 50%)
+  rescheduleFeePayoutStatus: varchar("reschedule_fee_payout_status", { length: 20 }), // "pending", "paid"
   // Timestamps
   createdAt: timestamp("created_at").defaultNow().notNull(),
   completedAt: timestamp("completed_at"),
@@ -298,6 +307,34 @@ const feedback = pgTable("feedback", {
   hiddenBy: integer("hidden_by").references(() => users.id, { onDelete: "set null" }),
   hiddenAt: timestamp("hidden_at"),
 });
+
+// Notifications - Store user notifications for in-app display and push
+const notifications = pgTable("notifications", {
+  id: serial("id").primaryKey(),
+  userId: integer("user_id")
+    .notNull()
+    .references(() => users.id, { onDelete: "cascade" }),
+  type: varchar("type", { length: 50 }).notNull(), // 'booking_created', 'booking_confirmed', 'booking_cancelled', etc.
+  title: varchar("title", { length: 255 }).notNull(),
+  message: text("message").notNull(),
+  data: text("data"), // JSON string for additional data: { bookingId, actionUrl, etc. }
+  isRead: boolean("is_read").default(false).notNull(),
+  readAt: timestamp("read_at"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+// Device Tokens - Store FCM tokens for push notifications
+const deviceTokens = pgTable("device_tokens", {
+  id: serial("id").primaryKey(),
+  userId: integer("user_id")
+    .notNull()
+    .references(() => users.id, { onDelete: "cascade" }),
+  token: varchar("token", { length: 500 }).notNull().unique(),
+  deviceInfo: text("device_info"), // JSON string: { userAgent, platform, model }
+  isActive: boolean("is_active").default(true).notNull(),
+  lastUsedAt: timestamp("last_used_at").defaultNow().notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
 module.exports = {
   Roles,
   Address,
@@ -312,6 +349,8 @@ module.exports = {
   feedback,
   paymentDetails,
   adminSettings,
+  notifications,
+  deviceTokens,
   roleEnum,
   bookingStatusEnum,
   paymentStatusEnum,

@@ -1,0 +1,330 @@
+const db = require('../config/db');
+const { notifications, users, bookings, services, businessProfiles } = require('../models/schema');
+const { eq, and, desc, sql } = require('drizzle-orm');
+const { sendPushNotification } = require('../services/fcm.service');
+
+// STARTUP LOG: Confirm this file is loaded
+console.log('✅ notificationHelper.js loaded - version 2026-03-16-v2');
+
+/**
+ * Create and send notification
+ * @param {object} params - Notification parameters
+ * @returns {Promise<object>} Created notification
+ */
+async function createNotification({
+  userId,
+  type,
+  title,
+  message,
+  data = {},
+}) {
+  try {
+    console.log('🔔 Creating notification:', { userId, type, title });
+
+    // Convert data object to JSON string for storage
+    const dataString = Object.keys(data).length > 0 ? JSON.stringify(data) : null;
+
+    // Save to database
+    const [notification] = await db.insert(notifications)
+      .values({
+        userId,
+        type,
+        title,
+        message,
+        data: dataString,
+      })
+      .returning();
+
+    console.log('✅ Notification saved to DB:', notification.id);
+
+    // Send push notification
+    const pushResult = await sendPushNotification(userId, title, message, {
+      notificationId: notification.id.toString(),
+      ...data,
+    });
+
+    console.log('📱 Push notification result:', pushResult);
+
+    return notification;
+  } catch (error) {
+    console.error('❌ Notification creation error:', error);
+    return null;
+  }
+}
+
+/**
+ * Helper to get booking details for notifications
+ */
+async function getBookingDetails(bookingId) {
+  const [booking] = await db.select()
+    .from(bookings)
+    .where(eq(bookings.id, bookingId));
+
+  if (!booking) return null;
+
+  const [service] = await db.select()
+    .from(services)
+    .where(eq(services.id, booking.serviceId));
+
+  const [business] = await db.select()
+    .from(businessProfiles)
+    .where(eq(businessProfiles.id, booking.businessProfileId));
+
+  return { booking, service, business };
+}
+
+/**
+ * Notification templates for different events
+ */
+const notificationTemplates = {
+  /**
+   * New booking created - Notify provider
+   */
+  async bookingCreated(bookingId) {
+    console.log('🔔 ============================================ 🔔');
+    console.log('🔔 bookingCreated called with bookingId:', bookingId);
+    console.log('🔔 ============================================ 🔔');
+
+    const details = await getBookingDetails(bookingId);
+    console.log('🔔 getBookingDetails result:', JSON.stringify(details, null, 2));
+
+    if (!details) {
+      console.log('❌ getBookingDetails returned null');
+      return null;
+    }
+
+    const { business, service } = details;
+    console.log('🔔 Business providerId:', business?.providerId, 'Service name:', service?.name);
+
+    if (!business) {
+      console.log('❌ Business is null - cannot send notification');
+      return null;
+    }
+
+    if (!business.providerId) {
+      console.log('❌ Business.providerId is null or undefined - business:', JSON.stringify(business));
+      return null;
+    }
+
+    console.log('🔔 About to call createNotification for providerId:', business.providerId);
+    const result = await createNotification({
+      userId: business.providerId,
+      type: 'booking_created',
+      title: 'New Booking Request',
+      message: `You have a new booking request for ${service.name}`,
+      data: { bookingId: bookingId.toString(), actionUrl: `/provider/bookings` },
+    });
+    console.log('🔔 createNotification completed, result:', result);
+    return result;
+  },
+
+  /**
+   * Provider accepted booking - Notify customer
+   */
+  async bookingConfirmed(bookingId) {
+    const details = await getBookingDetails(bookingId);
+    if (!details) return null;
+
+    const { booking, service } = details;
+
+    return createNotification({
+      userId: booking.customerId,
+      type: 'booking_confirmed',
+      title: 'Booking Confirmed',
+      message: `Your booking for ${service.name} has been confirmed`,
+      data: { bookingId: bookingId.toString(), actionUrl: `/customer/bookings` },
+    });
+  },
+
+  /**
+   * Provider rejected booking - Notify customer
+   */
+  async bookingRejected(bookingId, reason = '') {
+    const details = await getBookingDetails(bookingId);
+    if (!details) return null;
+
+    const { booking, service } = details;
+
+    return createNotification({
+      userId: booking.customerId,
+      type: 'booking_rejected',
+      title: 'Booking Rejected',
+      message: reason
+        ? `Your booking for ${service.name} was declined: ${reason}`
+        : `Your booking request for ${service.name} was declined`,
+      data: { bookingId: bookingId.toString(), actionUrl: `/customer/bookings` },
+    });
+  },
+
+  /**
+   * Customer cancelled booking - Notify provider
+   */
+  async bookingCancelled(bookingId) {
+    const details = await getBookingDetails(bookingId);
+    if (!details) return null;
+
+    const { business, service, booking } = details;
+
+    return createNotification({
+      userId: business.providerId,
+      type: 'booking_cancelled',
+      title: 'Booking Cancelled',
+      message: `Booking for ${service.name} has been cancelled by customer`,
+      data: { bookingId: bookingId.toString(), actionUrl: `/provider/bookings` },
+    });
+  },
+
+  /**
+   * Customer requested reschedule - Notify provider
+   */
+  async rescheduleRequested(bookingId) {
+    const details = await getBookingDetails(bookingId);
+    if (!details) return null;
+
+    const { business, service } = details;
+
+    return createNotification({
+      userId: business.providerId,
+      type: 'reschedule_request',
+      title: 'Reschedule Request',
+      message: `Customer requested to reschedule ${service.name}`,
+      data: { bookingId: bookingId.toString(), actionUrl: `/provider/bookings` },
+    });
+  },
+
+  /**
+   * Provider approved reschedule - Notify customer
+   */
+  async rescheduleApproved(bookingId) {
+    const details = await getBookingDetails(bookingId);
+    if (!details) return null;
+
+    const { booking } = details;
+
+    return createNotification({
+      userId: booking.customerId,
+      type: 'reschedule_approved',
+      title: 'Reschedule Approved',
+      message: `Your reschedule request has been approved`,
+      data: { bookingId: bookingId.toString(), actionUrl: `/customer/bookings` },
+    });
+  },
+
+  /**
+   * Provider declined reschedule - Notify customer
+   */
+  async rescheduleDeclined(bookingId) {
+    const details = await getBookingDetails(bookingId);
+    if (!details) return null;
+
+    const { booking } = details;
+
+    return createNotification({
+      userId: booking.customerId,
+      type: 'reschedule_declined',
+      title: 'Reschedule Declined',
+      message: `Your reschedule request was declined. Original booking time restored.`,
+      data: { bookingId: bookingId.toString(), actionUrl: `/customer/bookings` },
+    });
+  },
+
+  /**
+   * Reminder to accept/reject booking - Notify provider
+   */
+  async acceptReminder(bookingId) {
+    const details = await getBookingDetails(bookingId);
+    if (!details) return null;
+
+    const { business, service } = details;
+
+    return createNotification({
+      userId: business.providerId,
+      type: 'reminder_accept',
+      title: 'Action Required',
+      message: `Please accept/reject booking for ${service.name} - expiring soon`,
+      data: { bookingId: bookingId.toString(), actionUrl: `/provider/bookings` },
+    });
+  },
+
+  /**
+   * Upcoming service reminder - Notify customer
+   */
+  async upcomingService(bookingId) {
+    const details = await getBookingDetails(bookingId);
+    if (!details) return null;
+
+    const { booking, service } = details;
+
+    // Format booking date
+    const bookingDate = new Date(booking.bookingDate);
+    const dateStr = bookingDate.toLocaleDateString('en-US', {
+      weekday: 'long',
+      month: 'short',
+      day: 'numeric',
+    });
+    const timeStr = bookingDate.toLocaleTimeString('en-US', {
+      hour: 'numeric',
+      minute: '2-digit',
+    });
+
+    return createNotification({
+      userId: booking.customerId,
+      type: 'reminder_upcoming',
+      title: 'Service Tomorrow',
+      message: `Reminder: Your ${service.name} is scheduled for ${dateStr} at ${timeStr}`,
+      data: { bookingId: bookingId.toString(), actionUrl: `/customer/bookings` },
+    });
+  },
+
+  /**
+   * Payment successful - Notify both parties
+   */
+  async paymentSuccess(bookingId, amount) {
+    const details = await getBookingDetails(bookingId);
+    if (!details) return null;
+
+    const { booking, service, business } = details;
+    const amountInRupees = (amount / 100).toFixed(2);
+
+    // Notify customer
+    await createNotification({
+      userId: booking.customerId,
+      type: 'payment_success',
+      title: 'Payment Successful',
+      message: `Payment of ₹${amountInRupees} for ${service.name} completed`,
+      data: { bookingId: bookingId.toString(), actionUrl: `/customer/bookings` },
+    });
+
+    // Notify provider
+    return createNotification({
+      userId: business.providerId,
+      type: 'payment_received',
+      title: 'Payment Received',
+      message: `Payment of ₹${amountInRupees} received for ${service.name}`,
+      data: { bookingId: bookingId.toString(), actionUrl: `/provider/bookings` },
+    });
+  },
+
+  /**
+   * Booking completed - Notify customer
+   */
+  async bookingCompleted(bookingId) {
+    const details = await getBookingDetails(bookingId);
+    if (!details) return null;
+
+    const { booking, service } = details;
+
+    return createNotification({
+      userId: booking.customerId,
+      type: 'booking_completed',
+      title: 'Service Completed',
+      message: `Your ${service.name} has been completed. Please rate your experience!`,
+      data: { bookingId: bookingId.toString(), actionUrl: `/customer/bookings` },
+    });
+  },
+};
+
+module.exports = {
+  createNotification,
+  notificationTemplates,
+};

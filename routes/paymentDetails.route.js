@@ -3,6 +3,7 @@ const router = express.Router();
 const {
   savePaymentDetails,
   getPaymentDetails,
+  updatePaymentDetails,
   setActivePaymentMethod,
   deletePaymentDetails,
 } = require("../controllers/paymentDetails.controller");
@@ -33,6 +34,13 @@ router.get("/", getPaymentDetails);
  * @access  Private (Admin, Provider)
  */
 router.put("/:id/set-active", setActivePaymentMethod);
+
+/**
+ * @route   PUT /:id
+ * @desc    Update payment details
+ * @access  Private (Admin, Provider)
+ */
+router.put("/:id", updatePaymentDetails);
 
 /**
  * @route   DELETE /:id

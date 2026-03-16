@@ -4,11 +4,11 @@
 -- 1. Enable pg_cron extension (if not already enabled)
 CREATE EXTENSION IF NOT EXISTS pg_cron;
 
--- 2. Create the cron job - runs every hour
+-- 2. Create the cron job - runs every 30 minutes
 -- This will call your Supabase Edge Function
 SELECT cron.schedule(
   'auto-reject-expired-bookings',
-  '0 * * * *',  -- Every hour at minute 0
+  '*/30 * * * *',  -- Every 30 minutes
   $$
   SELECT
     net.http_post(

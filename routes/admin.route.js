@@ -13,6 +13,14 @@ const {
   bulkProcessPayouts,
 } = require("../controllers/admin.controller");
 const {
+  getRevenueAnalytics,
+  getCategoryAnalytics,
+  getStatusAnalytics,
+  getTopProvidersAnalytics,
+  getPaymentStatusAnalytics,
+  getAverageOrderValueAnalytics,
+} = require("../controllers/adminAnalytics.controller");
+const {
   checkAdminPaymentDetails,
   getProviderRevenueStats,
 } = require("../controllers/paymentDetails.controller");
@@ -61,6 +69,60 @@ router.put("/settings", updatePlatformSettings);
  * @access  Private (Admin only)
  */
 router.get("/revenue", getRevenueStats);
+
+// ============================================
+// ADMIN ANALYTICS ROUTES
+// All routes require authentication (global auth middleware)
+// Only admin (roleId: 3) can access these routes
+// ============================================
+
+/**
+ * @route   GET /admin/analytics/revenue
+ * @desc    Get revenue & bookings analytics with chart data
+ * @query   period - 7d|30d|6m|12m|all (default: 30d)
+ * @access  Private (Admin only)
+ */
+router.get("/analytics/revenue", getRevenueAnalytics);
+
+/**
+ * @route   GET /admin/analytics/categories
+ * @desc    Get category performance analytics
+ * @query   period - 7d|30d|6m|12m|all (default: 30d)
+ * @access  Private (Admin only)
+ */
+router.get("/analytics/categories", getCategoryAnalytics);
+
+/**
+ * @route   GET /admin/analytics/status
+ * @desc    Get booking status breakdown analytics
+ * @query   period - 7d|30d|6m|12m|all (default: 30d)
+ * @access  Private (Admin only)
+ */
+router.get("/analytics/status", getStatusAnalytics);
+
+/**
+ * @route   GET /admin/analytics/providers
+ * @desc    Get top providers by platform fee contribution
+ * @query   period - 7d|30d|6m|12m|all (default: 30d)
+ * @access  Private (Admin only)
+ */
+router.get("/analytics/providers", getTopProvidersAnalytics);
+
+/**
+ * @route   GET /admin/analytics/payment-status
+ * @desc    Get payment status breakdown (paid, pending, failed)
+ * @query   period - 7d|30d|6m|12m|all (default: 30d)
+ * @access  Private (Admin only)
+ */
+router.get("/analytics/payment-status", getPaymentStatusAnalytics);
+
+/**
+ * @route   GET /admin/analytics/average-order-value
+ * @desc    Get average order value trend over time
+ * @query   period - 7d|30d|6m|12m|all (default: 30d)
+ * @access  Private (Admin only)
+ */
+router.get("/analytics/average-order-value", getAverageOrderValueAnalytics);
 
 /**
  * @route   GET /check-payment-details

@@ -211,11 +211,12 @@ const getRevenueAnalytics = async (req, res) => {
         const key = formatDateForGrouping(bookingDate, period);
         if (groupedData.has(key)) {
           const existing = groupedData.get(key);
-          existing.bookings += 1; // Count ALL bookings
+          existing.bookings += 1; // Count ALL bookings for display
 
-          // Only add revenue if this booking has a payment
+          // Only add revenue for ELIGIBLE bookings (not cancelled/rejected/refunded) with payment
+          const isEligible = item.status !== 'cancelled' && item.status !== 'rejected' && item.status !== 'refunded';
           const paymentData = bookingPaymentsMap.get(item.id);
-          if (paymentData) {
+          if (isEligible && paymentData) {
             // providerShare is in paise, convert to rupees
             existing.revenue += paymentData.providerShare / 100;
           }
@@ -242,10 +243,13 @@ const getRevenueAnalytics = async (req, res) => {
       };
     });
 
-    // Calculate totals
+    // Calculate totals - only include eligible bookings for revenue
     const totalBookings = allBookings.length;
-    // Provider's 95% share of all bookings
-    const totalRevenue = allBookings.reduce((sum, item) => sum + Math.round((item.totalPrice || 0) * providerSharePercentage / 100), 0);
+    const eligibleBookings = allBookings.filter(item =>
+      item.status !== 'cancelled' && item.status !== 'rejected' && item.status !== 'refunded'
+    );
+    // Provider's 95% share of ELIGIBLE bookings (excluding cancelled/rejected/refunded)
+    const totalRevenue = eligibleBookings.reduce((sum, item) => sum + Math.round((item.totalPrice || 0) * providerSharePercentage / 100), 0);
     const totalCompleted = allBookings.filter((item) => item.status === "completed").length;
 
     res.json({
@@ -393,11 +397,16 @@ const getServiceAnalytics = async (req, res) => {
         });
       }
 
+      // Only count eligible bookings (not cancelled/rejected/refunded) for revenue
+      const isEligible = item.status !== 'cancelled' && item.status !== 'rejected' && item.status !== 'refunded';
+
       const service = serviceMap.get(item.serviceId);
       service.bookingCount += 1;
-      // Calculate provider's 95% share
-      const providerShare = Math.round((item.totalPrice || 0) * providerSharePercentage / 100);
-      service.totalRevenue += providerShare;
+      // Calculate provider's 95% share only for eligible bookings
+      if (isEligible) {
+        const providerShare = Math.round((item.totalPrice || 0) * providerSharePercentage / 100);
+        service.totalRevenue += providerShare;
+      }
       if (item.status === "completed") {
         service.completedCount += 1;
       }
@@ -419,8 +428,11 @@ const getServiceAnalytics = async (req, res) => {
     servicesList.sort((a, b) => b.bookingCount - a.bookingCount);
 
     const totalBookings = allBookings.length;
-    // Provider's 95% share of all bookings
-    const totalRevenue = allBookings.reduce((sum, item) => sum + Math.round((item.totalPrice || 0) * 95 / 100), 0);
+    // Provider's 95% share of ELIGIBLE bookings (excluding cancelled/rejected/refunded)
+    const eligibleBookings = allBookings.filter(item =>
+      item.status !== 'cancelled' && item.status !== 'rejected' && item.status !== 'refunded'
+    );
+    const totalRevenue = eligibleBookings.reduce((sum, item) => sum + Math.round((item.totalPrice || 0) * 95 / 100), 0);
 
     res.json({
       period,
@@ -548,9 +560,12 @@ const getStatusAnalytics = async (req, res) => {
       }
       const s = statusMap.get(status);
       s.count += 1;
-      // Calculate provider's 95% share
-      const providerShare = Math.round((item.totalPrice || 0) * providerSharePercentage / 100);
-      s.revenue += providerShare;
+      // Calculate provider's 95% share only for eligible statuses
+      // For cancelled/rejected/refunded, show revenue as 0 since it was refunded
+      if (status !== 'cancelled' && status !== 'rejected' && status !== 'refunded') {
+        const providerShare = Math.round((item.totalPrice || 0) * providerSharePercentage / 100);
+        s.revenue += providerShare;
+      }
     });
 
     // Color mapping

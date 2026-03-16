@@ -263,6 +263,121 @@ const setActivePaymentMethod = async (req, res) => {
 };
 
 /**
+ * Update payment details
+ * PUT /payment-details/:id
+ */
+const updatePaymentDetails = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { paymentType, upiId, bankAccount, ifscCode, accountHolderName } =
+      req.body;
+    const userId = req.token.id;
+    const userRoleId = req.token.roleId;
+
+    // Only admin (roleId: 3) and providers (roleId: 2) can update payment details
+    if (userRoleId !== 3 && userRoleId !== 2) {
+      return res.status(403).json({
+        message: "Access denied: Only admin and providers can update payment details",
+      });
+    }
+
+    // Verify the payment detail belongs to this user
+    const [paymentDetail] = await db
+      .select()
+      .from(paymentDetails)
+      .where(and(eq(paymentDetails.id, id), eq(paymentDetails.userId, userId)))
+      .limit(1);
+
+    if (!paymentDetail) {
+      return res.status(404).json({ message: "Payment detail not found" });
+    }
+
+    // Get user details for Razorpay contact
+    const [user] = await db
+      .select()
+      .from(users)
+      .where(eq(users.id, userId))
+      .limit(1);
+
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    // Validate based on payment type
+    if (paymentType === "upi" && !upiId) {
+      return res.status(400).json({ message: "UPI ID is required for UPI type" });
+    }
+    if (
+      paymentType === "bank" &&
+      (!bankAccount || !ifscCode || !accountHolderName)
+    ) {
+      return res
+        .status(400)
+        .json({ message: "Bank account, IFSC code, and account holder name are required for bank type" });
+    }
+
+    // Create Razorpay contact
+    const contact = await createContact(
+      user.name,
+      user.email,
+      user.phone || "+919999999999"
+    );
+
+    let fundAccount;
+
+    // Create Razorpay fund account based on payment type
+    if (paymentType === "upi") {
+      fundAccount = await createUPIFundAccount(upiId, contact.id);
+    } else {
+      fundAccount = await createBankFundAccount(
+        bankAccount,
+        ifscCode,
+        accountHolderName,
+        contact.id
+      );
+    }
+
+    // Build update object
+    const updateData = {
+      paymentType,
+      upiId: paymentType === "upi" ? upiId : null,
+      bankAccount: paymentType === "bank" ? bankAccount : null,
+      ifscCode: paymentType === "bank" ? ifscCode : null,
+      accountHolderName: paymentType === "bank" ? accountHolderName : null,
+      razorpayContactId: contact.id,
+      razorpayFundAccountId: fundAccount.id,
+      updatedAt: new Date(),
+    };
+
+    // Update payment details
+    const [updated] = await db
+      .update(paymentDetails)
+      .set(updateData)
+      .where(eq(paymentDetails.id, id))
+      .returning();
+
+    res.status(200).json({
+      message: "Payment details updated successfully",
+      data: {
+        id: updated.id,
+        paymentType: updated.paymentType,
+        upiId: updated.upiId,
+        bankAccount: updated.bankAccount
+          ? `********${updated.bankAccount.slice(-4)}`
+          : null,
+        isActive: updated.isActive,
+      },
+    });
+  } catch (error) {
+    console.error("Error updating payment details:", error);
+    res.status(500).json({
+      message: "Server error",
+      error: error.message,
+    });
+  }
+};
+
+/**
  * Delete payment details
  * DELETE /payment-details/:id
  */
@@ -526,17 +641,27 @@ const getProviderRevenueStats = async (req, res) => {
     const platformFeePercentage = 5;
     const providerSharePercentage = 100 - platformFeePercentage; // 95%
 
-    // Calculate provider's 95% share of ALL bookings
-    const totalEarnings = allBookings.reduce((sum, booking) => {
+    // Filter out cancelled, rejected, and refunded bookings - they don't count toward earnings
+    const earningsBookings = allBookings.filter(b =>
+      b.status !== 'cancelled' && b.status !== 'rejected' && b.status !== 'refunded' && !b.isRefunded
+    );
+
+    console.log("🔍 Earnings-eligible bookings:", earningsBookings.length, "out of", allBookings.length);
+
+    // Calculate provider's 95% share of ELIGIBLE bookings (excluding cancelled/rejected/refunded)
+    const totalEarnings = earningsBookings.reduce((sum, booking) => {
       const providerShare = Math.round((booking.totalPrice || 0) * providerSharePercentage / 100);
       return sum + providerShare;
     }, 0);
 
-    // Count by status
+    // Count by status (from all bookings)
     const totalBookings = allBookings.length;
     const completedBookings = allBookings.filter(b => b.status === 'completed').length;
     const pendingBookings = allBookings.filter(b => b.status === 'pending').length;
     const confirmedBookings = allBookings.filter(b => b.status === 'confirmed').length;
+    const cancelledBookings = allBookings.filter(b => b.status === 'cancelled').length;
+    const rejectedBookings = allBookings.filter(b => b.status === 'rejected').length;
+    const refundedBookings = allBookings.filter(b => b.status === 'refunded' || b.isRefunded).length;
 
     // For pending/paid payouts, we need to check actual payment records
     const providerPayments = await db
@@ -563,11 +688,14 @@ const getProviderRevenueStats = async (req, res) => {
       completedBookings,
       pendingBookings,
       confirmedBookings,
+      cancelledBookings,
+      rejectedBookings,
+      refundedBookings,
     };
 
     console.log("📊 Provider earnings data:", earningsData);
 
-    // Get monthly breakdown for the current year based on bookings
+    // Get monthly breakdown for the current year based on ELIGIBLE bookings (not cancelled/rejected/refunded)
     const currentYear = new Date().getFullYear();
     const monthlyBreakdown = await db
       .select({
@@ -578,6 +706,8 @@ const getProviderRevenueStats = async (req, res) => {
       .from(bookings)
       .where(eq(bookings.businessProfileId, business.id))
       .where(sql`EXTRACT(YEAR FROM ${bookings.bookingDate}) = ${currentYear}`)
+      .where(sql`${bookings.status} NOT IN ('cancelled', 'rejected', 'refunded')`)
+      .where(sql`${bookings.isRefunded} = false`)
       .groupBy(sql`TO_CHAR(${bookings.bookingDate}, 'Mon')`)
       .orderBy(sql`TO_CHAR(${bookings.bookingDate}, 'Mon')`);
 
@@ -596,6 +726,9 @@ const getProviderRevenueStats = async (req, res) => {
       completedBookings: Number(earningsData.completedBookings) || 0,
       pendingBookings: Number(earningsData.pendingBookings) || 0,
       confirmedBookings: Number(earningsData.confirmedBookings) || 0,
+      cancelledBookings: Number(earningsData.cancelledBookings) || 0,
+      rejectedBookings: Number(earningsData.rejectedBookings) || 0,
+      refundedBookings: Number(earningsData.refundedBookings) || 0,
       breakdown,
     };
     console.log("📊 Sending provider revenue response:", response);
@@ -609,6 +742,7 @@ const getProviderRevenueStats = async (req, res) => {
 module.exports = {
   savePaymentDetails,
   getPaymentDetails,
+  updatePaymentDetails,
   setActivePaymentMethod,
   deletePaymentDetails,
   checkAdminPaymentDetails,

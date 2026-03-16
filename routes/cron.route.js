@@ -4,6 +4,7 @@ const db = require("../config/db");
 const { bookings, payments, services, users, slots } = require("../models/schema");
 const { eq, and, lt, sql } = require("drizzle-orm");
 const { initiateRefund } = require("../utils/razorpay");
+const { sendAcceptReminders, sendUpcomingServiceReminders } = require("../utils/reminderService");
 
 // Secret key for cron job authentication
 const CRON_SECRET = process.env.CRON_SECRET || "default-cron-secret-change-in-production";
@@ -276,6 +277,58 @@ router.post("/auto-handle-reschedule-requests", verifyCronSecret, async (req, re
     res.status(200).json({
       message: "Auto-handle reschedule requests completed",
       ...results,
+    });
+
+  } catch (error) {
+    console.error("Cron job error:", error);
+    res.status(500).json({
+      message: "Server error",
+      error: error.message,
+    });
+  }
+});
+
+/**
+ * POST /cron/send-accept-reminders
+ * Internal endpoint for cron jobs to send accept reminders to providers
+ * Protected by CRON_SECRET
+ */
+router.post("/send-accept-reminders", verifyCronSecret, async (req, res) => {
+  console.log("Cron job: Sending accept reminders...");
+
+  try {
+    const result = await sendAcceptReminders();
+
+    console.log("Cron job completed:", result);
+    res.status(200).json({
+      message: "Accept reminders completed",
+      ...result,
+    });
+
+  } catch (error) {
+    console.error("Cron job error:", error);
+    res.status(500).json({
+      message: "Server error",
+      error: error.message,
+    });
+  }
+});
+
+/**
+ * POST /cron/send-upcoming-reminders
+ * Internal endpoint for cron jobs to send upcoming service reminders to customers
+ * Protected by CRON_SECRET
+ */
+router.post("/send-upcoming-reminders", verifyCronSecret, async (req, res) => {
+  console.log("Cron job: Sending upcoming service reminders...");
+
+  try {
+    const result = await sendUpcomingServiceReminders();
+
+    console.log("Cron job completed:", result);
+    res.status(200).json({
+      message: "Upcoming service reminders completed",
+      ...result,
     });
 
   } catch (error) {

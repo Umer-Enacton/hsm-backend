@@ -1,3 +1,16 @@
+// ============================================================
+// UNIQUE STARTUP BANNER - Confirm this server is running
+// ============================================================
+console.log('');
+console.log('╔═══════════════════════════════════════════════════════╗');
+console.log('║  🔥 HSM BACKEND SERVER STARTING 🔥                    ║');
+console.log('║  PID:', process.pid, '                                  ║');
+console.log('║  Time:', new Date().toISOString(), '           ║');
+console.log('║  Version: DEBUG-2026-03-16-V3                          ║');
+console.log('╚═══════════════════════════════════════════════════════╝');
+console.log('');
+// ============================================================
+
 const express = require("express");
 const cors = require("cors");
 const authRoutes = require("./routes/auth.route");
@@ -18,6 +31,8 @@ const adminRoutes = require("./routes/admin.route");
 const adminBookingsRoutes = require("./routes/adminBookings.route");
 const cronRoutes = require("./routes/cron.route");
 const providerAnalyticsRoutes = require("./routes/providerAnalytics.route");
+const notificationRoutes = require("./routes/notification.route");
+const deviceTokenRoutes = require("./routes/deviceToken.route");
 const auth = require("./middleware/auth");
 const { startPeriodicCleanup } = require("./utils/cleanupExpiredIntents");
 const app = express();
@@ -28,6 +43,7 @@ const cookieParser = require("cookie-parser");
 // CORS Configuration
 const allowedOrigins = [
   "http://localhost:3000",
+  "http://127.0.0.1:3000",
   "https://homefixcare.vercel.app",
   process.env.FRONTEND_URL,
 ].filter(Boolean);
@@ -68,12 +84,21 @@ app.use(express.json());
 app.use(cookieParser());
 app.use(express.urlencoded({ extended: true }));
 
+// GLOBAL REQUEST LOGGER - Log ALL incoming requests
+app.use((req, res, next) => {
+  console.log(`🌐 ${new Date().toISOString()} ${req.method} ${req.path}`);
+  next();
+});
+
 // Upload routes (must come before global auth middleware to avoid body-parser conflicts)
 app.use("/", uploadRoutes);
 // Root route
 app.get("/", (req, res) => {
   res.json({
     message: "Welcome to HSM Backend API",
+    pid: process.pid,
+    version: "DEBUG-2026-03-16-V3",
+    timestamp: new Date().toISOString()
   });
 });
 
@@ -97,6 +122,8 @@ app.use("/", servicesRoutes);
 app.use("/", slotRoutes);
 app.use("/", bookingRoutes);
 app.use("/", feedbackRoutes);
+app.use("/notifications", notificationRoutes);
+app.use("/device-tokens", deviceTokenRoutes);
 
 // Start server (only for local development)
 if (require.main === module) {
