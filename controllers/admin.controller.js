@@ -1,5 +1,5 @@
 const db = require("../config/db");
-const { payments, bookings, users, adminSettings, businessProfiles, services } = require("../models/schema");
+const { payments, bookings, users, adminSettings, businessProfiles, services, paymentDetails } = require("../models/schema");
 const { eq, and, sql, desc, inArray } = require("drizzle-orm");
 
 // ============================================
@@ -465,7 +465,8 @@ const getPayoutsSummary = async (req, res) => {
 };
 
 /**
- * Mark a single payout as paid
+ * Mark a single payout as paid (MANUAL MODE)
+ * Use this after manually transferring money to provider
  * PUT /admin/payouts/:id/mark-paid
  */
 const markPayoutAsPaid = async (req, res) => {
@@ -475,41 +476,61 @@ const markPayoutAsPaid = async (req, res) => {
     }
 
     const { id } = req.params;
-    const { razorpayPayoutId } = req.body;
 
-    const [payment] = await db
-      .select()
+    // Get payment with booking info
+    const [paymentWithBooking] = await db
+      .select({
+        paymentId: payments.id,
+        bookingId: payments.bookingId,
+        providerShare: payments.providerShare,
+        providerPayoutStatus: payments.providerPayoutStatus,
+      })
       .from(payments)
       .where(eq(payments.id, id))
       .limit(1);
 
-    if (!payment) {
+    if (!paymentWithBooking) {
       return res.status(404).json({ message: "Payment not found" });
     }
 
-    if (payment.providerPayoutStatus !== "pending") {
+    if (paymentWithBooking.providerPayoutStatus !== "pending") {
       return res.status(400).json({
-        message: `Cannot mark as paid. Current status: ${payment.providerPayoutStatus || "null"}`
+        message: `Cannot mark as paid. Current status: ${paymentWithBooking.providerPayoutStatus || "null"}`
       });
     }
 
-    const updateData = {
-      providerPayoutStatus: "paid",
-      providerPayoutAt: new Date(),
-    };
-
-    if (razorpayPayoutId) {
-      updateData.providerPayoutId = razorpayPayoutId;
-    }
-
+    // Update payments table (manual payout tracking)
     await db
       .update(payments)
-      .set(updateData)
+      .set({
+        providerPayoutStatus: "paid",
+        providerPayoutAt: new Date(),
+        // No Razorpay payout ID since this is manual
+      })
       .where(eq(payments.id, id));
 
+    // Also update booking table to keep in sync
+    const providerPayoutAmountRupees = Math.round(Number(paymentWithBooking.providerShare) / 100);
+    await db
+      .update(bookings)
+      .set({
+        providerPayoutAmount: providerPayoutAmountRupees,
+        providerPayoutStatus: "paid",
+        providerPayoutAt: new Date(),
+      })
+      .where(eq(bookings.id, paymentWithBooking.bookingId));
+
+    console.log("✅ Payout marked as paid (MANUAL MODE):", {
+      paymentId: id,
+      bookingId: paymentWithBooking.bookingId,
+      amount: providerPayoutAmountRupees,
+    });
+
     res.json({
-      message: "Payout marked as paid successfully",
-      amount: payment.providerShare,
+      message: "Payout marked as paid successfully (manual tracking)",
+      amount: paymentWithBooking.providerShare,
+      amountInRupees: providerPayoutAmountRupees,
+      note: "Remember to transfer money to provider manually via Razorpay Dashboard or UPI/Bank",
     });
   } catch (error) {
     console.error("Error marking payout as paid:", error);
@@ -594,6 +615,28 @@ const bulkProcessPayouts = async (req, res) => {
       .where(inArray(payments.id, Array.from(validPaymentIds)))
       .returning();
 
+    // Also update corresponding bookings to keep in sync
+    // Get booking IDs from updated payments
+    const bookingIds = result.map(p => p.bookingId);
+    const providerShareMap = new Map(result.map(p => [p.bookingId, Math.round(Number(p.providerShare) / 100)]));
+
+    for (const bookingId of bookingIds) {
+      await db
+        .update(bookings)
+        .set({
+          providerPayoutAmount: providerShareMap.get(bookingId),
+          providerPayoutStatus: "paid",
+          providerPayoutId: razorpayPayoutId || null,
+          providerPayoutAt: new Date(),
+        })
+        .where(eq(bookings.id, bookingId));
+    }
+
+    console.log("✅ Bulk payout processed - updated payments and bookings:", {
+      processedCount: result.length,
+      bookingIdsUpdated: bookingIds,
+    });
+
     res.json({
       message: "Bulk payout processed successfully",
       processedCount: result.length,
@@ -626,6 +669,7 @@ const getPayoutsByProvider = async (req, res) => {
         providerId: businessProfiles.providerId,
         providerName: users.name,
         providerEmail: users.email,
+        providerPhone: users.phone,
         businessName: businessProfiles.businessName,
         businessId: businessProfiles.id,
         totalPending: sql`SUM(${payments.providerShare})`,
@@ -642,18 +686,52 @@ const getPayoutsByProvider = async (req, res) => {
           eq(payments.status, "paid")
         )
       )
-      .groupBy(businessProfiles.providerId, users.name, users.email, businessProfiles.businessName, businessProfiles.id)
+      .groupBy(businessProfiles.providerId, users.name, users.email, users.phone, businessProfiles.businessName, businessProfiles.id)
       .orderBy(desc(sql`SUM(${payments.providerShare})`));
 
-    // Add metadata to each provider
-    let providersWithMeta = providerPayouts.map((p) => ({
-      ...p,
-      totalPending: Number(p.totalPending) || 0,
-      bookingCount: Number(p.bookingCount) || 0,
-      paymentIds: p.paymentIds.filter((id) => id !== null),
-      canProcessPayout: Number(p.totalPending) >= minimumPayoutAmount,
-      minimumPayoutAmount,
-    }));
+    // Add metadata and fetch payment details for each provider
+    let providersWithMeta = await Promise.all(
+      providerPayouts.map(async (p) => {
+        const totalPending = Number(p.totalPending) || 0;
+        const bookingCount = Number(p.bookingCount) || 0;
+        const paymentIds = p.paymentIds.filter((id) => id !== null);
+
+        // Get provider's active payment details
+        const [activePaymentDetails] = await db
+          .select({
+            upiId: paymentDetails.upiId,
+            bankAccount: paymentDetails.bankAccount,
+            ifscCode: paymentDetails.ifscCode,
+            accountHolderName: paymentDetails.accountHolderName,
+          })
+          .from(paymentDetails)
+          .where(and(eq(paymentDetails.userId, p.providerId), eq(paymentDetails.isActive, true)))
+          .limit(1);
+
+        // Mask bank account for security
+        let bankAccountMasked = null;
+        if (activePaymentDetails?.bankAccount) {
+          const acc = activePaymentDetails.bankAccount;
+          bankAccountMasked = `********${acc.slice(-4)}`;
+        }
+
+        return {
+          ...p,
+          totalPending,
+          bookingCount,
+          paymentIds,
+          canProcessPayout: totalPending >= minimumPayoutAmount,
+          minimumPayoutAmount,
+          paymentDetails: activePaymentDetails ? {
+            upiId: activePaymentDetails.upiId,
+            bankAccount: activePaymentDetails.bankAccount,
+            bankAccountMasked,
+            ifscCode: activePaymentDetails.ifscCode,
+            accountHolderName: activePaymentDetails.accountHolderName,
+          } : null,
+        };
+      })
+    );
 
     // Apply filter
     if (filter === "ready") {
@@ -725,6 +803,25 @@ const payProvider = async (req, res) => {
       .set(updateData)
       .where(inArray(payments.id, paymentIds))
       .returning();
+
+    // Also update corresponding bookings to keep in sync
+    for (const payment of result) {
+      const providerPayoutAmountRupees = Math.round(Number(payment.providerShare) / 100);
+      await db
+        .update(bookings)
+        .set({
+          providerPayoutAmount: providerPayoutAmountRupees,
+          providerPayoutStatus: "paid",
+          providerPayoutId: razorpayPayoutId || null,
+          providerPayoutAt: new Date(),
+        })
+        .where(eq(bookings.id, payment.bookingId));
+    }
+
+    console.log("✅ Provider payouts processed - updated payments and bookings:", {
+      providerId: Number(providerId),
+      processedCount: result.length,
+    });
 
     res.json({
       message: "Provider payouts processed successfully",
