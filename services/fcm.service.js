@@ -1,26 +1,59 @@
 const admin = require('firebase-admin');
 const path = require('path');
+const fs = require('fs');
 
 // STARTUP LOG: Confirm this file is loaded
-console.log('✅ fcm.service.js loaded - version 2026-03-16-v4-FINAL');
+console.log('✅ fcm.service.js loaded - version 2026-03-17-v5-ENV-SUPPORT');
 
 // Initialize Firebase Admin
-// Service account key should be at config/firebase-service-account.json
-const serviceAccountPath = path.join(__dirname, '../config/firebase-service-account.json');
+// Try multiple sources for service account:
+// 1. Environment variables (for Vercel/production)
+// 2. File at config/firebase-service-account.json (for local development)
 
 let fcm;
 
 try {
   if (!admin.apps.length) {
-    const serviceAccount = require(serviceAccountPath);
-    admin.initializeApp({
-      credential: admin.credential.cert(serviceAccount),
-    });
+    let serviceAccount = null;
+
+    // Method 1: Try environment variables (for production/Vercel)
+    if (process.env.FIREBASE_PROJECT_ID && process.env.FIREBASE_CLIENT_EMAIL) {
+      console.log('🔥 FCM: Initializing from environment variables');
+      serviceAccount = {
+        projectId: process.env.FIREBASE_PROJECT_ID,
+        privateKey: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
+        clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+      };
+      console.log('🔥 FCM: Service account loaded from env vars');
+    }
+    // Method 2: Try file-based config (for local development)
+    else {
+      const serviceAccountPath = path.join(__dirname, '../config/firebase-service-account.json');
+      if (fs.existsSync(serviceAccountPath)) {
+        console.log('🔥 FCM: Initializing from file');
+        serviceAccount = require(serviceAccountPath);
+        console.log('🔥 FCM: Service account loaded from file');
+      } else {
+        console.log('⚠️ FCM: No service account found - notifications will be saved but push won\'t work');
+        console.log('⚠️ FCM: Set FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL, FIREBASE_PRIVATE_KEY env vars for production');
+      }
+    }
+
+    if (serviceAccount) {
+      admin.initializeApp({
+        credential: admin.credential.cert(serviceAccount),
+      });
+      fcm = admin.messaging();
+      console.log('✅ Firebase Admin initialized successfully');
+    } else {
+      console.log('⚠️ Firebase Admin NOT initialized - push notifications disabled');
+    }
+  } else {
+    fcm = admin.messaging();
   }
-  fcm = admin.messaging();
-  console.log('Firebase Admin initialized successfully');
 } catch (error) {
-  console.error('Firebase Admin initialization error:', error.message);
+  console.error('❌ Firebase Admin initialization error:', error.message);
+  console.error('❌ Full error:', error);
   // Continue without FCM - notifications will be saved but push won't work
 }
 
