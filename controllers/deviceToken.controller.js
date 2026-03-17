@@ -6,6 +6,11 @@ const { eq, and } = require('drizzle-orm');
  * Register/save FCM device token
  * POST /device-tokens/register
  * Body: { token: string, deviceInfo?: object }
+ *
+ * Uses upsert to handle duplicate tokens gracefully:
+ * - If token exists for this user: update lastUsedAt and reactivate
+ * - If token exists for different user: update userId to current user
+ * - If token doesn't exist: insert new record
  */
 async function registerToken(req, res) {
   try {
@@ -19,28 +24,25 @@ async function registerToken(req, res) {
     // Convert deviceInfo to JSON string if provided
     const deviceInfoString = deviceInfo ? JSON.stringify(deviceInfo) : null;
 
-    // Check if token exists for this user
-    const existing = await db.select()
-      .from(deviceTokens)
-      .where(and(
-        eq(deviceTokens.userId, userId),
-        eq(deviceTokens.token, token)
-      ));
-
-    if (existing && existing.length > 0) {
-      // Update last used and reactivate
-      await db.update(deviceTokens)
-        .set({ isActive: true, lastUsedAt: new Date() })
-        .where(eq(deviceTokens.id, existing[0].id));
-    } else {
-      // Insert new token
-      await db.insert(deviceTokens).values({
+    // Use onConflictDoUpdate to handle duplicate tokens
+    // If token exists (for any user), update it to belong to current user
+    await db.insert(deviceTokens)
+      .values({
         userId,
         token,
         deviceInfo: deviceInfoString,
         isActive: true,
+        lastUsedAt: new Date(),
+      })
+      .onConflictDoUpdate({
+        target: deviceTokens.token,
+        set: {
+          userId,
+          deviceInfo: deviceInfoString,
+          isActive: true,
+          lastUsedAt: new Date(),
+        },
       });
-    }
 
     res.json({ message: 'Token registered successfully' });
   } catch (error) {

@@ -900,6 +900,12 @@ const getAverageOrderValueAnalytics = async (req, res) => {
     const { period = "30d" } = req.query;
     const { startDate, endDate } = getDateRange(period);
 
+    console.log("[Admin AOV] Fetching average order value for period:", period);
+    console.log("[Admin AOV] Date range:", {
+      startDate: startDate.toISOString(),
+      endDate: endDate.toISOString()
+    });
+
     // Get first and last payment dates
     const [firstPayment] = await db
       .select({ createdAt: payments.createdAt })
@@ -1008,6 +1014,13 @@ const getAverageOrderValueAnalytics = async (req, res) => {
     const overallAvg = allPayments.length > 0
       ? (allPayments.reduce((sum, item) => sum + (Number(item.amount) || 0), 0) / allPayments.length) / 100
       : 0;
+
+    console.log("[Admin AOV] Results:", {
+      period,
+      overallAvg,
+      chartDataLength: chartData.length,
+      chartData: chartData.slice(0, 3), // Log first 3 entries for debugging
+    });
 
     res.json({
       period,

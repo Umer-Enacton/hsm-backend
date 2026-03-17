@@ -1,3 +1,6 @@
+// Load environment variables FIRST (before any other requires)
+require("dotenv").config();
+
 // ============================================================
 // UNIQUE STARTUP BANNER - Confirm this server is running
 // ============================================================
@@ -37,7 +40,6 @@ const auth = require("./middleware/auth");
 const { startPeriodicCleanup } = require("./utils/cleanupExpiredIntents");
 const app = express();
 const PORT = process.env.PORT || 8000;
-require("dotenv").config();
 const cookieParser = require("cookie-parser");
 
 // CORS Configuration

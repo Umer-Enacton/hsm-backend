@@ -6,6 +6,7 @@ const {
   deleteUser,
   getUserProfile,
   getCurrentUser,
+  changePassword,
 } = require("../controllers/user.controller");
 const authorizeRole = require("../middleware/roleBasedRoutes");
 const { ADMIN } = require("../config/roles");
@@ -21,6 +22,9 @@ router.get("/user/profile", getCurrentUser);
 
 // Authenticated users - update own profile
 router.put("/users", updateUserProfile);
+
+// Authenticated users - change password
+router.put("/user/change-password", changePassword);
 
 // Admin only - delete user
 router.delete("/users/:id", authorizeRole(ADMIN), deleteUser);

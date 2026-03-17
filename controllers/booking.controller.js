@@ -9,7 +9,7 @@ const {
   feedback,
   payments,
 } = require("../models/schema");
-const { eq, and, gte, lte, desc, or, isNull, sql } = require("drizzle-orm");
+const { eq, and, gte, lte, desc, or, isNull, sql, inArray } = require("drizzle-orm");
 const {
   initiateRefund,
   paiseToRupees,
@@ -266,6 +266,7 @@ const getProviderBookings = async (req, res) => {
 
     console.log("[getProviderBookings] Using business ID:", business[0].id, "name:", business[0].businessName);
 
+    // Get all bookings for this provider
     const providerBookings = await db
       .select()
       .from(bookings)
@@ -274,71 +275,78 @@ const getProviderBookings = async (req, res) => {
 
     console.log("[getProviderBookings] Found bookings:", providerBookings.length);
 
-    // Fetch customer details for each booking
-    const bookingsWithCustomers = await Promise.all(
-      providerBookings.map(async (booking) => {
-        // Get customer info
-        const [customer] = await db
-          .select()
-          .from(users)
-          .where(eq(users.id, booking.customerId))
-          .limit(1);
+    if (providerBookings.length === 0) {
+      return res.status(200).json({ bookings: [] });
+    }
 
-        // Get service info
-        const [service] = await db
-          .select()
-          .from(services)
-          .where(eq(services.id, booking.serviceId))
-          .limit(1);
+    // Collect all IDs for batch queries
+    const customerIds = [...new Set(providerBookings.map(b => b.customerId))];
+    const serviceIds = [...new Set(providerBookings.map(b => b.serviceId).filter(Boolean))];
+    const slotIds = [...new Set(providerBookings.map(b => b.slotId).filter(Boolean))];
+    const addressIds = [...new Set(providerBookings.map(b => b.addressId).filter(Boolean))];
+    const completedBookingIds = providerBookings
+      .filter(b => b.status === "completed")
+      .map(b => b.id);
 
-        // Get slot info
-        const [slot] = await db
-          .select()
-          .from(slots)
-          .where(eq(slots.id, booking.slotId))
-          .limit(1);
+    // Batch fetch all related data in parallel (4 queries instead of N*4)
+    const [customers, serviceList, slotsData, addresses, feedbackRecords] = await Promise.all([
+      customerIds.length > 0 ? db.select().from(users).where(inArray(users.id, customerIds)) : Promise.resolve([]),
+      serviceIds.length > 0 ? db.select().from(services).where(inArray(services.id, serviceIds)) : Promise.resolve([]),
+      slotIds.length > 0 ? db.select().from(slots).where(inArray(slots.id, slotIds)) : Promise.resolve([]),
+      addressIds.length > 0 ? db.select().from(Address).where(inArray(Address.id, addressIds)) : Promise.resolve([]),
+      completedBookingIds.length > 0
+        ? db.select().from(feedback).where(inArray(feedback.bookingId, completedBookingIds))
+        : Promise.resolve([]),
+    ]);
 
-        // Get address info
-        const [address] = await db
-          .select()
-          .from(Address)
-          .where(eq(Address.id, booking.addressId))
-          .limit(1);
+    // Create maps for O(1) lookup
+    const customerMap = new Map(customers.map(c => [c.id, c]));
+    const serviceMap = new Map(serviceList.map(s => [s.id, s]));
+    const slotMap = new Map(slotsData.map(s => [s.id, s]));
+    const addressMap = new Map(addresses.map(a => [a.id, a]));
+    const feedbackMap = new Map(feedbackRecords.map(f => [f.bookingId, f]));
 
-        // Get feedback if booking is completed
-        let feedbackData = null;
-        if (booking.status === "completed") {
-          const [feedbackRecord] = await db
-            .select()
-            .from(feedback)
-            .where(eq(feedback.bookingId, booking.id))
-            .limit(1);
+    // Format the response using maps
+    const bookingsWithCustomers = providerBookings.map((booking) => {
+      const customer = customerMap.get(booking.customerId);
+      const service = serviceMap.get(booking.serviceId);
+      const slot = slotMap.get(booking.slotId);
+      const address = addressMap.get(booking.addressId);
+      const feedbackData = feedbackMap.get(booking.id);
 
-          if (feedbackRecord) {
-            feedbackData = {
-              rating: feedbackRecord.rating,
-              comments: feedbackRecord.comments,
-              createdAt: feedbackRecord.createdAt,
-            };
-          }
-        }
-
-        return {
-          ...booking,
-          customerName: customer?.name || "Unknown",
-          customerPhone: customer?.phone || "",
-          customerEmail: customer?.email || "",
-          customerAvatar: customer?.avatar || null,
-          serviceName: service?.name || "Unknown Service",
-          price: service?.price || booking.totalPrice || 0,
-          startTime: slot?.startTime || "",
-          address: address
-            ? `${address.street}, ${address.city}, ${address.state} ${address.zipCode}`
-            : "Unknown Address",
-          feedback: feedbackData,
-        };
-      }),
-    );
+      return {
+        id: booking.id,
+        customerId: booking.customerId,
+        serviceId: booking.serviceId,
+        slotId: booking.slotId,
+        addressId: booking.addressId,
+        businessProfileId: booking.businessProfileId,
+        date: booking.bookingDate,
+        bookingDate: booking.bookingDate,
+        status: booking.status,
+        totalPrice: booking.totalPrice,
+        createdAt: booking.createdAt,
+        updatedAt: booking.updatedAt,
+        rescheduledFromSlotId: booking.rescheduledFromSlotId,
+        rescheduledAt: booking.rescheduledAt,
+        isRefunded: booking.isRefunded,
+        customerName: customer?.name || "Unknown",
+        customerPhone: customer?.phone || "",
+        customerEmail: customer?.email || "",
+        customerAvatar: customer?.avatar || null,
+        serviceName: service?.name || "Unknown Service",
+        price: service?.price || booking.totalPrice || 0,
+        startTime: slot?.startTime || "",
+        address: address
+          ? `${address.street}, ${address.city}, ${address.state} ${address.zipCode}`
+          : "Unknown Address",
+        feedback: feedbackData ? {
+          rating: feedbackData.rating,
+          comments: feedbackData.comments,
+          createdAt: feedbackData.createdAt,
+        } : null,
+      };
+    });
 
     res.status(200).json({ bookings: bookingsWithCustomers });
   } catch (error) {

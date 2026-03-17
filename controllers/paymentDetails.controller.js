@@ -648,11 +648,19 @@ const getProviderRevenueStats = async (req, res) => {
 
     console.log("🔍 Earnings-eligible bookings:", earningsBookings.length, "out of", allBookings.length);
 
-    // Calculate provider's 95% share of ELIGIBLE bookings (excluding cancelled/rejected/refunded)
-    const totalEarnings = earningsBookings.reduce((sum, booking) => {
-      const providerShare = Math.round((booking.totalPrice || 0) * providerSharePercentage / 100);
-      return sum + providerShare;
-    }, 0);
+    // Debug: Show each eligible booking
+    console.log("📋 Eligible bookings breakdown:");
+    earningsBookings.forEach((b, idx) => {
+      console.log(`  ${idx + 1}. Booking ID: ${b.id}, Price: ₹${b.totalPrice}, Status: ${b.status}`);
+    });
+
+    // Calculate provider's 95% share of ELIGIBLE bookings
+    // IMPORTANT: Calculate on TOTAL first, then round ONCE (not per booking)
+    // This avoids rounding errors: 4 × ₹237.50 = ₹950 (not 4 × ₹238 = ₹952)
+    const totalGross = earningsBookings.reduce((sum, booking) => sum + (booking.totalPrice || 0), 0);
+    const totalEarnings = Math.round(totalGross * providerSharePercentage / 100);
+
+    console.log("💰 Calculation: Total Gross = ₹" + totalGross + ", 95% = ₹" + totalEarnings);
 
     // Count by status (from all bookings)
     const totalBookings = allBookings.length;

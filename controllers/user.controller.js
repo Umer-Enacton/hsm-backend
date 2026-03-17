@@ -1,6 +1,7 @@
 const db = require("../config/db");
 const { users } = require("../models/schema");
 const { eq, desc } = require("drizzle-orm");
+const bcrypt = require("bcryptjs");
 
 // Get all users (ADMIN ONLY)
 const getAllUsers = async (req, res) => {
@@ -98,10 +99,53 @@ const deleteUser = async (req, res) => {
     res.status(500).json({ message: "Server error", error: error.message });
   }
 };
+
+// Change Password
+const changePassword = async (req, res) => {
+  try {
+    const userId = req.token.id;
+    const { currentPassword, newPassword } = req.body;
+
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({ message: "Current password and new password are required" });
+    }
+
+    if (newPassword.length < 6) {
+      return res.status(400).json({ message: "New password must be at least 6 characters" });
+    }
+
+    // Get user with password
+    const [user] = await db.select().from(users).where(eq(users.id, userId));
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    // Verify current password
+    const isMatch = await bcrypt.compare(currentPassword, user.password);
+    if (!isMatch) {
+      return res.status(401).json({ message: "Current password is incorrect" });
+    }
+
+    // Hash new password
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+
+    // Update password
+    await db.update(users)
+      .set({ password: hashedPassword })
+      .where(eq(users.id, userId));
+
+    res.status(200).json({ message: "Password changed successfully" });
+  } catch (error) {
+    console.error("Change password error:", error);
+    res.status(500).json({ message: "Server error", error: error.message });
+  }
+};
+
 module.exports = {
   getAllUsers,
   getUserProfile,
   getCurrentUser,
   updateUserProfile,
   deleteUser,
+  changePassword,
 };

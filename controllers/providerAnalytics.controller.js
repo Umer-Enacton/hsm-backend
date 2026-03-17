@@ -194,7 +194,7 @@ const getRevenueAnalytics = async (req, res) => {
     // Initialize all date keys (use effectiveEndDate to include all booking dates)
     while (currentDate <= effectiveEndDate) {
       const key = formatDateForGrouping(new Date(currentDate), period);
-      groupedData.set(key, { date: key, bookings: 0, revenue: 0, completed: 0 });
+      groupedData.set(key, { date: key, bookings: 0, grossTotal: 0, completed: 0 });
 
       if (period === "7d" || period === "30d") {
         currentDate.setDate(currentDate.getDate() + 1);
@@ -213,12 +213,12 @@ const getRevenueAnalytics = async (req, res) => {
           const existing = groupedData.get(key);
           existing.bookings += 1; // Count ALL bookings for display
 
-          // Only add revenue for ELIGIBLE bookings (not cancelled/rejected/refunded) with payment
+          // Calculate revenue as 95% of eligible bookings
+          // Store gross prices first, then calculate 95% at the end to avoid rounding errors
           const isEligible = item.status !== 'cancelled' && item.status !== 'rejected' && item.status !== 'refunded';
-          const paymentData = bookingPaymentsMap.get(item.id);
-          if (isEligible && paymentData) {
-            // providerShare is in paise, convert to rupees
-            existing.revenue += paymentData.providerShare / 100;
+          if (isEligible) {
+            // Store gross price, will convert to 95% after grouping
+            existing.grossTotal = (existing.grossTotal || 0) + (item.totalPrice || 0);
           }
 
           if (item.status === "completed") {
@@ -233,11 +233,13 @@ const getRevenueAnalytics = async (req, res) => {
     // Convert to array and calculate cumulative values
     let cumulativeRevenue = 0;
     const chartData = Array.from(groupedData.values()).map((item) => {
-      cumulativeRevenue += item.revenue;
+      // Calculate 95% of gross total for this period (round once)
+      const revenue = Math.round((item.grossTotal || 0) * providerSharePercentage / 100);
+      cumulativeRevenue += revenue;
       return {
         date: item.date,
         bookings: item.bookings,
-        revenue: item.revenue,
+        revenue,
         completed: item.completed,
         cumulativeRevenue,
       };
@@ -248,8 +250,10 @@ const getRevenueAnalytics = async (req, res) => {
     const eligibleBookings = allBookings.filter(item =>
       item.status !== 'cancelled' && item.status !== 'rejected' && item.status !== 'refunded'
     );
-    // Provider's 95% share of ELIGIBLE bookings (excluding cancelled/rejected/refunded)
-    const totalRevenue = eligibleBookings.reduce((sum, item) => sum + Math.round((item.totalPrice || 0) * providerSharePercentage / 100), 0);
+    // Provider's 95% share of ELIGIBLE bookings
+    // Calculate on TOTAL first, then round ONCE to avoid rounding errors
+    const totalGross = eligibleBookings.reduce((sum, item) => sum + (item.totalPrice || 0), 0);
+    const totalRevenue = Math.round(totalGross * providerSharePercentage / 100);
     const totalCompleted = allBookings.filter((item) => item.status === "completed").length;
 
     res.json({
