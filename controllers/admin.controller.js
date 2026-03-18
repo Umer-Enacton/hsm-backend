@@ -1,6 +1,7 @@
 const db = require("../config/db");
 const { payments, bookings, users, adminSettings, businessProfiles, services, paymentDetails } = require("../models/schema");
 const { eq, and, sql, desc, inArray } = require("drizzle-orm");
+const { notificationTemplates } = require("../utils/notificationHelper");
 
 // ============================================
 // HELPER FUNCTIONS
@@ -933,6 +934,336 @@ const getDashboardStats = async (req, res) => {
   }
 };
 
+// ============================================
+// BUSINESS BLOCKING FUNCTIONS
+// ============================================
+
+/**
+ * Block a business (admin only)
+ * PUT /admin/business/:id/block
+ */
+const blockBusiness = async (req, res) => {
+  try {
+    if (req.token.roleId !== 3) {
+      return res.status(403).json({ message: "Access denied: Admin only" });
+    }
+
+    const { id } = req.params;
+    const { reason } = req.body;
+
+    if (!reason || reason.trim().length === 0) {
+      return res.status(400).json({ message: "Reason is required to block a business" });
+    }
+
+    // Check if business exists
+    const [business] = await db
+      .select()
+      .from(businessProfiles)
+      .where(eq(businessProfiles.id, id))
+      .limit(1);
+
+    if (!business) {
+      return res.status(404).json({ message: "Business not found" });
+    }
+
+    if (business.isBlocked) {
+      return res.status(400).json({ message: "Business is already blocked" });
+    }
+
+    // Block the business
+    await db
+      .update(businessProfiles)
+      .set({
+        isBlocked: true,
+        blockedReason: reason.trim(),
+        blockedAt: new Date(),
+        blockedBy: req.token.id,
+      })
+      .where(eq(businessProfiles.id, id));
+
+    console.log("✅ Business blocked:", {
+      businessId: id,
+      adminId: req.token.id,
+      reason,
+    });
+
+    // Send notification to provider
+    await notificationTemplates.businessBlocked(
+      business.providerId,
+      business.businessName,
+      reason.trim()
+    );
+
+    res.json({
+      message: "Business blocked successfully",
+      businessId: id,
+      reason,
+    });
+  } catch (error) {
+    console.error("Error blocking business:", error);
+    res.status(500).json({ message: "Server error", error: error.message });
+  }
+};
+
+/**
+ * Unblock a business (admin only)
+ * PUT /admin/business/:id/unblock
+ */
+const unblockBusiness = async (req, res) => {
+  try {
+    if (req.token.roleId !== 3) {
+      return res.status(403).json({ message: "Access denied: Admin only" });
+    }
+
+    const { id } = req.params;
+
+    // Check if business exists
+    const [business] = await db
+      .select()
+      .from(businessProfiles)
+      .where(eq(businessProfiles.id, id))
+      .limit(1);
+
+    if (!business) {
+      return res.status(404).json({ message: "Business not found" });
+    }
+
+    if (!business.isBlocked) {
+      return res.status(400).json({ message: "Business is not blocked" });
+    }
+
+    // Unblock the business
+    await db
+      .update(businessProfiles)
+      .set({
+        isBlocked: false,
+        blockedReason: null,
+        blockedAt: null,
+        blockedBy: null,
+      })
+      .where(eq(businessProfiles.id, id));
+
+    console.log("✅ Business unblocked:", {
+      businessId: id,
+      adminId: req.token.id,
+    });
+
+    // Send notification to provider
+    await notificationTemplates.businessUnblocked(
+      business.providerId,
+      business.businessName
+    );
+
+    res.json({
+      message: "Business unblocked successfully",
+      businessId: id,
+    });
+  } catch (error) {
+    console.error("Error unblocking business:", error);
+    res.status(500).json({ message: "Server error", error: error.message });
+  }
+};
+
+// ============================================
+// SERVICE DEACTIVATION FUNCTIONS
+// ============================================
+
+/**
+ * Deactivate a service (admin only)
+ * PUT /admin/services/:id/deactivate
+ */
+const deactivateService = async (req, res) => {
+  try {
+    if (req.token.roleId !== 3) {
+      return res.status(403).json({ message: "Access denied: Admin only" });
+    }
+
+    const { id } = req.params;
+    const { reason } = req.body;
+
+    if (!reason || reason.trim().length === 0) {
+      return res.status(400).json({ message: "Reason is required to deactivate a service" });
+    }
+
+    // Check if service exists
+    const [service] = await db
+      .select()
+      .from(services)
+      .where(eq(services.id, id))
+      .limit(1);
+
+    if (!service) {
+      return res.status(404).json({ message: "Service not found" });
+    }
+
+    if (!service.isActive) {
+      return res.status(400).json({ message: "Service is already deactivated" });
+    }
+
+    // Deactivate the service
+    await db
+      .update(services)
+      .set({
+        isActive: false,
+        deactivationReason: reason.trim(),
+        deactivatedAt: new Date(),
+        deactivatedBy: req.token.id,
+      })
+      .where(eq(services.id, id));
+
+    console.log("✅ Service deactivated:", {
+      serviceId: id,
+      adminId: req.token.id,
+      reason,
+    });
+
+    // Get business info to send notification to provider
+    const [business] = await db
+      .select({ providerId: businessProfiles.providerId })
+      .from(businessProfiles)
+      .where(eq(businessProfiles.id, service.businessProfileId))
+      .limit(1);
+
+    // Send notification to provider
+    if (business) {
+      await notificationTemplates.serviceDeactivated(
+        business.providerId,
+        service.name,
+        reason.trim()
+      );
+    }
+
+    res.json({
+      message: "Service deactivated successfully",
+      serviceId: id,
+      reason,
+    });
+  } catch (error) {
+    console.error("Error deactivating service:", error);
+    res.status(500).json({ message: "Server error", error: error.message });
+  }
+};
+
+/**
+ * Activate a service (admin only)
+ * PUT /admin/services/:id/activate
+ */
+const activateService = async (req, res) => {
+  try {
+    if (req.token.roleId !== 3) {
+      return res.status(403).json({ message: "Access denied: Admin only" });
+    }
+
+    const { id } = req.params;
+
+    // Check if service exists
+    const [service] = await db
+      .select()
+      .from(services)
+      .where(eq(services.id, id))
+      .limit(1);
+
+    if (!service) {
+      return res.status(404).json({ message: "Service not found" });
+    }
+
+    if (service.isActive) {
+      return res.status(400).json({ message: "Service is already active" });
+    }
+
+    // Activate the service
+    await db
+      .update(services)
+      .set({
+        isActive: true,
+        deactivationReason: null,
+        deactivatedAt: null,
+        deactivatedBy: null,
+      })
+      .where(eq(services.id, id));
+
+    console.log("✅ Service activated:", {
+      serviceId: id,
+      adminId: req.token.id,
+    });
+
+    // Get business info to send notification to provider
+    const [business] = await db
+      .select({ providerId: businessProfiles.providerId })
+      .from(businessProfiles)
+      .where(eq(businessProfiles.id, service.businessProfileId))
+      .limit(1);
+
+    // Send notification to provider
+    if (business) {
+      await notificationTemplates.serviceReactivated(
+        business.providerId,
+        service.name
+      );
+    }
+
+    res.json({
+      message: "Service activated successfully",
+      serviceId: id,
+    });
+  } catch (error) {
+    console.error("Error activating service:", error);
+    res.status(500).json({ message: "Server error", error: error.message });
+  }
+};
+
+/**
+ * Get all services (admin only)
+ * GET /admin/services
+ * Returns all services including inactive ones
+ */
+const getAllServicesForAdmin = async (req, res) => {
+  try {
+    if (req.token.roleId !== 3) {
+      return res.status(403).json({ message: "Access denied: Admin only" });
+    }
+
+    const allServices = await db
+      .select({
+        id: services.id,
+        name: services.name,
+        description: services.description,
+        price: services.price,
+        EstimateDuration: services.EstimateDuration,
+        image: services.image,
+        isActive: services.isActive,
+        businessProfileId: services.businessProfileId,
+        deactivationReason: services.deactivationReason,
+        deactivatedAt: services.deactivatedAt,
+        createdAt: services.createdAt,
+        // Business info
+        businessName: businessProfiles.businessName,
+        businessLogo: businessProfiles.logo,
+        businessPhone: businessProfiles.phone,
+        businessCity: businessProfiles.city,
+        businessState: businessProfiles.state,
+        businessIsVerified: businessProfiles.isVerified,
+        businessIsBlocked: businessProfiles.isBlocked,
+        businessCategoryId: businessProfiles.categoryId,
+      })
+      .from(services)
+      .leftJoin(businessProfiles, eq(services.businessProfileId, businessProfiles.id))
+      .orderBy(desc(services.createdAt));
+
+    // Map EstimateDuration to duration for frontend compatibility
+    const servicesWithDuration = allServices.map(service => ({
+      ...service,
+      duration: service.EstimateDuration,
+      estimateDuration: service.EstimateDuration,
+    }));
+
+    res.json({ services: servicesWithDuration });
+  } catch (error) {
+    console.error("Error fetching services for admin:", error);
+    res.status(500).json({ message: "Server error", error: error.message });
+  }
+};
+
 module.exports = {
   // Settings
   getPlatformSettings,
@@ -947,4 +1278,11 @@ module.exports = {
   payProvider,
   markPayoutAsPaid,
   bulkProcessPayouts,
+  // Business Blocking
+  blockBusiness,
+  unblockBusiness,
+  // Service Deactivation
+  deactivateService,
+  activateService,
+  getAllServicesForAdmin,
 };

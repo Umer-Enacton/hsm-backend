@@ -11,6 +11,11 @@ const {
   payProvider,
   markPayoutAsPaid,
   bulkProcessPayouts,
+  blockBusiness,
+  unblockBusiness,
+  deactivateService,
+  activateService,
+  getAllServicesForAdmin,
 } = require("../controllers/admin.controller");
 const {
   getRevenueAnalytics,
@@ -186,5 +191,48 @@ router.get("/payouts/by-provider", getPayoutsByProvider);
  * @access  Private (Admin only)
  */
 router.put("/payouts/provider/:providerId/pay-all", payProvider);
+
+// ============================================
+// BUSINESS BLOCKING ROUTES
+// ============================================
+
+/**
+ * @route   PUT /admin/business/:id/block
+ * @desc    Block a business with a reason
+ * @access  Private (Admin only)
+ */
+router.put("/business/:id/block", blockBusiness);
+
+/**
+ * @route   PUT /admin/business/:id/unblock
+ * @desc    Unblock a business
+ * @access  Private (Admin only)
+ */
+router.put("/business/:id/unblock", unblockBusiness);
+
+// ============================================
+// SERVICE DEACTIVATION ROUTES
+// ============================================
+
+/**
+ * @route   GET /admin/services
+ * @desc    Get all services including inactive ones (admin view)
+ * @access  Private (Admin only)
+ */
+router.get("/services", getAllServicesForAdmin);
+
+/**
+ * @route   PUT /admin/services/:id/deactivate
+ * @desc    Deactivate a service with a reason
+ * @access  Private (Admin only)
+ */
+router.put("/services/:id/deactivate", deactivateService);
+
+/**
+ * @route   PUT /admin/services/:id/activate
+ * @desc    Activate a deactivated service
+ * @access  Private (Admin only)
+ */
+router.put("/services/:id/activate", activateService);
 
 module.exports = router;

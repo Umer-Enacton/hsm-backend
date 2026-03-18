@@ -9,7 +9,18 @@ const {
   feedback,
   payments,
 } = require("../models/schema");
-const { eq, and, gte, lte, desc, or, isNull, sql, inArray } = require("drizzle-orm");
+const {
+  eq,
+  and,
+  gte,
+  lte,
+  desc,
+  or,
+  isNull,
+  sql,
+  ne,
+  inArray,
+} = require("drizzle-orm");
 const {
   initiateRefund,
   paiseToRupees,
@@ -244,6 +255,9 @@ const getCustomerBookings = async (req, res) => {
 // Get all bookings for logged-in provider
 const getProviderBookings = async (req, res) => {
   try {
+    console.log("════════════════════════════════════════════════════════════");
+    console.log("🔥🔥🔥 getProviderBookings CALLED!!! 🔥🔥🔥");
+    console.log("════════════════════════════════════════════════════════════");
     const userId = req.token.id;
     console.log("[getProviderBookings] Fetching bookings for userId:", userId);
 
@@ -254,17 +268,31 @@ const getProviderBookings = async (req, res) => {
       .where(eq(businessProfiles.providerId, userId))
       .limit(1);
 
-    console.log("[getProviderBookings] Found business profiles:", business.length);
+    console.log(
+      "[getProviderBookings] Found business profiles:",
+      business.length,
+    );
 
     if (business.length === 0) {
-      console.log("[getProviderBookings] No business profile found for userId:", userId);
+      console.log(
+        "[getProviderBookings] No business profile found for userId:",
+        userId,
+      );
       return res.status(404).json({
         message: "Business profile not found",
-        debug: { userId, hint: "Your account may not be linked to a business profile" }
+        debug: {
+          userId,
+          hint: "Your account may not be linked to a business profile",
+        },
       });
     }
 
-    console.log("[getProviderBookings] Using business ID:", business[0].id, "name:", business[0].businessName);
+    console.log(
+      "[getProviderBookings] Using business ID:",
+      business[0].id,
+      "name:",
+      business[0].businessName,
+    );
 
     // Get all bookings for this provider
     const providerBookings = await db
@@ -273,38 +301,59 @@ const getProviderBookings = async (req, res) => {
       .where(eq(bookings.businessProfileId, business[0].id))
       .orderBy(desc(bookings.bookingDate));
 
-    console.log("[getProviderBookings] Found bookings:", providerBookings.length);
+    console.log(
+      "[getProviderBookings] Found bookings:",
+      providerBookings.length,
+    );
 
     if (providerBookings.length === 0) {
       return res.status(200).json({ bookings: [] });
     }
 
     // Collect all IDs for batch queries
-    const customerIds = [...new Set(providerBookings.map(b => b.customerId))];
-    const serviceIds = [...new Set(providerBookings.map(b => b.serviceId).filter(Boolean))];
-    const slotIds = [...new Set(providerBookings.map(b => b.slotId).filter(Boolean))];
-    const addressIds = [...new Set(providerBookings.map(b => b.addressId).filter(Boolean))];
+    const customerIds = [...new Set(providerBookings.map((b) => b.customerId))];
+    const serviceIds = [
+      ...new Set(providerBookings.map((b) => b.serviceId).filter(Boolean)),
+    ];
+    const slotIds = [
+      ...new Set(providerBookings.map((b) => b.slotId).filter(Boolean)),
+    ];
+    const addressIds = [
+      ...new Set(providerBookings.map((b) => b.addressId).filter(Boolean)),
+    ];
     const completedBookingIds = providerBookings
-      .filter(b => b.status === "completed")
-      .map(b => b.id);
+      .filter((b) => b.status === "completed")
+      .map((b) => b.id);
 
     // Batch fetch all related data in parallel (4 queries instead of N*4)
-    const [customers, serviceList, slotsData, addresses, feedbackRecords] = await Promise.all([
-      customerIds.length > 0 ? db.select().from(users).where(inArray(users.id, customerIds)) : Promise.resolve([]),
-      serviceIds.length > 0 ? db.select().from(services).where(inArray(services.id, serviceIds)) : Promise.resolve([]),
-      slotIds.length > 0 ? db.select().from(slots).where(inArray(slots.id, slotIds)) : Promise.resolve([]),
-      addressIds.length > 0 ? db.select().from(Address).where(inArray(Address.id, addressIds)) : Promise.resolve([]),
-      completedBookingIds.length > 0
-        ? db.select().from(feedback).where(inArray(feedback.bookingId, completedBookingIds))
-        : Promise.resolve([]),
-    ]);
+    const [customers, serviceList, slotsData, addresses, feedbackRecords] =
+      await Promise.all([
+        customerIds.length > 0
+          ? db.select().from(users).where(inArray(users.id, customerIds))
+          : Promise.resolve([]),
+        serviceIds.length > 0
+          ? db.select().from(services).where(inArray(services.id, serviceIds))
+          : Promise.resolve([]),
+        slotIds.length > 0
+          ? db.select().from(slots).where(inArray(slots.id, slotIds))
+          : Promise.resolve([]),
+        addressIds.length > 0
+          ? db.select().from(Address).where(inArray(Address.id, addressIds))
+          : Promise.resolve([]),
+        completedBookingIds.length > 0
+          ? db
+              .select()
+              .from(feedback)
+              .where(inArray(feedback.bookingId, completedBookingIds))
+          : Promise.resolve([]),
+      ]);
 
     // Create maps for O(1) lookup
-    const customerMap = new Map(customers.map(c => [c.id, c]));
-    const serviceMap = new Map(serviceList.map(s => [s.id, s]));
-    const slotMap = new Map(slotsData.map(s => [s.id, s]));
-    const addressMap = new Map(addresses.map(a => [a.id, a]));
-    const feedbackMap = new Map(feedbackRecords.map(f => [f.bookingId, f]));
+    const customerMap = new Map(customers.map((c) => [c.id, c]));
+    const serviceMap = new Map(serviceList.map((s) => [s.id, s]));
+    const slotMap = new Map(slotsData.map((s) => [s.id, s]));
+    const addressMap = new Map(addresses.map((a) => [a.id, a]));
+    const feedbackMap = new Map(feedbackRecords.map((f) => [f.bookingId, f]));
 
     // Format the response using maps
     const bookingsWithCustomers = providerBookings.map((booking) => {
@@ -313,6 +362,16 @@ const getProviderBookings = async (req, res) => {
       const slot = slotMap.get(booking.slotId);
       const address = addressMap.get(booking.addressId);
       const feedbackData = feedbackMap.get(booking.id);
+
+      // DEBUG: Log reschedule fields for pending bookings
+      if (booking.status === "reschedule_pending") {
+        console.log(`[DEBUG] Booking #${booking.id} reschedule fields:`, {
+          previousBookingDate: booking.previousBookingDate,
+          previousSlotTime: booking.previousSlotTime,
+          rescheduleReason: booking.rescheduleReason,
+          lastRescheduleFee: booking.lastRescheduleFee,
+        });
+      }
 
       return {
         id: booking.id,
@@ -327,9 +386,28 @@ const getProviderBookings = async (req, res) => {
         totalPrice: booking.totalPrice,
         createdAt: booking.createdAt,
         updatedAt: booking.updatedAt,
+        // Legacy reschedule fields
         rescheduledFromSlotId: booking.rescheduledFromSlotId,
         rescheduledAt: booking.rescheduledAt,
+        // New reschedule fields
+        rescheduleCount: booking.rescheduleCount,
+        lastRescheduleFee: booking.lastRescheduleFee,
+        rescheduleOutcome: booking.rescheduleOutcome,
+        rescheduleReason: booking.rescheduleReason,
+        rescheduledBy: booking.rescheduledBy,
+        // Previous slot info (for reschedule display)
+        previousSlotId: booking.previousSlotId,
+        previousSlotTime: booking.previousSlotTime,
+        previousBookingDate: booking.previousBookingDate,
+        // New slot info (requested for reschedule)
+        rescheduleBookingDate: booking.rescheduleBookingDate,
+        rescheduleSlotTime: booking.rescheduleSlotTime,
+        // Refund tracking
         isRefunded: booking.isRefunded,
+        refundAmount: booking.refundAmount,
+        // Provider payout tracking
+        providerPayoutAmount: booking.providerPayoutAmount,
+        providerPayoutStatus: booking.providerPayoutStatus,
         customerName: customer?.name || "Unknown",
         customerPhone: customer?.phone || "",
         customerEmail: customer?.email || "",
@@ -340,13 +418,20 @@ const getProviderBookings = async (req, res) => {
         address: address
           ? `${address.street}, ${address.city}, ${address.state} ${address.zipCode}`
           : "Unknown Address",
-        feedback: feedbackData ? {
-          rating: feedbackData.rating,
-          comments: feedbackData.comments,
-          createdAt: feedbackData.createdAt,
-        } : null,
+        feedback: feedbackData
+          ? {
+              rating: feedbackData.rating,
+              comments: feedbackData.comments,
+              createdAt: feedbackData.createdAt,
+            }
+          : null,
       };
     });
+
+    // DEBUG: Log first booking to verify all fields
+    if (bookingsWithCustomers.length > 0) {
+      console.log("[DEBUG] First booking in response:", JSON.stringify(bookingsWithCustomers[0], null, 2));
+    }
 
     res.status(200).json({ bookings: bookingsWithCustomers });
   } catch (error) {
@@ -356,11 +441,16 @@ const getProviderBookings = async (req, res) => {
 };
 
 const addBooking = async (req, res) => {
-  console.log('🔔 addBooking called');
+  console.log("🔔 addBooking called");
   try {
     const userId = req.token.id;
     const { serviceId, slotId, addressId, bookingDate } = req.body;
-    console.log('🔔 Request body:', { serviceId, slotId, addressId, bookingDate });
+    console.log("🔔 Request body:", {
+      serviceId,
+      slotId,
+      addressId,
+      bookingDate,
+    });
     if (!serviceId || !slotId || !bookingDate || !addressId) {
       return res.status(400).json({ message: "All fields are required" });
     }
@@ -498,12 +588,14 @@ const addBooking = async (req, res) => {
     // Check if provider has payment details (required for receiving payments)
     if (!businessProfile[0].hasPaymentDetails) {
       return res.status(400).json({
-        message: "Service provider is not accepting bookings at this time. Please try again later.",
+        message:
+          "Service provider is not accepting bookings at this time. Please try again later.",
         code: "PROVIDER_NO_PAYMENT_DETAILS",
       });
     }
 
-    // Check if slot is not already booked for the booking date
+    // Check if slot is not already booked for the booking date (same service only)
+    // Different services can use the same time slot
     const startOfDay = new Date(bookingDateObj);
     startOfDay.setHours(0, 0, 0, 0);
     const endOfDay = new Date(bookingDateObj);
@@ -515,6 +607,7 @@ const addBooking = async (req, res) => {
       .where(
         and(
           eq(bookings.slotId, slotId),
+          eq(bookings.serviceId, serviceId), // Only check same service
           gte(bookings.bookingDate, startOfDay),
           lte(bookings.bookingDate, endOfDay),
         ),
@@ -523,7 +616,10 @@ const addBooking = async (req, res) => {
     if (existingBooking.length > 0) {
       return res
         .status(400)
-        .json({ message: "Slot is already booked for the selected date" });
+        .json({
+          message:
+            "Slot is already booked for this service on the selected date",
+        });
     }
 
     const [newBooking] = await db
@@ -539,15 +635,15 @@ const addBooking = async (req, res) => {
       })
       .returning();
 
-    console.log('🔔 Booking created successfully, ID:', newBooking.id);
+    console.log("🔔 Booking created successfully, ID:", newBooking.id);
 
     // Send notification to provider about new booking
-    console.log('🔔 Creating notification for new booking:', newBooking.id);
+    console.log("🔔 Creating notification for new booking:", newBooking.id);
     try {
       await notificationTemplates.bookingCreated(newBooking.id);
-      console.log('✅ Notification sent successfully');
+      console.log("✅ Notification sent successfully");
     } catch (notifError) {
-      console.error('❌ Error sending notification:', notifError);
+      console.error("❌ Error sending notification:", notifError);
       // Don't fail the booking if notification fails
     }
 
@@ -1071,15 +1167,19 @@ const requestReschedule = async (req, res) => {
     const endOfDay = new Date(bookingDateObj);
     endOfDay.setHours(23, 59, 59, 999);
 
+    // Check if new slot is available for the selected date (same service only)
+    // Different services can use the same time slot
     const [conflictingBooking] = await db
       .select()
       .from(bookings)
       .where(
         and(
           eq(bookings.slotId, slotId),
+          eq(bookings.serviceId, booking.serviceId), // Only check same service
           gte(bookings.bookingDate, startOfDay),
           lte(bookings.bookingDate, endOfDay),
           or(eq(bookings.status, "pending"), eq(bookings.status, "confirmed")),
+          ne(bookings.id, bookingId), // Exclude the current booking itself
         ),
       )
       .limit(1);
@@ -1087,7 +1187,10 @@ const requestReschedule = async (req, res) => {
     if (conflictingBooking) {
       return res
         .status(400)
-        .json({ message: "Slot is already booked for the selected date" });
+        .json({
+          message:
+            "Slot is already booked for this service on the selected date",
+        });
     }
 
     // Calculate reschedule fee (flat ₹100)
@@ -1098,6 +1201,13 @@ const requestReschedule = async (req, res) => {
         null, // Settings no longer used
       );
 
+    // Fetch current slot to get its startTime for previousSlotTime
+    const [currentSlot] = await db
+      .select({ startTime: slots.startTime })
+      .from(slots)
+      .where(eq(slots.id, booking.slotId))
+      .limit(1);
+
     // Store current slot/date as previous before updating
     const [updatedBooking] = await db
       .update(bookings)
@@ -1105,9 +1215,11 @@ const requestReschedule = async (req, res) => {
         slotId: slotId,
         bookingDate: bookingDateObj,
         status: "reschedule_pending",
+        rescheduleOutcome: "pending", // Track reschedule state for display
         // Store original values in case of decline
         previousSlotId: booking.slotId,
         previousBookingDate: booking.bookingDate,
+        previousSlotTime: currentSlot?.startTime || null, // Store slot time for display
         rescheduleReason: reason,
         rescheduledBy: "customer",
         rescheduledAt: new Date(),
@@ -1166,11 +1278,9 @@ const cancelRescheduleRequest = async (req, res) => {
 
     // Verify user owns this booking
     if (booking.customerId !== userId) {
-      return res
-        .status(403)
-        .json({
-          message: "You are not authorized to cancel this reschedule request",
-        });
+      return res.status(403).json({
+        message: "You are not authorized to cancel this reschedule request",
+      });
     }
 
     // Check if booking is in reschedule_pending status
@@ -1524,7 +1634,9 @@ const approveReschedule = async (req, res) => {
       message:
         "Reschedule approved successfully. Booking is now confirmed with the new time.",
       booking: updatedBooking,
-      rescheduleFeeToProvider: booking.lastRescheduleFee ? paiseToRupees(booking.lastRescheduleFee) : null,
+      rescheduleFeeToProvider: booking.lastRescheduleFee
+        ? paiseToRupees(booking.lastRescheduleFee)
+        : null,
     });
   } catch (error) {
     console.error("Error approving reschedule:", error);
@@ -2033,22 +2145,27 @@ const providerReschedule = async (req, res) => {
     const endOfDay = new Date(bookingDateObj);
     endOfDay.setHours(23, 59, 59, 999);
 
+    // Check if new slot is already booked for the SAME service
+    // Different services can use the same time slot simultaneously
     const [conflictingBooking] = await db
       .select()
       .from(bookings)
       .where(
         and(
           eq(bookings.slotId, slotId),
+          eq(bookings.serviceId, booking.serviceId), // Only check same service
           gte(bookings.bookingDate, startOfDay),
           lte(bookings.bookingDate, endOfDay),
           or(eq(bookings.status, "pending"), eq(bookings.status, "confirmed")),
+          ne(bookings.id, bookingId), // Exclude the current booking itself
         ),
       )
       .limit(1);
 
     if (conflictingBooking) {
       return res.status(409).json({
-        message: "This slot is already booked. Please select a different time.",
+        message:
+          "This slot is already booked for this service. Please select a different time.",
       });
     }
 
@@ -2100,7 +2217,12 @@ const getAllBookingsForAdmin = async (req, res) => {
       allBookings.map(async (booking) => {
         // Get customer info (note: bookings table uses customerId, not userId)
         const [customer] = await db
-          .select({ id: users.id, name: users.name, email: users.email, phone: users.phone })
+          .select({
+            id: users.id,
+            name: users.name,
+            email: users.email,
+            phone: users.phone,
+          })
           .from(users)
           .where(eq(users.id, booking.customerId))
           .limit(1);
@@ -2120,7 +2242,11 @@ const getAllBookingsForAdmin = async (req, res) => {
 
         // Get service info
         const [service] = await db
-          .select({ id: services.id, name: services.name, price: services.price })
+          .select({
+            id: services.id,
+            name: services.name,
+            price: services.price,
+          })
           .from(services)
           .where(eq(services.id, booking.serviceId))
           .limit(1);
@@ -2140,13 +2266,15 @@ const getAllBookingsForAdmin = async (req, res) => {
           businessProfile: business || null,
           service: service || null,
           address: address || null,
-          slot: booking.bookingDate ? {
-            date: booking.bookingDate,
-            startTime: booking.slotStartTime,
-            endTime: booking.slotEndTime,
-          } : null,
+          slot: booking.bookingDate
+            ? {
+                date: booking.bookingDate,
+                startTime: booking.slotStartTime,
+                endTime: booking.slotEndTime,
+              }
+            : null,
         };
-      })
+      }),
     );
 
     // Apply status filter if provided

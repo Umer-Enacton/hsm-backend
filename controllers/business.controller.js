@@ -1,6 +1,6 @@
 const db = require("../config/db");
-const { businessProfiles, users, Category } = require("../models/schema");
-const { eq, and } = require("drizzle-orm");
+const { businessProfiles, users, Category, services } = require("../models/schema");
+const { eq, and, or } = require("drizzle-orm");
 
 const getAllBusinesses = async (req, res) => {
   try {
@@ -23,6 +23,9 @@ const getAllBusinesses = async (req, res) => {
         logo: businessProfiles.logo,
         coverImage: businessProfiles.coverImage,
         isVerified: businessProfiles.isVerified,
+        isBlocked: businessProfiles.isBlocked,
+        blockedReason: businessProfiles.blockedReason,
+        blockedAt: businessProfiles.blockedAt,
         hasPaymentDetails: businessProfiles.hasPaymentDetails,
         createdAt: businessProfiles.createdAt,
         // Provider fields
@@ -137,6 +140,9 @@ const getBusinessById = async (req, res) => {
         logo: businessProfiles.logo,
         coverImage: businessProfiles.coverImage,
         isVerified: businessProfiles.isVerified,
+        isBlocked: businessProfiles.isBlocked,
+        blockedReason: businessProfiles.blockedReason,
+        blockedAt: businessProfiles.blockedAt,
         hasPaymentDetails: businessProfiles.hasPaymentDetails,
         createdAt: businessProfiles.createdAt,
         // Provider fields
@@ -432,6 +438,63 @@ const deleteBusiness = async (req, res) => {
     res.status(500).json({ message: "Server error", error: error.message });
   }
 };
+
+/**
+ * Get provider's business and service status
+ * GET /provider/status
+ * Returns blocked business info and deactivated services
+ */
+const getProviderStatus = async (req, res) => {
+  try {
+    const userId = req.token.id;
+
+    // Get business profile
+    const [business] = await db
+      .select()
+      .from(businessProfiles)
+      .where(eq(businessProfiles.providerId, userId))
+      .limit(1);
+
+    if (!business) {
+      return res.json({
+        hasBusiness: false,
+        business: null,
+        deactivatedServices: [],
+      });
+    }
+
+    // Get all services for this business
+    const allServices = await db
+      .select()
+      .from(services)
+      .where(eq(services.businessProfileId, business.id));
+
+    // Get deactivated services
+    const deactivatedServices = allServices
+      .filter(s => !s.isActive)
+      .map(s => ({
+        id: s.id,
+        name: s.name,
+        deactivationReason: s.deactivationReason,
+        deactivatedAt: s.deactivatedAt,
+      }));
+
+    res.json({
+      hasBusiness: true,
+      business: {
+        id: business.id,
+        isBlocked: business.isBlocked || false,
+        blockedReason: business.blockedReason,
+        blockedAt: business.blockedAt,
+      },
+      deactivatedServices,
+    });
+  } catch (error) {
+    console.error("Error in getProviderStatus:", error);
+    res.status(500).json({ message: "Server error", error: error.message });
+  }
+};
+
 module.exports = {
   getAllBusinesses,
   getBusinessByProviderId,
@@ -440,4 +503,5 @@ module.exports = {
   verifyBusiness,
   updateBusiness,
   deleteBusiness,
+  getProviderStatus,
 };

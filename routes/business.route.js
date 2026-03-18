@@ -8,6 +8,7 @@ const {
   deleteBusiness,
   updateBusiness,
   verifyBusiness,
+  getProviderStatus,
 } = require("../controllers/business.controller");
 const authorizeRole = require("../middleware/roleBasedRoutes");
 const { PROVIDER, ADMIN } = require("../config/roles");
@@ -44,5 +45,8 @@ router.put(
 
 // Provider - delete business
 router.delete("/businesses/:id", authorizeRole(PROVIDER), deleteBusiness);
+
+// Provider - get business/service status (blocking info)
+router.get("/provider/status", authorizeRole(PROVIDER), getProviderStatus);
 
 module.exports = router;

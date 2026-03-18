@@ -322,6 +322,58 @@ const notificationTemplates = {
       data: { bookingId: bookingId.toString(), actionUrl: `/customer/bookings` },
     });
   },
+
+  /**
+   * Business blocked - Notify provider
+   */
+  async businessBlocked(providerId, businessName, reason) {
+    return createNotification({
+      userId: providerId,
+      type: 'business_blocked',
+      title: 'Business Blocked',
+      message: `Your business "${businessName}" has been blocked. Reason: ${reason}`,
+      data: { type: 'blocked', actionUrl: `/provider/business` },
+    });
+  },
+
+  /**
+   * Business unblocked - Notify provider
+   */
+  async businessUnblocked(providerId, businessName) {
+    return createNotification({
+      userId: providerId,
+      type: 'business_unblocked',
+      title: 'Business Unblocked',
+      message: `Your business "${businessName}" has been unblocked. You can receive new bookings.`,
+      data: { type: 'unblocked', actionUrl: `/provider/business` },
+    });
+  },
+
+  /**
+   * Service deactivated - Notify provider
+   */
+  async serviceDeactivated(providerId, serviceName, reason) {
+    return createNotification({
+      userId: providerId,
+      type: 'service_deactivated',
+      title: 'Service Deactivated',
+      message: `Service "${serviceName}" has been deactivated. Reason: ${reason}`,
+      data: { type: 'deactivated', actionUrl: `/provider/services` },
+    });
+  },
+
+  /**
+   * Service reactivated - Notify provider
+   */
+  async serviceReactivated(providerId, serviceName) {
+    return createNotification({
+      userId: providerId,
+      type: 'service_reactivated',
+      title: 'Service Reactivated',
+      message: `Service "${serviceName}" has been reactivated and is available for booking.`,
+      data: { type: 'reactivated', actionUrl: `/provider/services` },
+    });
+  },
 };
 
 module.exports = {

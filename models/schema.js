@@ -110,6 +110,10 @@ const businessProfiles = pgTable("business_profiles", {
   coverImage: varchar("cover_image", { length: 500 }), // Cloudinary URL for cover/banner image
   isVerified: boolean("is_verified").default(false).notNull(),
   hasPaymentDetails: boolean("has_payment_details").default(false).notNull(), // Provider has added payment details
+  isBlocked: boolean("is_blocked").default(false).notNull(), // Business blocked by admin
+  blockedReason: text("blocked_reason"), // Reason for blocking
+  blockedAt: timestamp("blocked_at"), // When business was blocked
+  blockedBy: integer("blocked_by").references(() => users.id), // Admin who blocked
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
@@ -123,7 +127,10 @@ const services = pgTable("services", {
   price: integer("price").notNull(),
   EstimateDuration: integer("EstimateDuration").notNull(),
   image: varchar("image", { length: 500 }), // Cloudinary URL for service image
-  isActive: boolean("is_active").default(true).notNull(),
+  isActive: boolean("is_active").default(true).notNull(), // Service can be deactivated by admin
+  deactivationReason: text("deactivation_reason"), // Reason for deactivation
+  deactivatedAt: timestamp("deactivated_at"), // When service was deactivated
+  deactivatedBy: integer("deactivated_by").references(() => users.id), // Admin who deactivated
   rating: decimal("rating", { precision: 3, scale: 2 }).default(0),
   totalReviews: integer("total_reviews").default(0),
   createdAt: timestamp("created_at").defaultNow().notNull(),

@@ -17,6 +17,12 @@ const getAllServices = async (req, res) => {
     // Build dynamic WHERE conditions
     const conditions = [];
 
+    // CRITICAL: Always filter out blocked businesses and inactive services for customers
+    // Customers cannot see services from blocked businesses
+    conditions.push(eq(businessProfiles.isBlocked, false));
+    // Customers cannot see deactivated services
+    conditions.push(eq(services.isActive, true));
+
     // Search filter - search in service name OR description (case-insensitive)
     if (search && search.trim()) {
       const searchTerm = search.trim();

@@ -817,9 +817,10 @@ const verifyPayment = async (req, res) => {
     let bookingId = null; // Can be new booking ID or existing booking ID (for reschedule)
 
     await db.transaction(async (tx) => {
-      // CRITICAL: Check for existing booking for this slot+date BEFORE proceeding
+      // CRITICAL: Check for existing booking for this slot+date+service BEFORE proceeding
+      // Different services can use the same time slot
       // This prevents race conditions when multiple users try to book the same slot simultaneously
-      console.log(`🔒 Checking for existing bookings for slot ${paymentIntent.slotId} on ${paymentIntent.bookingDate}`);
+      console.log(`🔒 Checking for existing bookings for service ${paymentIntent.serviceId}, slot ${paymentIntent.slotId} on ${paymentIntent.bookingDate}`);
 
       // Create date range for the selected date
       const bookingDate = paymentIntent.bookingDate;
@@ -835,6 +836,7 @@ const verifyPayment = async (req, res) => {
         .where(
           and(
             eq(bookings.slotId, paymentIntent.slotId),
+            eq(bookings.serviceId, paymentIntent.serviceId), // Only check same service
             // Check if bookingDate falls within the selected date
             and(
               gte(bookings.bookingDate, startOfDay),
@@ -851,7 +853,7 @@ const verifyPayment = async (req, res) => {
         .limit(1);
 
       if (existingBooking) {
-        console.log(`❌ Slot ${paymentIntent.slotId} already booked for ${paymentIntent.bookingDate}`);
+        console.log(`❌ Slot ${paymentIntent.slotId} already booked for service ${paymentIntent.serviceId} on ${paymentIntent.bookingDate}`);
         // Slot is already booked - cancel this payment
         throw new Error("This slot is no longer available. It was just booked by another customer.");
       }
@@ -1830,12 +1832,16 @@ const validatePaymentIntent = async (req, res) => {
       });
     }
 
-    // CRITICAL: Check if slot has been booked by someone else
+    // CRITICAL: Check if slot has been booked by someone else for the SAME service
+    // Different services can use the same time slot
     const bookingDate = paymentIntent.bookingDate;
     const startOfDay = new Date(bookingDate);
     startOfDay.setHours(0, 0, 0, 0);
     const endOfDay = new Date(bookingDate);
     endOfDay.setHours(23, 59, 59, 999);
+
+    // Get the current booking ID if this is a reschedule (to exclude it from check)
+    const currentBookingId = paymentIntent.bookingId;
 
     const [existingBooking] = await db
       .select()
@@ -1843,29 +1849,32 @@ const validatePaymentIntent = async (req, res) => {
       .where(
         and(
           eq(bookings.slotId, paymentIntent.slotId),
+          eq(bookings.serviceId, paymentIntent.serviceId), // Only check same service
           gte(bookings.bookingDate, startOfDay),
           lte(bookings.bookingDate, endOfDay),
           or(
             eq(bookings.status, "pending"),
             eq(bookings.status, "payment_pending"),
             eq(bookings.status, "confirmed")
-          )
+          ),
+          // Exclude current booking if this is a reschedule
+          ...(currentBookingId ? [ne(bookings.id, currentBookingId)] : [])
         )
       )
       .limit(1);
 
     if (existingBooking) {
-      console.log(`❌ [VALIDATE] Slot ${paymentIntent.slotId} already booked by booking ${existingBooking.id}`);
+      console.log(`❌ [VALIDATE] Slot ${paymentIntent.slotId} already booked for service ${paymentIntent.serviceId} by booking ${existingBooking.id}`);
 
       // Cancel this payment intent
       await db
         .update(paymentIntents)
-        .set({ status: "failed", failureReason: "Slot already booked by another customer" })
+        .set({ status: "failed", failureReason: `Slot already booked for this service` })
         .where(eq(paymentIntents.id, paymentIntentId));
 
       return res.status(409).json({
         valid: false,
-        message: "This slot has been booked by another customer. Please select a different time.",
+        message: "This slot is already booked for this service. Please select a different time.",
         code: "SLOT_ALREADY_BOOKED"
       });
     }
