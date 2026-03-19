@@ -47,6 +47,9 @@ module.exports = {
   // Upload category image
   categoryImage: upload.single("image"),
 
+  // Upload completion photo (before/after service photos)
+  completionPhoto: upload.single("photo"),
+
   // Upload multiple images
   multipleImages: upload.array("images", 5),
 };

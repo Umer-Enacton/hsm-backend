@@ -27,6 +27,8 @@ const {
   rupeesToPaise,
 } = require("../utils/razorpay");
 const { notificationTemplates } = require("../utils/notificationHelper");
+// Import email service
+const { sendCompletionOTPEmail } = require("../helper/emailService");
 
 // Get booking by ID
 const getBookingById = async (req, res) => {
@@ -408,6 +410,14 @@ const getProviderBookings = async (req, res) => {
         // Provider payout tracking
         providerPayoutAmount: booking.providerPayoutAmount,
         providerPayoutStatus: booking.providerPayoutStatus,
+        // Completion verification photos
+        beforePhotoUrl: booking.beforePhotoUrl || null,
+        afterPhotoUrl: booking.afterPhotoUrl || null,
+        completionNotes: booking.completionNotes || null,
+        actualCompletionTime: booking.actualCompletionTime || null,
+        completionOtp: booking.completionOtp || null,
+        completionOtpExpiry: booking.completionOtpExpiry || null,
+        completionOtpVerifiedAt: booking.completionOtpVerifiedAt || null,
         customerName: customer?.name || "Unknown",
         customerPhone: customer?.phone || "",
         customerEmail: customer?.email || "",
@@ -2315,80 +2325,6 @@ function generateCompletionOTP() {
 }
 
 /**
- * Send OTP email to customer for completion verification
- */
-async function sendCompletionOTPEmail(customerEmail, customerName, providerName, serviceName, otp, bookingDate, slotTime) {
-  const nodemailer = require("nodemailer");
-
-  // Create transporter
-  const transporter = nodemailer.createTransport({
-    service: "gmail",
-    auth: {
-      user: process.env.EMAIL_USER,
-      pass: process.env.EMAIL_PASS,
-    },
-  });
-
-  // Format date and time
-  const date = new Date(bookingDate).toLocaleDateString("en-US", {
-    weekday: "long",
-    year: "numeric",
-    month: "long",
-    day: "numeric",
-  });
-
-  // Email content
-  const mailOptions = {
-    from: `"HomeFixCare" <${process.env.EMAIL_USER}>`,
-    to: customerEmail,
-    subject: "Service Completion Verification Code",
-    html: `
-      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-        <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 20px; border-radius: 10px 10px 0 0;">
-          <h1 style="color: white; margin: 0; font-size: 24px;">HomeFixCare</h1>
-        </div>
-        <div style="background: #f9fafb; padding: 30px 20px; border: 1px solid #e5e7eb;">
-          <h2 style="color: #1f2937; margin-top: 0;">Service Completion Verification</h2>
-          <p style="color: #4b5563; line-height: 1.6;">
-            Hello <strong>${customerName}</strong>,
-          </p>
-          <p style="color: #4b5563; line-height: 1.6;">
-            Your service provider <strong>${providerName}</strong> has completed the service:
-          </p>
-          <div style="background: white; padding: 15px; border-radius: 8px; margin: 15px 0;">
-            <p style="margin: 5px 0;"><strong>Service:</strong> ${serviceName}</p>
-            <p style="margin: 5px 0;"><strong>Date:</strong> ${date}</p>
-            <p style="margin: 5px 0;"><strong>Time:</strong> ${slotTime}</p>
-          </div>
-          <p style="color: #4b5563; line-height: 1.6;">
-            Please share this verification code with your provider to confirm completion:
-          </p>
-          <div style="text-align: center; margin: 25px 0;">
-            <div style="display: inline-block; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; font-size: 36px; font-weight: bold; letter-spacing: 8px; padding: 20px 40px; border-radius: 10px;">
-              ${otp}
-            </div>
-          </div>
-          <p style="color: #6b7280; font-size: 14px; text-align: center;">
-            Valid for 15 minutes
-          </p>
-          <p style="color: #4b5563; line-height: 1.6; margin-top: 20px;">
-            If you did not receive this service, please contact support immediately.
-          </p>
-        </div>
-        <div style="background: #f9fafb; padding: 15px 20px; border: 1px solid #e5e7eb; border-top: none; border-radius: 0 0 10px 10px;">
-          <p style="color: #9ca3af; font-size: 12px; margin: 0; text-align: center;">
-            This is an automated email. Please do not reply.
-          </p>
-        </div>
-      </div>
-    `,
-  };
-
-  await transporter.sendMail(mailOptions);
-  console.log(`[Completion OTP] Email sent to ${customerEmail}, OTP: ${otp}`);
-}
-
-/**
  * Initiate completion - Generate and send OTP to customer
  * POST /api/booking/:id/complete-initiate
  */
@@ -2404,14 +2340,16 @@ const initiateCompletion = async (req, res) => {
 
     console.log(`[initiateCompletion] Provider ${userId} initiating completion for booking ${bookingId}`);
 
-    // 1. Fetch booking with business profile
+    // 1. Fetch booking with business profile and service
     const [booking] = await db
       .select({
         booking: bookings,
         business: businessProfiles,
+        service: services,
       })
       .from(bookings)
       .innerJoin(businessProfiles, eq(bookings.businessProfileId, businessProfiles.id))
+      .innerJoin(services, eq(bookings.serviceId, services.id))
       .where(eq(bookings.id, bookingId));
 
     if (!booking) {
@@ -2461,6 +2399,12 @@ const initiateCompletion = async (req, res) => {
       return res.status(404).json({ message: "Customer not found" });
     }
 
+    console.log('[initiateCompletion] Customer email:', customer[0].email, 'Customer name:', customer[0].name);
+
+    if (!customer[0].email) {
+      return res.status(400).json({ message: "Customer email not found" });
+    }
+
     // Get slot time for email
     const slot = await db
       .select()
@@ -2469,17 +2413,35 @@ const initiateCompletion = async (req, res) => {
       .limit(1);
 
     const slotTime = slot.length > 0 ? slot[0].startTime : "N/A";
-    const serviceName = booking.booking.serviceName || "Service";
+    const serviceName = booking.service?.name || booking.booking.serviceName || "Service";
 
-    await sendCompletionOTPEmail(
-      customer[0].email,
-      customer[0].name,
-      booking.business.businessName,
-      serviceName,
-      otp,
-      booking.booking.bookingDate,
-      slotTime
-    );
+    // Send OTP email (don't fail if email error occurs)
+    try {
+      // Format date for email
+      const formattedDate = booking.booking.bookingDate
+        ? new Date(booking.booking.bookingDate).toLocaleDateString("en-US", {
+            weekday: "long",
+            year: "numeric",
+            month: "long",
+            day: "numeric",
+          })
+        : "";
+
+      await sendCompletionOTPEmail(
+        customer[0].email,
+        otp,
+        {
+          customerName: customer[0].name,
+          providerName: booking.business.businessName,
+          serviceName,
+          date: formattedDate,
+          time: slotTime,
+        }
+      );
+    } catch (emailError) {
+      console.error("Email send failed (but OTP generated):", emailError.message);
+      // Continue anyway - OTP is saved in database
+    }
 
     return res.status(200).json({
       message: "OTP sent to customer email for verification",
@@ -2617,16 +2579,18 @@ const resendCompletionOTP = async (req, res) => {
 
     console.log(`[resendCompletionOTP] Resending OTP for booking ${bookingId}`);
 
-    // 1. Fetch booking with business profile
+    // 1. Fetch booking with business profile, customer, and service
     const [booking] = await db
       .select({
         booking: bookings,
         business: businessProfiles,
         customer: users,
+        service: services,
       })
       .from(bookings)
       .innerJoin(businessProfiles, eq(bookings.businessProfileId, businessProfiles.id))
       .innerJoin(users, eq(bookings.customerId, users.id))
+      .innerJoin(services, eq(bookings.serviceId, services.id))
       .where(eq(bookings.id, bookingId));
 
     if (!booking) {
@@ -2657,6 +2621,12 @@ const resendCompletionOTP = async (req, res) => {
       .where(eq(bookings.id, bookingId));
 
     // 6. Send OTP email
+    console.log('[resendCompletionOTP] Customer email:', booking.customer.email, 'Customer name:', booking.customer.name);
+
+    if (!booking.customer.email) {
+      return res.status(400).json({ message: "Customer email not found" });
+    }
+
     const slot = await db
       .select()
       .from(slots)
@@ -2664,17 +2634,35 @@ const resendCompletionOTP = async (req, res) => {
       .limit(1);
 
     const slotTime = slot.length > 0 ? slot[0].startTime : "N/A";
-    const serviceName = booking.booking.serviceName || "Service";
+    const serviceName = booking.service?.name || booking.booking.serviceName || "Service";
 
-    await sendCompletionOTPEmail(
-      booking.customer.email,
-      booking.customer.name,
-      booking.business.businessName,
-      serviceName,
-      otp,
-      booking.booking.bookingDate,
-      slotTime
-    );
+    // Send OTP email (don't fail if email error occurs)
+    try {
+      // Format date for email
+      const formattedDate = booking.booking.bookingDate
+        ? new Date(booking.booking.bookingDate).toLocaleDateString("en-US", {
+            weekday: "long",
+            year: "numeric",
+            month: "long",
+            day: "numeric",
+          })
+        : "";
+
+      await sendCompletionOTPEmail(
+        booking.customer.email,
+        otp,
+        {
+          customerName: booking.customer.name,
+          providerName: booking.business.businessName,
+          serviceName,
+          date: formattedDate,
+          time: slotTime,
+        }
+      );
+    } catch (emailError) {
+      console.error("Email send failed (but OTP was regenerated):", emailError.message);
+      // Continue anyway - OTP is saved in database
+    }
 
     return res.status(200).json({
       message: "New OTP sent to customer email",

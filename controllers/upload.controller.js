@@ -196,11 +196,45 @@ const deleteImage = async (req, res) => {
   }
 };
 
+/**
+ * Upload completion photo (before/after service photos)
+ * @route POST /api/upload/completion-photo
+ */
+const uploadCompletionPhoto = async (req, res) => {
+  try {
+    console.log('Completion photo upload request received');
+
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        message: 'No file uploaded',
+      });
+    }
+
+    // Upload to Cloudinary with folder for completion photos
+    const result = await uploadBufferToCloudinary(req.file.buffer, 'completion-photos');
+
+    res.status(200).json({
+      success: true,
+      message: 'Completion photo uploaded successfully',
+      data: result,
+    });
+  } catch (error) {
+    console.error('Completion photo upload error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to upload completion photo',
+      error: error.message,
+    });
+  }
+};
+
 module.exports = {
   uploadAvatar,
   uploadLogo,
   uploadCoverImage,
   uploadServiceImage,
   uploadCategoryImage,
+  uploadCompletionPhoto,
   deleteImage,
 };

@@ -204,7 +204,115 @@ const sendPasswordResetConfirmation = async (email) => {
   }
 };
 
+/**
+ * Send OTP email for service completion verification
+ * @param {string} email - Recipient email address
+ * @param {string} otp - One-time password
+ * @param {object} details - Service details (customerName, providerName, serviceName, date, time)
+ * @returns {Promise} - Send result
+ */
+const sendCompletionOTPEmail = async (email, otp, details = {}) => {
+  const { customerName = "Customer", providerName = "Service Provider", serviceName = "Service", date = "", time = "" } = details;
+
+  console.log('[sendCompletionOTPEmail] Sending email:', { email, otp, customerName, providerName, serviceName, date, time });
+
+  const mailOptions = {
+    from: process.env.EMAIL_USER,
+    to: email,
+    subject: "Service Completion Verification Code - HomeFixCare",
+    html: `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <style>
+          body {
+            font-family: Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+          }
+          .container {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border-radius: 10px 10px 0 0;
+            padding: 30px;
+            color: white;
+          }
+          .content {
+            background-color: #f9f9f9;
+            border-radius: 0 0 10px 10px;
+            padding: 30px;
+          }
+          .otp-box {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            font-size: 32px;
+            font-weight: bold;
+            text-align: center;
+            padding: 20px;
+            border-radius: 8px;
+            margin: 20px 0;
+            letter-spacing: 8px;
+          }
+          .service-details {
+            background: white;
+            padding: 15px;
+            border-radius: 8px;
+            margin: 20px 0;
+          }
+          .footer {
+            font-size: 12px;
+            color: #666;
+            text-align: center;
+            margin-top: 20px;
+          }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <h1>🔐 Service Completion Verification</h1>
+        </div>
+        <div class="content">
+          <p>Hello <strong>${customerName}</strong>,</p>
+          <p>Your service provider <strong>${providerName}</strong> has completed the service:</p>
+
+          <div class="service-details">
+            <p><strong>Service:</strong> ${serviceName}</p>
+            ${date ? `<p><strong>Date:</strong> ${date}</p>` : ''}
+            ${time ? `<p><strong>Time:</strong> ${time}</p>` : ''}
+          </div>
+
+          <p>Please share this verification code with your provider to confirm completion:</p>
+
+          <div class="otp-box">${otp}</div>
+
+          <p style="font-size: 14px;"><strong>Valid for 15 minutes</strong></p>
+
+          <p style="font-size: 13px; color: #666;">If you did not receive this service, please contact support immediately.</p>
+
+          <div class="footer">
+            This is an automated email. Please do not reply.
+          </div>
+        </div>
+      </body>
+      </html>
+    `,
+  };
+
+  try {
+    await transporter.sendMail(mailOptions);
+    console.log(`Completion OTP email sent to ${email}, OTP: ${otp}`);
+    return { success: true };
+  } catch (error) {
+    console.error("Error sending completion email:", error);
+    return { success: false, error: error.message };
+  }
+};
+
 module.exports = {
   sendOTPEmail,
   sendPasswordResetConfirmation,
+  sendCompletionOTPEmail,
+  transporter, // Export transporter for use in other controllers
 };
