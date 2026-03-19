@@ -18,6 +18,11 @@ const {
   approveReschedule,
   declineReschedule,
   providerReschedule,
+  // OTP-based completion verification
+  initiateCompletion,
+  verifyCompletionOTP,
+  resendCompletionOTP,
+  uploadCompletionPhotos,
 } = require("../controllers/booking.controller");
 const authorizeRole = require("../middleware/roleBasedRoutes");
 const { CUSTOMER, PROVIDER, ADMIN } = require("../config/roles");
@@ -50,5 +55,11 @@ router.put("/complete-booking/:id", authorizeRole(PROVIDER), completeBooking);
 router.put("/booking/:id/reschedule-approve", authorizeRole(PROVIDER), approveReschedule);
 router.put("/booking/:id/reschedule-decline", authorizeRole(PROVIDER), declineReschedule);
 router.put("/booking/:id/provider-reschedule", authorizeRole(PROVIDER), providerReschedule);
+
+// OTP-based completion verification (provider only)
+router.post("/booking/:id/complete-initiate", authorizeRole(PROVIDER), initiateCompletion);
+router.post("/booking/:id/complete-verify", authorizeRole(PROVIDER), verifyCompletionOTP);
+router.post("/booking/:id/complete-resend", authorizeRole(PROVIDER), resendCompletionOTP);
+router.post("/booking/:id/completion-photos", authorizeRole(PROVIDER), uploadCompletionPhotos);
 
 module.exports = router;

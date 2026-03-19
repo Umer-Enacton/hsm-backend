@@ -2303,6 +2303,460 @@ const getAllBookingsForAdmin = async (req, res) => {
   }
 };
 
+// ============================================
+// OTP-Based Service Completion Verification
+// ============================================
+
+/**
+ * Generate a 6-digit OTP for completion verification
+ */
+function generateCompletionOTP() {
+  return Math.floor(100000 + Math.random() * 900000).toString();
+}
+
+/**
+ * Send OTP email to customer for completion verification
+ */
+async function sendCompletionOTPEmail(customerEmail, customerName, providerName, serviceName, otp, bookingDate, slotTime) {
+  const nodemailer = require("nodemailer");
+
+  // Create transporter
+  const transporter = nodemailer.createTransport({
+    service: "gmail",
+    auth: {
+      user: process.env.EMAIL_USER,
+      pass: process.env.EMAIL_PASS,
+    },
+  });
+
+  // Format date and time
+  const date = new Date(bookingDate).toLocaleDateString("en-US", {
+    weekday: "long",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  });
+
+  // Email content
+  const mailOptions = {
+    from: `"HomeFixCare" <${process.env.EMAIL_USER}>`,
+    to: customerEmail,
+    subject: "Service Completion Verification Code",
+    html: `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+        <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 20px; border-radius: 10px 10px 0 0;">
+          <h1 style="color: white; margin: 0; font-size: 24px;">HomeFixCare</h1>
+        </div>
+        <div style="background: #f9fafb; padding: 30px 20px; border: 1px solid #e5e7eb;">
+          <h2 style="color: #1f2937; margin-top: 0;">Service Completion Verification</h2>
+          <p style="color: #4b5563; line-height: 1.6;">
+            Hello <strong>${customerName}</strong>,
+          </p>
+          <p style="color: #4b5563; line-height: 1.6;">
+            Your service provider <strong>${providerName}</strong> has completed the service:
+          </p>
+          <div style="background: white; padding: 15px; border-radius: 8px; margin: 15px 0;">
+            <p style="margin: 5px 0;"><strong>Service:</strong> ${serviceName}</p>
+            <p style="margin: 5px 0;"><strong>Date:</strong> ${date}</p>
+            <p style="margin: 5px 0;"><strong>Time:</strong> ${slotTime}</p>
+          </div>
+          <p style="color: #4b5563; line-height: 1.6;">
+            Please share this verification code with your provider to confirm completion:
+          </p>
+          <div style="text-align: center; margin: 25px 0;">
+            <div style="display: inline-block; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; font-size: 36px; font-weight: bold; letter-spacing: 8px; padding: 20px 40px; border-radius: 10px;">
+              ${otp}
+            </div>
+          </div>
+          <p style="color: #6b7280; font-size: 14px; text-align: center;">
+            Valid for 15 minutes
+          </p>
+          <p style="color: #4b5563; line-height: 1.6; margin-top: 20px;">
+            If you did not receive this service, please contact support immediately.
+          </p>
+        </div>
+        <div style="background: #f9fafb; padding: 15px 20px; border: 1px solid #e5e7eb; border-top: none; border-radius: 0 0 10px 10px;">
+          <p style="color: #9ca3af; font-size: 12px; margin: 0; text-align: center;">
+            This is an automated email. Please do not reply.
+          </p>
+        </div>
+      </div>
+    `,
+  };
+
+  await transporter.sendMail(mailOptions);
+  console.log(`[Completion OTP] Email sent to ${customerEmail}, OTP: ${otp}`);
+}
+
+/**
+ * Initiate completion - Generate and send OTP to customer
+ * POST /api/booking/:id/complete-initiate
+ */
+const initiateCompletion = async (req, res) => {
+  try {
+    const bookingId = Number(req.params.id);
+    const userId = req.token.id;
+    const { beforePhotoUrl, afterPhotoUrl, completionNotes } = req.body;
+
+    if (!bookingId) {
+      return res.status(400).json({ message: "Booking ID is required" });
+    }
+
+    console.log(`[initiateCompletion] Provider ${userId} initiating completion for booking ${bookingId}`);
+
+    // 1. Fetch booking with business profile
+    const [booking] = await db
+      .select({
+        booking: bookings,
+        business: businessProfiles,
+      })
+      .from(bookings)
+      .innerJoin(businessProfiles, eq(bookings.businessProfileId, businessProfiles.id))
+      .where(eq(bookings.id, bookingId));
+
+    if (!booking) {
+      return res.status(404).json({ message: "Booking not found" });
+    }
+
+    // 2. Check booking status
+    if (booking.booking.status !== "confirmed") {
+      return res.status(400).json({
+        message: "Only confirmed bookings can be marked for completion",
+        currentStatus: booking.booking.status,
+      });
+    }
+
+    // 3. Verify provider owns the business
+    if (booking.business.providerId !== userId) {
+      return res.status(403).json({ message: "You are not authorized to complete this booking" });
+    }
+
+    // 4. Generate OTP
+    const otp = generateCompletionOTP();
+    const otpExpiry = new Date(Date.now() + 15 * 60 * 1000); // 15 minutes
+
+    // 5. Update booking with OTP and optional photos/notes
+    const updateData = {
+      completionOtp: otp,
+      completionOtpExpiry: otpExpiry,
+    };
+
+    if (beforePhotoUrl) updateData.beforePhotoUrl = beforePhotoUrl;
+    if (afterPhotoUrl) updateData.afterPhotoUrl = afterPhotoUrl;
+    if (completionNotes) updateData.completionNotes = completionNotes;
+
+    await db
+      .update(bookings)
+      .set(updateData)
+      .where(eq(bookings.id, bookingId));
+
+    // 6. Send OTP email to customer
+    const customer = await db
+      .select()
+      .from(users)
+      .where(eq(users.id, booking.booking.customerId))
+      .limit(1);
+
+    if (customer.length === 0) {
+      return res.status(404).json({ message: "Customer not found" });
+    }
+
+    // Get slot time for email
+    const slot = await db
+      .select()
+      .from(slots)
+      .where(eq(slots.id, booking.booking.slotId))
+      .limit(1);
+
+    const slotTime = slot.length > 0 ? slot[0].startTime : "N/A";
+    const serviceName = booking.booking.serviceName || "Service";
+
+    await sendCompletionOTPEmail(
+      customer[0].email,
+      customer[0].name,
+      booking.business.businessName,
+      serviceName,
+      otp,
+      booking.booking.bookingDate,
+      slotTime
+    );
+
+    return res.status(200).json({
+      message: "OTP sent to customer email for verification",
+      otpExpiry: otpExpiry,
+      canResendAfter: new Date(Date.now() + 60 * 1000), // Can resend after 1 minute
+    });
+  } catch (error) {
+    console.error("Error initiating completion:", error);
+    return res.status(500).json({
+      message: "Server error",
+      error: error.message,
+    });
+  }
+};
+
+/**
+ * Verify OTP and complete booking
+ * POST /api/booking/:id/complete-verify
+ */
+const verifyCompletionOTP = async (req, res) => {
+  try {
+    const bookingId = Number(req.params.id);
+    const userId = req.token.id;
+    const { otp } = req.body;
+
+    if (!bookingId) {
+      return res.status(400).json({ message: "Booking ID is required" });
+    }
+
+    if (!otp || otp.length !== 6) {
+      return res.status(400).json({ message: "Invalid OTP format" });
+    }
+
+    console.log(`[verifyCompletionOTP] Verifying OTP for booking ${bookingId}`);
+
+    // 1. Fetch booking with business profile
+    const [booking] = await db
+      .select({
+        booking: bookings,
+        business: businessProfiles,
+      })
+      .from(bookings)
+      .innerJoin(businessProfiles, eq(bookings.businessProfileId, businessProfiles.id))
+      .where(eq(bookings.id, bookingId));
+
+    if (!booking) {
+      return res.status(404).json({ message: "Booking not found" });
+    }
+
+    // 2. Verify provider owns the business
+    if (booking.business.providerId !== userId) {
+      return res.status(403).json({ message: "You are not authorized to verify this booking" });
+    }
+
+    // 3. Check if OTP was generated
+    if (!booking.booking.completionOtp) {
+      return res.status(400).json({
+        message: "No OTP generated. Please initiate completion first.",
+      });
+    }
+
+    // 4. Check if OTP has expired
+    if (new Date() > new Date(booking.booking.completionOtpExpiry)) {
+      return res.status(400).json({
+        message: "OTP has expired. Please request a new OTP.",
+        expired: true,
+      });
+    }
+
+    // 5. Verify OTP matches
+    if (booking.booking.completionOtp !== otp) {
+      return res.status(400).json({
+        message: "Invalid OTP. Please try again.",
+        success: false,
+      });
+    }
+
+    // 6. OTP is correct - complete the booking
+    const [updatedBooking] = await db
+      .update(bookings)
+      .set({
+        status: "completed",
+        completionOtp: null, // Clear OTP
+        completionOtpExpiry: null,
+        completionOtpVerifiedAt: new Date(),
+        actualCompletionTime: new Date(),
+      })
+      .where(eq(bookings.id, bookingId))
+      .returning();
+
+    // 7. Set provider payout status to "pending"
+    const [payment] = await db
+      .select()
+      .from(payments)
+      .where(eq(payments.bookingId, bookingId))
+      .limit(1);
+
+    if (payment && payment.status === "paid") {
+      await db
+        .update(payments)
+        .set({ providerPayoutStatus: "pending" })
+        .where(eq(payments.id, payment.id));
+      console.log(`✅ Payment ${payment.id} marked as "pending" for payout`);
+    }
+
+    // 8. Send notification to customer
+    await notificationTemplates.bookingCompleted(bookingId);
+
+    return res.status(200).json({
+      message: "Booking completed successfully",
+      success: true,
+      booking: updatedBooking,
+    });
+  } catch (error) {
+    console.error("Error verifying completion OTP:", error);
+    return res.status(500).json({
+      message: "Server error",
+      error: error.message,
+    });
+  }
+};
+
+/**
+ * Resend completion OTP
+ * POST /api/booking/:id/complete-resend
+ */
+const resendCompletionOTP = async (req, res) => {
+  try {
+    const bookingId = Number(req.params.id);
+    const userId = req.token.id;
+
+    if (!bookingId) {
+      return res.status(400).json({ message: "Booking ID is required" });
+    }
+
+    console.log(`[resendCompletionOTP] Resending OTP for booking ${bookingId}`);
+
+    // 1. Fetch booking with business profile
+    const [booking] = await db
+      .select({
+        booking: bookings,
+        business: businessProfiles,
+        customer: users,
+      })
+      .from(bookings)
+      .innerJoin(businessProfiles, eq(bookings.businessProfileId, businessProfiles.id))
+      .innerJoin(users, eq(bookings.customerId, users.id))
+      .where(eq(bookings.id, bookingId));
+
+    if (!booking) {
+      return res.status(404).json({ message: "Booking not found" });
+    }
+
+    // 2. Verify provider owns the business
+    if (booking.business.providerId !== userId) {
+      return res.status(403).json({ message: "You are not authorized for this action" });
+    }
+
+    // 3. Check booking status
+    if (booking.booking.status === "completed") {
+      return res.status(400).json({ message: "Booking is already completed" });
+    }
+
+    // 4. Generate new OTP
+    const otp = generateCompletionOTP();
+    const otpExpiry = new Date(Date.now() + 15 * 60 * 1000); // 15 minutes
+
+    // 5. Update booking with new OTP
+    await db
+      .update(bookings)
+      .set({
+        completionOtp: otp,
+        completionOtpExpiry: otpExpiry,
+      })
+      .where(eq(bookings.id, bookingId));
+
+    // 6. Send OTP email
+    const slot = await db
+      .select()
+      .from(slots)
+      .where(eq(slots.id, booking.booking.slotId))
+      .limit(1);
+
+    const slotTime = slot.length > 0 ? slot[0].startTime : "N/A";
+    const serviceName = booking.booking.serviceName || "Service";
+
+    await sendCompletionOTPEmail(
+      booking.customer.email,
+      booking.customer.name,
+      booking.business.businessName,
+      serviceName,
+      otp,
+      booking.booking.bookingDate,
+      slotTime
+    );
+
+    return res.status(200).json({
+      message: "New OTP sent to customer email",
+      otpExpiry: otpExpiry,
+    });
+  } catch (error) {
+    console.error("Error resending completion OTP:", error);
+    return res.status(500).json({
+      message: "Server error",
+      error: error.message,
+    });
+  }
+};
+
+/**
+ * Upload completion photos (before/after)
+ * POST /api/booking/:id/completion-photos
+ */
+const uploadCompletionPhotos = async (req, res) => {
+  try {
+    const bookingId = Number(req.params.id);
+    const userId = req.token.id;
+    const { beforePhotoUrl, afterPhotoUrl } = req.body;
+
+    if (!bookingId) {
+      return res.status(400).json({ message: "Booking ID is required" });
+    }
+
+    if (!beforePhotoUrl && !afterPhotoUrl) {
+      return res.status(400).json({
+        message: "At least one photo (before or after) is required",
+      });
+    }
+
+    console.log(`[uploadCompletionPhotos] Uploading photos for booking ${bookingId}`);
+
+    // 1. Fetch booking with business profile
+    const [booking] = await db
+      .select({
+        booking: bookings,
+        business: businessProfiles,
+      })
+      .from(bookings)
+      .innerJoin(businessProfiles, eq(bookings.businessProfileId, businessProfiles.id))
+      .where(eq(bookings.id, bookingId));
+
+    if (!booking) {
+      return res.status(404).json({ message: "Booking not found" });
+    }
+
+    // 2. Verify provider owns the business
+    if (booking.business.providerId !== userId) {
+      return res.status(403).json({
+        message: "You are not authorized to upload photos for this booking",
+      });
+    }
+
+    // 3. Update booking with photo URLs
+    const updateData = {};
+    if (beforePhotoUrl) updateData.beforePhotoUrl = beforePhotoUrl;
+    if (afterPhotoUrl) updateData.afterPhotoUrl = afterPhotoUrl;
+
+    const [updatedBooking] = await db
+      .update(bookings)
+      .set(updateData)
+      .where(eq(bookings.id, bookingId))
+      .returning();
+
+    return res.status(200).json({
+      message: "Photos uploaded successfully",
+      beforePhotoUrl: updatedBooking.beforePhotoUrl,
+      afterPhotoUrl: updatedBooking.afterPhotoUrl,
+    });
+  } catch (error) {
+    console.error("Error uploading completion photos:", error);
+    return res.status(500).json({
+      message: "Server error",
+      error: error.message,
+    });
+  }
+};
+
 module.exports = {
   getBookingById,
   getCustomerBookings,
@@ -2321,4 +2775,9 @@ module.exports = {
   approveReschedule,
   declineReschedule,
   providerReschedule,
+  // OTP-based completion verification
+  initiateCompletion,
+  verifyCompletionOTP,
+  resendCompletionOTP,
+  uploadCompletionPhotos,
 };
