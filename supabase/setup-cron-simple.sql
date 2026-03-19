@@ -34,3 +34,35 @@ SELECT jobname, schedule, next_run FROM cron.job_run_details WHERE jobname = 'au
 
 -- To remove the cron job later:
 -- SELECT cron.unschedule('auto-reject-expired-bookings');
+
+-- Step 6: Create the Day-Of Reminders cron job (Requires your domain)
+-- SELECT cron.schedule(
+--   'send-day-of-reminders',
+--   '0 * * * *',  -- Every hour
+--   $$
+--   SELECT
+--     net.http_post(
+--       url := 'https://your-backend-domain.com/cron/send-day-of-reminders',
+--       headers := jsonb_build_object(
+--         'Authorization', 'Bearer ' || (SELECT decrypted_secret FROM vault.decrypted_secrets WHERE name = 'CRON_SECRET')
+--       ),
+--       timeout_milliseconds := 30000
+--     );
+--   $$
+-- );
+
+-- Step 7: Create the Pending Action Reminders cron job (Requires your domain)
+-- SELECT cron.schedule(
+--   'send-pending-reminders',
+--   '0 */2 * * *',  -- Every 2 hours
+--   $$
+--   SELECT
+--     net.http_post(
+--       url := 'https://your-backend-domain.com/cron/send-pending-reminders',
+--       headers := jsonb_build_object(
+--         'Authorization', 'Bearer ' || (SELECT decrypted_secret FROM vault.decrypted_secrets WHERE name = 'CRON_SECRET')
+--       ),
+--       timeout_milliseconds := 30000
+--     );
+--   $$
+-- );

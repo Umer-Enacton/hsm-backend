@@ -197,6 +197,155 @@ const sendUpcomingServiceReminders = async () => {
 };
 
 /**
+ * Send day-of service reminders to customers and providers
+ * Reminds them about services scheduled for today
+ *
+ * Runs every 30 minutes via cron
+ * Sends reminders for bookings happening today
+ * Only sends if reminder hasn't been sent yet
+ */
+const sendDayOfReminders = async () => {
+  const startTime = Date.now();
+  const timestamp = getTimestamp();
+
+  try {
+    console.log(`[${timestamp}] 🔔 Checking for day-of services needing reminders...`);
+
+    const NOW = sql`NOW()`;
+    const TWELVE_HOURS_FROM_NOW = sql`NOW() + INTERVAL '12 hours'`;
+
+    const dayOfBookings = await db
+      .select({
+        bookingId: bookings.id,
+        bookingDate: bookings.bookingDate,
+        slotTime: slots.startTime,
+        reminderSent: bookings.dayOfReminderSent,
+      })
+      .from(bookings)
+      .innerJoin(slots, eq(bookings.slotId, slots.id))
+      .where(
+        and(
+          eq(bookings.status, 'confirmed'),
+          eq(bookings.dayOfReminderSent, false),
+          sql`${bookings.bookingDate} + ${slots.startTime} >= ${NOW}`,
+          sql`${bookings.bookingDate} + ${slots.startTime} <= ${TWELVE_HOURS_FROM_NOW}`
+        )
+      );
+
+    if (dayOfBookings.length === 0) {
+      console.log(`[${timestamp}] 📭 No day-of services needing reminders`);
+      return {
+        sent: 0,
+        duration: Date.now() - startTime,
+      };
+    }
+
+    console.log(`[${timestamp}] 📬 Found ${dayOfBookings.length} day-of services needing reminders`);
+
+    let sentCount = 0;
+
+    for (const booking of dayOfBookings) {
+      try {
+        await notificationTemplates.dayOfReminderCustomer(booking.bookingId);
+        await notificationTemplates.dayOfReminderProvider(booking.bookingId);
+
+        await db
+          .update(bookings)
+          .set({ dayOfReminderSent: true })
+          .where(eq(bookings.id, booking.bookingId));
+
+        console.log(`[${timestamp}] ✅ Day-of service reminder sent for booking ${booking.bookingId}`);
+        sentCount += 2;
+
+      } catch (error) {
+        console.error(`[${timestamp}] ❌ Failed to send day-of reminder for booking ${booking.bookingId}:`, error.message);
+      }
+    }
+
+    const duration = Date.now() - startTime;
+    console.log(`[${timestamp}] 📊 Day-of service reminders completed: ${sentCount} sent | Took ${duration}ms`);
+
+    return {
+      sent: sentCount,
+      duration,
+    };
+
+  } catch (error) {
+    const duration = Date.now() - startTime;
+    console.error(`[${timestamp}] ❌ Day-of service reminders failed after ${duration}ms:`, error.message);
+    return { error: error.message, duration };
+  }
+};
+
+/**
+ * Send periodic reminders to providers for un-actioned pending bookings
+ *
+ * Runs every 30 minutes via cron
+ * Scans bookings that are 'pending'
+ * And created > 30 minutes ago
+ * And last reminder was > 2 hours ago (or never)
+ */
+const sendPendingBookingReminders = async () => {
+  const startTime = Date.now();
+  const timestamp = getTimestamp();
+
+  try {
+    console.log(`[${timestamp}] 🔔 Checking for pending action reminders...`);
+
+    const THIRTY_MINS_AGO = sql`NOW() - INTERVAL '30 minutes'`;
+    const TWO_HOURS_AGO = sql`NOW() - INTERVAL '2 hours'`;
+
+    const pendingBookings = await db
+      .select({
+        bookingId: bookings.id,
+      })
+      .from(bookings)
+      .where(
+        and(
+          eq(bookings.status, 'pending'),
+          sql`${bookings.createdAt} <= ${THIRTY_MINS_AGO}`,
+          sql`(${bookings.lastPendingReminderAt} IS NULL OR ${bookings.lastPendingReminderAt} <= ${TWO_HOURS_AGO})`
+        )
+      );
+
+    if (pendingBookings.length === 0) {
+      console.log(`[${timestamp}] 📭 No pending action reminders needed`);
+      return { sent: 0, duration: Date.now() - startTime };
+    }
+
+    console.log(`[${timestamp}] 📬 Found ${pendingBookings.length} bookings needing pending action reminders`);
+
+    let sentCount = 0;
+
+    for (const booking of pendingBookings) {
+      try {
+        await notificationTemplates.providerPendingActionReminder(booking.bookingId);
+
+        await db
+          .update(bookings)
+          .set({ lastPendingReminderAt: sql`NOW()` })
+          .where(eq(bookings.id, booking.bookingId));
+
+        console.log(`[${timestamp}] ✅ Pending action reminder sent for booking ${booking.bookingId}`);
+        sentCount++;
+      } catch (error) {
+        console.error(`[${timestamp}] ❌ Failed to send pending action reminder for booking ${booking.bookingId}:`, error.message);
+      }
+    }
+
+    const duration = Date.now() - startTime;
+    console.log(`[${timestamp}] 📊 Pending action reminders completed: ${sentCount} sent | Took ${duration}ms`);
+
+    return { sent: sentCount, duration };
+
+  } catch (error) {
+    const duration = Date.now() - startTime;
+    console.error(`[${timestamp}] ❌ Pending action reminders failed after ${duration}ms:`, error.message);
+    return { error: error.message, duration };
+  }
+};
+
+/**
  * Run all reminder services
  * Called by cron job
  */
@@ -207,6 +356,8 @@ const runAllReminders = async () => {
   const results = {
     acceptReminders: null,
     upcomingReminders: null,
+    dayOfReminders: null,
+    pendingActionReminders: null,
   };
 
   // Send accept reminders to providers
@@ -221,6 +372,20 @@ const runAllReminders = async () => {
     results.upcomingReminders = await sendUpcomingServiceReminders();
   } catch (error) {
     results.upcomingReminders = { error: error.message };
+  }
+
+  // Send day-of service reminders to customers & providers
+  try {
+    results.dayOfReminders = await sendDayOfReminders();
+  } catch (error) {
+    results.dayOfReminders = { error: error.message };
+  }
+
+  // Send pending action reminders to un-actioned providers
+  try {
+    results.pendingActionReminders = await sendPendingBookingReminders();
+  } catch (error) {
+    results.pendingActionReminders = { error: error.message };
   }
 
   console.log(`[${timestamp}] ✅ All reminder services completed`);
@@ -273,5 +438,7 @@ if (require.main === module) {
 module.exports = {
   sendAcceptReminders,
   sendUpcomingServiceReminders,
+  sendDayOfReminders,
+  sendPendingBookingReminders,
   runAllReminders,
 };

@@ -498,27 +498,39 @@ const generateInvoice = async (req, res) => {
     // ============================================
     // HEADER SECTION
     // ============================================
-    const logoSize = 55;
-    doc
-      .rect(marginLeft, currentY, logoSize, logoSize)
-      .fillAndStroke("#ec5b13", "#ec5b13");
-    doc
-      .fontSize(20)
-      .fillColor("white")
-      .text("HSM", marginLeft + 12, currentY + 18);
+    const logoSize = 40;
+    const fs = require('fs');
+    const path = require('path');
+    let imageOffset = 0;
 
-    doc.fontSize(16).fillColor("#0f172a").font("Helvetica-Bold");
+    try {
+      const logoPath = path.join(__dirname, '../public/logo.png');
+      if (fs.existsSync(logoPath)) {
+        doc.image(logoPath, marginLeft, currentY, { width: logoSize, height: logoSize });
+        imageOffset = logoSize + 15;
+      }
+    } catch (err) {
+      console.error("Could not load logo in PDF:", err);
+    }
+
+    doc
+      .fontSize(22)
+      .fillColor("#2563eb")
+      .font("Helvetica-Bold")
+      .text("HomeFixCare", marginLeft + imageOffset, currentY + 5);
+
+    doc.fontSize(12).fillColor("#0f172a").font("Helvetica-Bold");
     doc.text(
       business?.businessName || "Home Service Pro",
-      marginLeft + 65,
-      currentY + 8,
+      marginLeft + imageOffset,
+      currentY + 28,
     );
 
     doc.fontSize(9).fillColor("#64748b").font("Helvetica");
     doc.text(
       business?.description || "Quality Service Solutions",
-      marginLeft + 65,
-      currentY + 30,
+      marginLeft + imageOffset,
+      currentY + 42,
     );
 
     // Invoice Info (Right) — use a fixed-width block for right alignment

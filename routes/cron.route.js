@@ -4,7 +4,7 @@ const db = require("../config/db");
 const { bookings, payments, services, users, slots } = require("../models/schema");
 const { eq, and, lt, sql } = require("drizzle-orm");
 const { initiateRefund } = require("../utils/razorpay");
-const { sendAcceptReminders, sendUpcomingServiceReminders } = require("../utils/reminderService");
+const { sendAcceptReminders, sendUpcomingServiceReminders, sendDayOfReminders, sendPendingBookingReminders } = require("../utils/reminderService");
 
 // Secret key for cron job authentication
 const CRON_SECRET = process.env.CRON_SECRET || "default-cron-secret-change-in-production";
@@ -328,6 +328,58 @@ router.post("/send-upcoming-reminders", verifyCronSecret, async (req, res) => {
     console.log("Cron job completed:", result);
     res.status(200).json({
       message: "Upcoming service reminders completed",
+      ...result,
+    });
+
+  } catch (error) {
+    console.error("Cron job error:", error);
+    res.status(500).json({
+      message: "Server error",
+      error: error.message,
+    });
+  }
+});
+
+/**
+ * POST /cron/send-day-of-reminders
+ * Internal endpoint for cron jobs to send day-of service reminders
+ * Protected by CRON_SECRET
+ */
+router.post("/send-day-of-reminders", verifyCronSecret, async (req, res) => {
+  console.log("Cron job: Sending day-of service reminders...");
+
+  try {
+    const result = await sendDayOfReminders();
+
+    console.log("Cron job completed:", result);
+    res.status(200).json({
+      message: "Day-of service reminders completed",
+      ...result,
+    });
+
+  } catch (error) {
+    console.error("Cron job error:", error);
+    res.status(500).json({
+      message: "Server error",
+      error: error.message,
+    });
+  }
+});
+
+/**
+ * POST /cron/send-pending-reminders
+ * Internal endpoint for cron jobs to send repeated pending action reminders to providers
+ * Protected by CRON_SECRET
+ */
+router.post("/send-pending-reminders", verifyCronSecret, async (req, res) => {
+  console.log("Cron job: Sending pending action reminders...");
+
+  try {
+    const result = await sendPendingBookingReminders();
+
+    console.log("Cron job completed:", result);
+    res.status(200).json({
+      message: "Pending action reminders completed",
       ...result,
     });
 

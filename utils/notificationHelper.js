@@ -277,6 +277,72 @@ const notificationTemplates = {
   },
 
   /**
+   * Day-of service reminder - Notify customer
+   */
+  async dayOfReminderCustomer(bookingId) {
+    const details = await getBookingDetails(bookingId);
+    if (!details) return null;
+
+    const { booking, service } = details;
+    const bookingDate = new Date(booking.bookingDate);
+    const timeStr = bookingDate.toLocaleTimeString('en-US', {
+      hour: 'numeric',
+      minute: '2-digit',
+    });
+
+    return createNotification({
+      userId: booking.customerId,
+      type: 'reminder_day_of',
+      title: 'Service Today',
+      message: `Reminder: Your ${service.name} is scheduled for today at ${timeStr}`,
+      data: { bookingId: bookingId.toString(), actionUrl: `/customer/bookings` },
+    });
+  },
+
+  /**
+   * Day-of service reminder - Notify provider
+   */
+  async dayOfReminderProvider(bookingId) {
+    const details = await getBookingDetails(bookingId);
+    if (!details) return null;
+
+    const { business, service } = details;
+    // For Provider, we also extract the time from slots. Wait, slot details are not fetched in getBookingDetails by default (it fetches booking, service, business profiles).
+    // Let's rely on bookingDate just in case. Note: getBookingDetails doesn't join slots, but bookingDate might have the time component.
+    const bookingDate = new Date(details.booking.bookingDate);
+    const timeStr = bookingDate.toLocaleTimeString('en-US', {
+      hour: 'numeric',
+      minute: '2-digit',
+    });
+
+    return createNotification({
+      userId: business.providerId,
+      type: 'reminder_day_of',
+      title: 'Upcoming Service Today',
+      message: `Reminder: You have a booking today for ${service.name} at ${timeStr}`,
+      data: { bookingId: bookingId.toString(), actionUrl: `/provider/bookings` },
+    });
+  },
+
+  /**
+   * Pending Action Reminder - Notify provider
+   */
+  async providerPendingActionReminder(bookingId) {
+    const details = await getBookingDetails(bookingId);
+    if (!details) return null;
+
+    const { business, service } = details;
+
+    return createNotification({
+      userId: business.providerId,
+      type: 'reminder_pending_action',
+      title: 'Action Required: Pending Booking',
+      message: `Reminder: You have a pending booking request for ${service.name}. Please take an action.`,
+      data: { bookingId: bookingId.toString(), actionUrl: `/provider/bookings` },
+    });
+  },
+
+  /**
    * Payment successful - Notify both parties
    */
   async paymentSuccess(bookingId, amount) {

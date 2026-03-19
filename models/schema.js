@@ -195,6 +195,7 @@ const bookings = pgTable("bookings", {
   // Reminder tracking
   reminderSent: boolean("reminder_sent").default(false).notNull(), // Accept/Reject reminder sent
   upcomingReminderSent: boolean("upcoming_reminder_sent").default(false).notNull(), // Upcoming service reminder sent
+  dayOfReminderSent: boolean("day_of_reminder_sent").default(false).notNull(), // Day-of service reminder sent
   // Completion verification (OTP-based)
   completionOtp: varchar("completion_otp", { length: 10 }), // OTP for service completion verification
   completionOtpExpiry: timestamp("completion_otp_expiry"), // OTP expiry time (15 minutes)
@@ -203,6 +204,8 @@ const bookings = pgTable("bookings", {
   afterPhotoUrl: varchar("after_photo_url", { length: 500 }), // After service photo URL (optional)
   completionNotes: varchar("completion_notes", { length: 1000 }), // Provider notes about completion
   actualCompletionTime: timestamp("actual_completion_time"), // Actual time service was completed
+  lastPendingReminderAt: timestamp("last_pending_reminder_at"), // Used for repeated 'take action' reminders
+  createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
 const payments = pgTable("payments", {
