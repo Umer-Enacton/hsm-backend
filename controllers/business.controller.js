@@ -1,5 +1,10 @@
 const db = require("../config/db");
-const { businessProfiles, users, Category, services } = require("../models/schema");
+const {
+  businessProfiles,
+  users,
+  Category,
+  services,
+} = require("../models/schema");
 const { eq, and, or } = require("drizzle-orm");
 
 const getAllBusinesses = async (req, res) => {
@@ -38,7 +43,7 @@ const getAllBusinesses = async (req, res) => {
       .leftJoin(Category, eq(businessProfiles.categoryId, Category.id));
 
     // Add computed fields to each business
-    const businessesWithStatus = businesses.map(business => ({
+    const businessesWithStatus = businesses.map((business) => ({
       ...business,
       status: business.isVerified ? "active" : "pending",
       totalReviews: 0, // TODO: Calculate from feedback table
@@ -94,7 +99,9 @@ const getBusinessByProviderId = async (req, res) => {
       .where(eq(businessProfiles.providerId, providerId));
 
     if (!result || result.length === 0) {
-      return res.status(404).json({ message: "Business profile not found for this provider" });
+      return res
+        .status(404)
+        .json({ message: "Business profile not found for this provider" });
     }
 
     const business = result[0];
@@ -206,10 +213,25 @@ const verifyBusiness = async (req, res) => {
 const addBusiness = async (req, res) => {
   try {
     const userId = req.token.id;
-    const { name, description, categoryId, logo, coverImage, website, phone, state, city } = req.body;
+    const {
+      name,
+      description,
+      categoryId,
+      logo,
+      coverImage,
+      website,
+      phone,
+      state,
+      city,
+    } = req.body;
 
     if (!name || !description || !categoryId || !state || !city) {
-      return res.status(400).json({ message: "All fields are required (name, description, category, state, city)" });
+      return res
+        .status(400)
+        .json({
+          message:
+            "All fields are required (name, description, category, state, city)",
+        });
     }
 
     // Check if business already exists
@@ -217,7 +239,6 @@ const addBusiness = async (req, res) => {
       .select()
       .from(businessProfiles)
       .where(eq(businessProfiles.providerId, userId));
-
     if (businessExists.length > 0) {
       return res
         .status(400)
@@ -307,7 +328,17 @@ const updateBusiness = async (req, res) => {
   try {
     const businessId = req.params.id;
     const userId = req.token.id;
-    const { name, description, categoryId, logo, coverImage, website, phone, state, city } = req.body;
+    const {
+      name,
+      description,
+      categoryId,
+      logo,
+      coverImage,
+      website,
+      phone,
+      state,
+      city,
+    } = req.body;
 
     // Build update object dynamically
     const updateData = {};
@@ -343,8 +374,8 @@ const updateBusiness = async (req, res) => {
       .where(
         and(
           eq(businessProfiles.id, businessId),
-          eq(businessProfiles.providerId, userId)
-        )
+          eq(businessProfiles.providerId, userId),
+        ),
       )
       .returning();
 
@@ -424,8 +455,8 @@ const deleteBusiness = async (req, res) => {
       .where(
         and(
           eq(businessProfiles.id, businessId),
-          eq(businessProfiles.providerId, userId)
-        )
+          eq(businessProfiles.providerId, userId),
+        ),
       )
       .returning();
 
@@ -471,8 +502,8 @@ const getProviderStatus = async (req, res) => {
 
     // Get deactivated services
     const deactivatedServices = allServices
-      .filter(s => !s.isActive)
-      .map(s => ({
+      .filter((s) => !s.isActive)
+      .map((s) => ({
         id: s.id,
         name: s.name,
         deactivationReason: s.deactivationReason,

@@ -2,12 +2,17 @@ const jwt = require("jsonwebtoken");
 const JWT_SECRET = process.env.JWT_SECRET;
 const auth = (req, res, next) => {
   // Skip auth for cron endpoints
-  if (req.path.startsWith('/cron')) {
+  if (req.path.startsWith("/cron")) {
     console.log("⏰ Skipping auth for cron endpoint:", req.path);
     return next();
   }
 
-  console.log("🔍 Auth middleware called for path:", req.path, "method:", req.method);
+  console.log(
+    "🔍 Auth middleware called for path:",
+    req.path,
+    "method:",
+    req.method,
+  );
   try {
     let token = null;
     let tokenSource = "";
@@ -28,11 +33,20 @@ const auth = (req, res, next) => {
       tokenSource = "Cookie";
     }
 
-    console.log("🔑 Auth middleware - Token found:", !!token, "Source:", tokenSource);
+    console.log(
+      "🔑 Auth middleware - Token found:",
+      !!token,
+      "Source:",
+      tokenSource,
+    );
 
     if (token) {
       const user = jwt.verify(token, JWT_SECRET);
-      console.log("✅ Token verified, user:", { id: user.id, email: user.email, roleId: user.roleId });
+      console.log("✅ Token verified, user:", {
+        id: user.id,
+        email: user.email,
+        roleId: user.roleId,
+      });
       req.token = user;
       next();
     } else {

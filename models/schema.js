@@ -165,13 +165,17 @@ const bookings = pgTable("bookings", {
   bookingDate: timestamp("booking_date").defaultNow().notNull(),
   status: bookingStatusEnum("status").default("pending").notNull(),
   totalPrice: integer("total_price").notNull(),
-  paymentStatus: paymentStatusEnum("payment_status").default("pending").notNull(),
+  paymentStatus: paymentStatusEnum("payment_status")
+    .default("pending")
+    .notNull(),
   // Reschedule tracking fields
   rescheduleCount: integer("reschedule_count").default(0).notNull(), // Number of times rescheduled
   lastRescheduleFee: integer("last_reschedule_fee"), // Last reschedule fee charged (in paise)
   rescheduleOutcome: varchar("reschedule_outcome", { length: 20 }), // "pending", "accepted", "rejected", "cancelled"
   rescheduleFeeProviderPayout: integer("reschedule_fee_provider_payout"), // Reschedule fee amount going to provider (in paise)
-  rescheduleFeePayoutStatus: varchar("reschedule_fee_payout_status", { length: 20 }), // "pending", "paid"
+  rescheduleFeePayoutStatus: varchar("reschedule_fee_payout_status", {
+    length: 20,
+  }), // "pending", "paid"
   previousSlotId: integer("previous_slot_id"), // Stores original slot before reschedule (for revert if declined)
   previousSlotTime: varchar("previous_slot_time", { length: 20 }), // Stores original slot time (e.g., "09:00:00") before reschedule
   previousBookingDate: timestamp("previous_booking_date"), // Stores original date before reschedule
@@ -194,7 +198,9 @@ const bookings = pgTable("bookings", {
   cancelledBy: varchar("cancelled_by", { length: 20 }), // "customer", "provider", or "system"
   // Reminder tracking
   reminderSent: boolean("reminder_sent").default(false).notNull(), // Accept/Reject reminder sent
-  upcomingReminderSent: boolean("upcoming_reminder_sent").default(false).notNull(), // Upcoming service reminder sent
+  upcomingReminderSent: boolean("upcoming_reminder_sent")
+    .default(false)
+    .notNull(), // Upcoming service reminder sent
   dayOfReminderSent: boolean("day_of_reminder_sent").default(false).notNull(), // Day-of service reminder sent
   // Completion verification (OTP-based)
   completionOtp: varchar("completion_otp", { length: 10 }), // OTP for service completion verification
@@ -235,7 +241,9 @@ const payments = pgTable("payments", {
   providerPayoutId: varchar("provider_payout_id", { length: 100 }), // Razorpay payout ID
   providerPayoutAt: timestamp("provider_payout_at"), // When payout was processed
   // Reschedule Fee Payout Tracking (when customer cancels reschedule, provider keeps 50%)
-  rescheduleFeePayoutStatus: varchar("reschedule_fee_payout_status", { length: 20 }), // "pending", "paid"
+  rescheduleFeePayoutStatus: varchar("reschedule_fee_payout_status", {
+    length: 20,
+  }), // "pending", "paid"
   // Timestamps
   createdAt: timestamp("created_at").defaultNow().notNull(),
   completedAt: timestamp("completed_at"),
@@ -249,32 +257,38 @@ const payments = pgTable("payments", {
 });
 
 // Payment Intents - Temporarily locks slots during payment flow
-const paymentIntents = pgTable("payment_intents", {
-  id: serial("id").primaryKey(),
-  userId: integer("user_id")
-    .notNull()
-    .references(() => users.id, { onDelete: "cascade" }),
-  serviceId: integer("service_id").notNull(),
-  slotId: integer("slot_id").notNull(),
-  addressId: integer("address_id").notNull(),
-  bookingDate: timestamp("booking_date").notNull(),
-  amount: integer("amount").notNull(), // Amount in paise
-  razorpayOrderId: varchar("razorpay_order_id", { length: 100 }),
-  status: paymentIntentStatusEnum("status").default("pending").notNull(),
-  expiresAt: timestamp("expires_at").notNull(), // Lock expires after 1 minute
-  createdAt: timestamp("created_at").defaultNow().notNull(),
-  completedAt: timestamp("completed_at"),
-  failureReason: varchar("failure_reason", { length: 500 }),
-  // Reschedule fields
-  isReschedule: boolean("is_reschedule").default(false),
-  rescheduleBookingId: integer("reschedule_booking_id"), // References bookings.id for reschedule
-}, (table) => ({
-  // Partial unique index: Only one pending intent per slot per date per service
-  // This allows different services to be booked simultaneously at the same time slot
-  slotDateServicePendingUnique: uniqueIndex("payment_intents_slot_date_service_pending_unique")
-    .on(table.slotId, table.bookingDate, table.serviceId)
-    .where(sql`${table.status} = 'pending'`),
-}));
+const paymentIntents = pgTable(
+  "payment_intents",
+  {
+    id: serial("id").primaryKey(),
+    userId: integer("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    serviceId: integer("service_id").notNull(),
+    slotId: integer("slot_id").notNull(),
+    addressId: integer("address_id").notNull(),
+    bookingDate: timestamp("booking_date").notNull(),
+    amount: integer("amount").notNull(), // Amount in paise
+    razorpayOrderId: varchar("razorpay_order_id", { length: 100 }),
+    status: paymentIntentStatusEnum("status").default("pending").notNull(),
+    expiresAt: timestamp("expires_at").notNull(), // Lock expires after 1 minute
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    completedAt: timestamp("completed_at"),
+    failureReason: varchar("failure_reason", { length: 500 }),
+    // Reschedule fields
+    isReschedule: boolean("is_reschedule").default(false),
+    rescheduleBookingId: integer("reschedule_booking_id"), // References bookings.id for reschedule
+  },
+  (table) => ({
+    // Partial unique index: Only one pending intent per slot per date per service
+    // This allows different services to be booked simultaneously at the same time slot
+    slotDateServicePendingUnique: uniqueIndex(
+      "payment_intents_slot_date_service_pending_unique",
+    )
+      .on(table.slotId, table.bookingDate, table.serviceId)
+      .where(sql`${table.status} = 'pending'`),
+  }),
+);
 // Payment Details - Stores UPI/Bank details for admin and providers
 const paymentDetails = pgTable("payment_details", {
   id: serial("id").primaryKey(),
@@ -322,7 +336,9 @@ const feedback = pgTable("feedback", {
   providerReply: varchar("provider_reply", { length: 1000 }),
   repliedAt: timestamp("replied_at"),
   // Track who hid the review (provider who hid it)
-  hiddenBy: integer("hidden_by").references(() => users.id, { onDelete: "set null" }),
+  hiddenBy: integer("hidden_by").references(() => users.id, {
+    onDelete: "set null",
+  }),
   hiddenAt: timestamp("hidden_at"),
 });
 

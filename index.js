@@ -4,14 +4,14 @@ require("dotenv").config();
 // ============================================================
 // UNIQUE STARTUP BANNER - Confirm this server is running
 // ============================================================
-console.log('');
-console.log('╔═══════════════════════════════════════════════════════╗');
-console.log('║  🔥 HSM BACKEND SERVER STARTING 🔥                    ║');
-console.log('║  PID:', process.pid, '                                  ║');
-console.log('║  Time:', new Date().toISOString(), '           ║');
-console.log('║  Version: DEBUG-2026-03-16-V3                          ║');
-console.log('╚═══════════════════════════════════════════════════════╝');
-console.log('');
+console.log("");
+console.log("╔═══════════════════════════════════════════════════════╗");
+console.log("║  🔥 HSM BACKEND SERVER STARTING 🔥                    ║");
+console.log("║  PID:", process.pid, "                                  ║");
+console.log("║  Time:", new Date().toISOString(), "           ║");
+console.log("║  Version: DEBUG-2026-03-16-V3                          ║");
+console.log("╚═══════════════════════════════════════════════════════╝");
+console.log("");
 // ============================================================
 
 const express = require("express");
@@ -100,7 +100,7 @@ app.get("/", (req, res) => {
     message: "Welcome to HSM Backend API",
     pid: process.pid,
     version: "DEBUG-2026-03-16-V3",
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
   });
 });
 

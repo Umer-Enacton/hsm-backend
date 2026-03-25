@@ -37,14 +37,22 @@ router.post(
   "/add-booking",
   authorizeRole(CUSTOMER),
   validate(bookingSchema),
-  addBooking
+  addBooking,
 );
 router.patch("/booking/:id", authorizeRole(CUSTOMER), rescheduleBooking);
 
 // Customer booking management - new endpoints
 router.delete("/booking/:id/cancel", authorizeRole(CUSTOMER), cancelBooking);
-router.put("/booking/:id/reschedule-request", authorizeRole(CUSTOMER), requestReschedule);
-router.put("/booking/:id/cancel-reschedule", authorizeRole(CUSTOMER), cancelRescheduleRequest);
+router.put(
+  "/booking/:id/reschedule-request",
+  authorizeRole(CUSTOMER),
+  requestReschedule,
+);
+router.put(
+  "/booking/:id/cancel-reschedule",
+  authorizeRole(CUSTOMER),
+  cancelRescheduleRequest,
+);
 
 // Provider booking management
 router.put("/accept-booking/:id", authorizeRole(PROVIDER), acceptBooking);
@@ -52,14 +60,42 @@ router.put("/reject-booking/:id", authorizeRole(PROVIDER), rejectBooking);
 router.put("/complete-booking/:id", authorizeRole(PROVIDER), completeBooking);
 
 // Provider reschedule management
-router.put("/booking/:id/reschedule-approve", authorizeRole(PROVIDER), approveReschedule);
-router.put("/booking/:id/reschedule-decline", authorizeRole(PROVIDER), declineReschedule);
-router.put("/booking/:id/provider-reschedule", authorizeRole(PROVIDER), providerReschedule);
+router.put(
+  "/booking/:id/reschedule-approve",
+  authorizeRole(PROVIDER),
+  approveReschedule,
+);
+router.put(
+  "/booking/:id/reschedule-decline",
+  authorizeRole(PROVIDER),
+  declineReschedule,
+);
+router.put(
+  "/booking/:id/provider-reschedule",
+  authorizeRole(PROVIDER),
+  providerReschedule,
+);
 
 // OTP-based completion verification (provider only)
-router.post("/booking/:id/complete-initiate", authorizeRole(PROVIDER), initiateCompletion);
-router.post("/booking/:id/complete-verify", authorizeRole(PROVIDER), verifyCompletionOTP);
-router.post("/booking/:id/complete-resend", authorizeRole(PROVIDER), resendCompletionOTP);
-router.post("/booking/:id/completion-photos", authorizeRole(PROVIDER), uploadCompletionPhotos);
+router.post(
+  "/booking/:id/complete-initiate",
+  authorizeRole(PROVIDER),
+  initiateCompletion,
+);
+router.post(
+  "/booking/:id/complete-verify",
+  authorizeRole(PROVIDER),
+  verifyCompletionOTP,
+);
+router.post(
+  "/booking/:id/complete-resend",
+  authorizeRole(PROVIDER),
+  resendCompletionOTP,
+);
+router.post(
+  "/booking/:id/completion-photos",
+  authorizeRole(PROVIDER),
+  uploadCompletionPhotos,
+);
 
 module.exports = router;

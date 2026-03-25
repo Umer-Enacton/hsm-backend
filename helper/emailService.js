@@ -212,9 +212,23 @@ const sendPasswordResetConfirmation = async (email) => {
  * @returns {Promise} - Send result
  */
 const sendCompletionOTPEmail = async (email, otp, details = {}) => {
-  const { customerName = "Customer", providerName = "Service Provider", serviceName = "Service", date = "", time = "" } = details;
+  const {
+    customerName = "Customer",
+    providerName = "Service Provider",
+    serviceName = "Service",
+    date = "",
+    time = "",
+  } = details;
 
-  console.log('[sendCompletionOTPEmail] Sending email:', { email, otp, customerName, providerName, serviceName, date, time });
+  console.log("[sendCompletionOTPEmail] Sending email:", {
+    email,
+    otp,
+    customerName,
+    providerName,
+    serviceName,
+    date,
+    time,
+  });
 
   const mailOptions = {
     from: process.env.EMAIL_USER,
@@ -279,8 +293,8 @@ const sendCompletionOTPEmail = async (email, otp, details = {}) => {
 
           <div class="service-details">
             <p><strong>Service:</strong> ${serviceName}</p>
-            ${date ? `<p><strong>Date:</strong> ${date}</p>` : ''}
-            ${time ? `<p><strong>Time:</strong> ${time}</p>` : ''}
+            ${date ? `<p><strong>Date:</strong> ${date}</p>` : ""}
+            ${time ? `<p><strong>Time:</strong> ${time}</p>` : ""}
           </div>
 
           <p>Please share this verification code with your provider to confirm completion:</p>

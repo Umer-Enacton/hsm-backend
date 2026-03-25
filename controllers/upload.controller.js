@@ -1,4 +1,7 @@
-const { uploadBufferToCloudinary, deleteFromCloudinary } = require('../utils/cloudinaryUpload');
+const {
+  uploadBufferToCloudinary,
+  deleteFromCloudinary,
+} = require("../utils/cloudinaryUpload");
 
 /**
  * Upload avatar image
@@ -9,22 +12,22 @@ const uploadAvatar = async (req, res) => {
     if (!req.file) {
       return res.status(400).json({
         success: false,
-        message: 'No file uploaded',
+        message: "No file uploaded",
       });
     }
 
-    const result = await uploadBufferToCloudinary(req.file.buffer, 'avatars');
+    const result = await uploadBufferToCloudinary(req.file.buffer, "avatars");
 
     res.status(200).json({
       success: true,
-      message: 'Avatar uploaded successfully',
+      message: "Avatar uploaded successfully",
       data: result,
     });
   } catch (error) {
-    console.error('Avatar upload error:', error);
+    console.error("Avatar upload error:", error);
     res.status(500).json({
       success: false,
-      message: 'Failed to upload avatar',
+      message: "Failed to upload avatar",
       error: error.message,
     });
   }
@@ -36,32 +39,35 @@ const uploadAvatar = async (req, res) => {
  */
 const uploadLogo = async (req, res) => {
   try {
-    console.log('Logo upload request received');
-    console.log('File:', req.file ? 'Found' : 'Not found');
-    console.log('Body:', req.body);
+    console.log("Logo upload request received");
+    console.log("File:", req.file ? "Found" : "Not found");
+    console.log("Body:", req.body);
 
     if (!req.file) {
-      console.log('No file in request');
+      console.log("No file in request");
       return res.status(400).json({
         success: false,
-        message: 'No file uploaded',
+        message: "No file uploaded",
       });
     }
 
-    console.log('Uploading logo to Cloudinary...');
-    const result = await uploadBufferToCloudinary(req.file.buffer, 'business/logos');
-    console.log('Logo uploaded to Cloudinary:', result);
+    console.log("Uploading logo to Cloudinary...");
+    const result = await uploadBufferToCloudinary(
+      req.file.buffer,
+      "business/logos",
+    );
+    console.log("Logo uploaded to Cloudinary:", result);
 
     res.status(200).json({
       success: true,
-      message: 'Logo uploaded successfully',
+      message: "Logo uploaded successfully",
       data: result,
     });
   } catch (error) {
-    console.error('Logo upload error:', error);
+    console.error("Logo upload error:", error);
     res.status(500).json({
       success: false,
-      message: 'Failed to upload logo',
+      message: "Failed to upload logo",
       error: error.message,
     });
   }
@@ -73,32 +79,35 @@ const uploadLogo = async (req, res) => {
  */
 const uploadCoverImage = async (req, res) => {
   try {
-    console.log('Cover image upload request received');
-    console.log('File:', req.file ? 'Found' : 'Not found');
-    console.log('Body:', req.body);
+    console.log("Cover image upload request received");
+    console.log("File:", req.file ? "Found" : "Not found");
+    console.log("Body:", req.body);
 
     if (!req.file) {
-      console.log('No file in request');
+      console.log("No file in request");
       return res.status(400).json({
         success: false,
-        message: 'No file uploaded',
+        message: "No file uploaded",
       });
     }
 
-    console.log('Uploading cover image to Cloudinary...');
-    const result = await uploadBufferToCloudinary(req.file.buffer, 'business/covers');
-    console.log('Cover image uploaded to Cloudinary:', result);
+    console.log("Uploading cover image to Cloudinary...");
+    const result = await uploadBufferToCloudinary(
+      req.file.buffer,
+      "business/covers",
+    );
+    console.log("Cover image uploaded to Cloudinary:", result);
 
     res.status(200).json({
       success: true,
-      message: 'Cover image uploaded successfully',
+      message: "Cover image uploaded successfully",
       data: result,
     });
   } catch (error) {
-    console.error('Cover image upload error:', error);
+    console.error("Cover image upload error:", error);
     res.status(500).json({
       success: false,
-      message: 'Failed to upload cover image',
+      message: "Failed to upload cover image",
       error: error.message,
     });
   }
@@ -113,22 +122,22 @@ const uploadServiceImage = async (req, res) => {
     if (!req.file) {
       return res.status(400).json({
         success: false,
-        message: 'No file uploaded',
+        message: "No file uploaded",
       });
     }
 
-    const result = await uploadBufferToCloudinary(req.file.buffer, 'services');
+    const result = await uploadBufferToCloudinary(req.file.buffer, "services");
 
     res.status(200).json({
       success: true,
-      message: 'Service image uploaded successfully',
+      message: "Service image uploaded successfully",
       data: result,
     });
   } catch (error) {
-    console.error('Service image upload error:', error);
+    console.error("Service image upload error:", error);
     res.status(500).json({
       success: false,
-      message: 'Failed to upload service image',
+      message: "Failed to upload service image",
       error: error.message,
     });
   }
@@ -143,22 +152,25 @@ const uploadCategoryImage = async (req, res) => {
     if (!req.file) {
       return res.status(400).json({
         success: false,
-        message: 'No file uploaded',
+        message: "No file uploaded",
       });
     }
 
-    const result = await uploadBufferToCloudinary(req.file.buffer, 'categories');
+    const result = await uploadBufferToCloudinary(
+      req.file.buffer,
+      "categories",
+    );
 
     res.status(200).json({
       success: true,
-      message: 'Category image uploaded successfully',
+      message: "Category image uploaded successfully",
       data: result,
     });
   } catch (error) {
-    console.error('Category image upload error:', error);
+    console.error("Category image upload error:", error);
     res.status(500).json({
       success: false,
-      message: 'Failed to upload category image',
+      message: "Failed to upload category image",
       error: error.message,
     });
   }
@@ -175,7 +187,7 @@ const deleteImage = async (req, res) => {
     if (!publicId) {
       return res.status(400).json({
         success: false,
-        message: 'Public ID is required',
+        message: "Public ID is required",
       });
     }
 
@@ -183,14 +195,14 @@ const deleteImage = async (req, res) => {
 
     res.status(200).json({
       success: true,
-      message: 'Image deleted successfully',
+      message: "Image deleted successfully",
       data: result,
     });
   } catch (error) {
-    console.error('Image deletion error:', error);
+    console.error("Image deletion error:", error);
     res.status(500).json({
       success: false,
-      message: 'Failed to delete image',
+      message: "Failed to delete image",
       error: error.message,
     });
   }
@@ -202,28 +214,31 @@ const deleteImage = async (req, res) => {
  */
 const uploadCompletionPhoto = async (req, res) => {
   try {
-    console.log('Completion photo upload request received');
+    console.log("Completion photo upload request received");
 
     if (!req.file) {
       return res.status(400).json({
         success: false,
-        message: 'No file uploaded',
+        message: "No file uploaded",
       });
     }
 
     // Upload to Cloudinary with folder for completion photos
-    const result = await uploadBufferToCloudinary(req.file.buffer, 'completion-photos');
+    const result = await uploadBufferToCloudinary(
+      req.file.buffer,
+      "completion-photos",
+    );
 
     res.status(200).json({
       success: true,
-      message: 'Completion photo uploaded successfully',
+      message: "Completion photo uploaded successfully",
       data: result,
     });
   } catch (error) {
-    console.error('Completion photo upload error:', error);
+    console.error("Completion photo upload error:", error);
     res.status(500).json({
       success: false,
-      message: 'Failed to upload completion photo',
+      message: "Failed to upload completion photo",
       error: error.message,
     });
   }

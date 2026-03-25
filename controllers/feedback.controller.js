@@ -6,7 +6,18 @@ const {
   users,
   businessProfiles,
 } = require("../models/schema");
-const { eq, and, gte, lte, desc, or, like, isNull, sql, inArray } = require("drizzle-orm");
+const {
+  eq,
+  and,
+  gte,
+  lte,
+  desc,
+  or,
+  like,
+  isNull,
+  sql,
+  inArray,
+} = require("drizzle-orm");
 const { initiateRefund, paiseToRupees } = require("../utils/razorpay");
 
 // Get feedback by business ID (customer facing - only visible reviews)
@@ -45,8 +56,8 @@ const getFeedbackByBusiness = async (req, res) => {
       .where(
         and(
           inArray(feedback.serviceId, serviceIds),
-          eq(feedback.isVisible, true) // Only show visible reviews to customers
-        )
+          eq(feedback.isVisible, true), // Only show visible reviews to customers
+        ),
       )
       .orderBy(desc(feedback.createdAt));
 
@@ -95,8 +106,8 @@ const getFeedbackByService = async (req, res) => {
       .where(
         and(
           eq(feedback.serviceId, serviceId),
-          eq(feedback.isVisible, true) // Only show visible reviews to customers
-        )
+          eq(feedback.isVisible, true), // Only show visible reviews to customers
+        ),
       )
       .orderBy(desc(feedback.createdAt));
 
@@ -179,7 +190,9 @@ const addFeedback = async (req, res) => {
       .from(feedback)
       .where(eq(feedback.serviceId, booking[0].serviceId));
 
-    const avgRating = allFeedback.reduce((sum, f) => sum + Number(f.rating), 0) / allFeedback.length;
+    const avgRating =
+      allFeedback.reduce((sum, f) => sum + Number(f.rating), 0) /
+      allFeedback.length;
 
     await db
       .update(services)
@@ -241,8 +254,13 @@ const toggleReviewVisibility = async (req, res) => {
       .from(businessProfiles)
       .where(eq(businessProfiles.id, service.businessProfileId));
 
-    if (businessRecords.length === 0 || businessRecords[0].providerId !== userId) {
-      return res.status(403).json({ message: "Only the provider can manage reviews" });
+    if (
+      businessRecords.length === 0 ||
+      businessRecords[0].providerId !== userId
+    ) {
+      return res
+        .status(403)
+        .json({ message: "Only the provider can manage reviews" });
     }
 
     // Toggle visibility
@@ -293,7 +311,9 @@ const addProviderReply = async (req, res) => {
     }
 
     if (reply.length > 1000) {
-      return res.status(400).json({ message: "Reply cannot exceed 1000 characters" });
+      return res
+        .status(400)
+        .json({ message: "Reply cannot exceed 1000 characters" });
     }
 
     // Get the feedback
@@ -326,8 +346,13 @@ const addProviderReply = async (req, res) => {
       .from(businessProfiles)
       .where(eq(businessProfiles.id, service.businessProfileId));
 
-    if (businessRecords.length === 0 || businessRecords[0].providerId !== userId) {
-      return res.status(403).json({ message: "Only the provider can reply to reviews" });
+    if (
+      businessRecords.length === 0 ||
+      businessRecords[0].providerId !== userId
+    ) {
+      return res
+        .status(403)
+        .json({ message: "Only the provider can reply to reviews" });
     }
 
     // Update with reply
@@ -392,8 +417,13 @@ const deleteReview = async (req, res) => {
       .from(businessProfiles)
       .where(eq(businessProfiles.id, service.businessProfileId));
 
-    if (businessRecords.length === 0 || businessRecords[0].providerId !== userId) {
-      return res.status(403).json({ message: "Only the provider can delete reviews" });
+    if (
+      businessRecords.length === 0 ||
+      businessRecords[0].providerId !== userId
+    ) {
+      return res
+        .status(403)
+        .json({ message: "Only the provider can delete reviews" });
     }
 
     // Delete the review
@@ -424,7 +454,7 @@ const getFilteredFeedbackByBusiness = async (req, res) => {
     if (rating) {
       const ratingNum = Number(rating);
       conditions.push(
-        sql`${feedback.rating} >= ${ratingNum - 0.5} AND ${feedback.rating} < ${ratingNum + 0.5}`
+        sql`${feedback.rating} >= ${ratingNum - 0.5} AND ${feedback.rating} < ${ratingNum + 0.5}`,
       );
     }
 
@@ -440,8 +470,8 @@ const getFilteredFeedbackByBusiness = async (req, res) => {
       conditions.push(
         or(
           like(users.name, `%${search}%`),
-          like(feedback.comments, `%${search}%`)
-        )
+          like(feedback.comments, `%${search}%`),
+        ),
       );
     }
 
@@ -477,10 +507,7 @@ const getFilteredFeedbackByBusiness = async (req, res) => {
       .from(feedback)
       .innerJoin(users, eq(feedback.customerId, users.id))
       .where(
-        and(
-          inArray(feedback.serviceId, serviceIds),
-          whereClause || sql`1=1`
-        )
+        and(inArray(feedback.serviceId, serviceIds), whereClause || sql`1=1`),
       )
       .orderBy(desc(feedback.createdAt));
 

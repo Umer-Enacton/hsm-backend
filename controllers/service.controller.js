@@ -1,18 +1,19 @@
 const db = require("../config/db");
-const { services, businessProfiles, feedback, users, bookings, payments } = require("../models/schema");
+const {
+  services,
+  businessProfiles,
+  feedback,
+  users,
+  bookings,
+  payments,
+} = require("../models/schema");
 const { eq, and, or, ilike, gte, lte, count, sql } = require("drizzle-orm");
 
 const getAllServices = async (req, res) => {
   try {
     // Extract query parameters for filtering
-    const {
-      state,
-      city,
-      category_id,
-      min_price,
-      max_price,
-      search
-    } = req.query;
+    const { state, city, category_id, min_price, max_price, search } =
+      req.query;
 
     // Build dynamic WHERE conditions
     const conditions = [];
@@ -29,8 +30,8 @@ const getAllServices = async (req, res) => {
       conditions.push(
         or(
           ilike(services.name, `%${searchTerm}%`),
-          ilike(services.description, `%${searchTerm}%`)
-        )
+          ilike(services.description, `%${searchTerm}%`),
+        ),
       );
     }
 
@@ -93,7 +94,10 @@ const getAllServices = async (req, res) => {
         },
       })
       .from(services)
-      .leftJoin(businessProfiles, eq(services.businessProfileId, businessProfiles.id))
+      .leftJoin(
+        businessProfiles,
+        eq(services.businessProfileId, businessProfiles.id),
+      )
       .leftJoin(users, eq(businessProfiles.providerId, users.id));
 
     // Apply WHERE clause if conditions exist
@@ -104,13 +108,15 @@ const getAllServices = async (req, res) => {
     const allServices = await query;
 
     // Map EstimateDuration to estimateDuration and duration for frontend compatibility
-    const mappedServices = allServices.map(service => ({
+    const mappedServices = allServices.map((service) => ({
       ...service,
       estimateDuration: service.EstimateDuration,
       duration: service.EstimateDuration,
     }));
 
-    res.status(200).json({ services: mappedServices, total: mappedServices.length });
+    res
+      .status(200)
+      .json({ services: mappedServices, total: mappedServices.length });
   } catch (error) {
     console.error("Error fetching services:", error);
     res.status(500).json({ message: "Server error", error: error.message });
@@ -154,7 +160,10 @@ const getServiceById = async (req, res) => {
         },
       })
       .from(services)
-      .leftJoin(businessProfiles, eq(services.businessProfileId, businessProfiles.id))
+      .leftJoin(
+        businessProfiles,
+        eq(services.businessProfileId, businessProfiles.id),
+      )
       .leftJoin(users, eq(businessProfiles.providerId, users.id))
       .where(eq(services.id, serviceId));
 
@@ -193,7 +202,7 @@ const getServicesByBusiness = async (req, res) => {
       .where(eq(services.businessProfileId, businessId));
 
     // Map EstimateDuration to duration for frontend compatibility
-    const mappedServices = businessServices.map(service => ({
+    const mappedServices = businessServices.map((service) => ({
       ...service,
       estimateDuration: service.EstimateDuration,
       duration: service.EstimateDuration,
@@ -227,8 +236,8 @@ const addService = async (req, res) => {
       .where(
         and(
           eq(businessProfiles.id, businessId),
-          eq(businessProfiles.providerId, userId)
-        )
+          eq(businessProfiles.providerId, userId),
+        ),
       );
     if (business.length === 0) {
       return res
@@ -261,7 +270,10 @@ const addService = async (req, res) => {
 
     res
       .status(201)
-      .json({ message: "Service added successfully", service: serviceResponse });
+      .json({
+        message: "Service added successfully",
+        service: serviceResponse,
+      });
   } catch (error) {
     res.status(500).json({ message: "Server error", error: error.message });
   }
@@ -299,8 +311,8 @@ const updateService = async (req, res) => {
       .where(
         and(
           eq(businessProfiles.id, service[0].businessProfileId),
-          eq(businessProfiles.providerId, userId)
-        )
+          eq(businessProfiles.providerId, userId),
+        ),
       );
     if (businessProfile.length === 0) {
       return res
@@ -355,8 +367,8 @@ const deleteService = async (req, res) => {
       .where(
         and(
           eq(businessProfiles.id, service[0].businessProfileId),
-          eq(businessProfiles.providerId, userId)
-        )
+          eq(businessProfiles.providerId, userId),
+        ),
       );
     if (businessProfile.length === 0) {
       return res
@@ -385,11 +397,14 @@ const getServiceStatsForBusiness = async (req, res) => {
       .where(eq(services.businessProfileId, businessId));
 
     const activeServices = allServices.filter((s) => s.isActive || s.is_active);
-    const inactiveServices = allServices.filter((s) => !s.isActive && !s.is_active);
+    const inactiveServices = allServices.filter(
+      (s) => !s.isActive && !s.is_active,
+    );
 
     // Calculate average price
     const totalPrice = allServices.reduce((sum, s) => sum + (s.price || 0), 0);
-    const averagePrice = allServices.length > 0 ? Math.round(totalPrice / allServices.length) : 0;
+    const averagePrice =
+      allServices.length > 0 ? Math.round(totalPrice / allServices.length) : 0;
 
     // Calculate stats per service
     const serviceStatsArray = await Promise.all(
@@ -414,9 +429,9 @@ const getServiceStatsForBusiness = async (req, res) => {
           .where(
             and(
               eq(bookings.serviceId, service.id),
-              eq(bookings.businessProfileId, businessId),  // Critical: only count this business's bookings
-              eq(payments.status, "paid")
-            )
+              eq(bookings.businessProfileId, businessId), // Critical: only count this business's bookings
+              eq(payments.status, "paid"),
+            ),
           );
 
         return {
@@ -428,12 +443,18 @@ const getServiceStatsForBusiness = async (req, res) => {
           completedBookings: bookingCounts?.completedBookings || 0,
           revenue: Number(revenueData?.totalRevenue) || 0, // in paise
         };
-      })
+      }),
     );
 
     // Calculate totals
-    const totalBookings = serviceStatsArray.reduce((sum, s) => sum + s.totalBookings, 0);
-    const totalRevenue = serviceStatsArray.reduce((sum, s) => sum + s.revenue, 0);
+    const totalBookings = serviceStatsArray.reduce(
+      (sum, s) => sum + s.totalBookings,
+      0,
+    );
+    const totalRevenue = serviceStatsArray.reduce(
+      (sum, s) => sum + s.revenue,
+      0,
+    );
 
     res.json({
       total: allServices.length,

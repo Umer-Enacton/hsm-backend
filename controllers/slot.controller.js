@@ -1,12 +1,17 @@
 const db = require("../config/db");
-const { businessProfiles, slots, bookings, paymentIntents } = require("../models/schema");
+const {
+  businessProfiles,
+  slots,
+  bookings,
+  paymentIntents,
+} = require("../models/schema");
 const { eq, and, lt, gt, or, sql, inArray, gte, lte } = require("drizzle-orm");
 
 /**
  * Helper: Convert time string "HH:mm:ss" to minutes
  */
 function timeToMinutes(timeStr) {
-  const [hours, minutes] = timeStr.split(':').map(Number);
+  const [hours, minutes] = timeStr.split(":").map(Number);
   return hours * 60 + minutes;
 }
 
@@ -16,7 +21,7 @@ function timeToMinutes(timeStr) {
 function minutesToTime(minutes) {
   const hours = Math.floor(minutes / 60) % 24;
   const mins = minutes % 60;
-  return `${hours.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}:00`;
+  return `${hours.toString().padStart(2, "0")}:${mins.toString().padStart(2, "0")}:00`;
 }
 
 /**
@@ -38,7 +43,9 @@ const getSlotsPublic = async (req, res) => {
     const { businessId } = req.params;
     const { date, serviceId } = req.query; // Optional: date and serviceId
 
-    console.log(`📡 Getting slots for business ${businessId}, date: ${date || 'not provided'}, service: ${serviceId || 'all services'}`);
+    console.log(
+      `📡 Getting slots for business ${businessId}, date: ${date || "not provided"}, service: ${serviceId || "all services"}`,
+    );
 
     if (!businessId) {
       return res.status(400).json({ message: "Business ID is required" });
@@ -70,13 +77,15 @@ const getSlotsPublic = async (req, res) => {
 
     // If no date provided, return all slots as available
     if (!date) {
-      const slotsWithAvailability = businessSlots.map(slot => ({
+      const slotsWithAvailability = businessSlots.map((slot) => ({
         ...slot,
         isAvailable: true,
-        status: "available"
+        status: "available",
       }));
 
-      console.log(`✅ Returning ${slotsWithAvailability.length} slots (no date filter)`);
+      console.log(
+        `✅ Returning ${slotsWithAvailability.length} slots (no date filter)`,
+      );
       return res.status(200).json({ slots: slotsWithAvailability });
     }
 
@@ -89,7 +98,9 @@ const getSlotsPublic = async (req, res) => {
     const endOfDay = new Date(date);
     endOfDay.setHours(23, 59, 59, 999);
 
-    console.log(`📅 Date range: ${startOfDay.toISOString()} to ${endOfDay.toISOString()}`);
+    console.log(
+      `📅 Date range: ${startOfDay.toISOString()} to ${endOfDay.toISOString()}`,
+    );
 
     // Find slots that have confirmed/pending bookings for this date
     // IMPORTANT: Only filter by serviceId if serviceId is provided
@@ -98,12 +109,9 @@ const getSlotsPublic = async (req, res) => {
       // Check if bookingDate falls within the selected date
       and(
         gte(bookings.bookingDate, startOfDay),
-        lte(bookings.bookingDate, endOfDay)
+        lte(bookings.bookingDate, endOfDay),
       ),
-      or(
-        eq(bookings.status, "pending"),
-        eq(bookings.status, "confirmed")
-      )
+      or(eq(bookings.status, "pending"), eq(bookings.status, "confirmed")),
     ];
 
     // If serviceId provided, only check bookings for that service
@@ -123,15 +131,17 @@ const getSlotsPublic = async (req, res) => {
       // Check if bookingDate falls within the selected date
       and(
         gte(paymentIntents.bookingDate, startOfDay),
-        lte(paymentIntents.bookingDate, endOfDay)
+        lte(paymentIntents.bookingDate, endOfDay),
       ),
       eq(paymentIntents.status, "pending"),
-      gt(paymentIntents.expiresAt, new Date()) // Not expired yet
+      gt(paymentIntents.expiresAt, new Date()), // Not expired yet
     ];
 
     // If serviceId provided, only check payment intents for that service
     if (serviceId) {
-      paymentIntentConditions.push(eq(paymentIntents.serviceId, parseInt(serviceId)));
+      paymentIntentConditions.push(
+        eq(paymentIntents.serviceId, parseInt(serviceId)),
+      );
     }
 
     const lockedSlotsResult = await db
@@ -142,26 +152,39 @@ const getSlotsPublic = async (req, res) => {
 
     // Combine booked and locked slot IDs
     const unavailableSlotIds = new Set([
-      ...bookedSlotsResult.map(b => b.slotId),
-      ...lockedSlotsResult.map(l => l.slotId)
+      ...bookedSlotsResult.map((b) => b.slotId),
+      ...lockedSlotsResult.map((l) => l.slotId),
     ]);
 
-    console.log(`📊 Service ${serviceId || 'ALL'} - Booked slots:`, bookedSlotsResult.map(b => b.slotId));
-    console.log(`🔒 Service ${serviceId || 'ALL'} - Locked slots:`, lockedSlotsResult.map(l => l.slotId));
-    console.log(`🚫 Service ${serviceId || 'ALL'} - Total unavailable slot IDs:`, Array.from(unavailableSlotIds));
+    console.log(
+      `📊 Service ${serviceId || "ALL"} - Booked slots:`,
+      bookedSlotsResult.map((b) => b.slotId),
+    );
+    console.log(
+      `🔒 Service ${serviceId || "ALL"} - Locked slots:`,
+      lockedSlotsResult.map((l) => l.slotId),
+    );
+    console.log(
+      `🚫 Service ${serviceId || "ALL"} - Total unavailable slot IDs:`,
+      Array.from(unavailableSlotIds),
+    );
 
     // Mark each slot with availability status
-    const slotsWithAvailability = businessSlots.map(slot => {
+    const slotsWithAvailability = businessSlots.map((slot) => {
       const isUnavailable = unavailableSlotIds.has(slot.id);
       return {
         ...slot,
         isAvailable: !isUnavailable,
-        status: isUnavailable ? "booked" : "available"
+        status: isUnavailable ? "booked" : "available",
       };
     });
 
-    console.log(`✅ Returning ${slotsWithAvailability.length} slots with availability`);
-    console.log(`📊 Summary: ${slotsWithAvailability.filter(s => !s.isAvailable).length} booked, ${slotsWithAvailability.filter(s => s.isAvailable).length} available`);
+    console.log(
+      `✅ Returning ${slotsWithAvailability.length} slots with availability`,
+    );
+    console.log(
+      `📊 Summary: ${slotsWithAvailability.filter((s) => !s.isAvailable).length} booked, ${slotsWithAvailability.filter((s) => s.isAvailable).length} available`,
+    );
 
     res.status(200).json({ slots: slotsWithAvailability });
   } catch (error) {
@@ -191,8 +214,8 @@ const getSlotsByBusiness = async (req, res) => {
       .where(
         and(
           eq(businessProfiles.id, businessId),
-          eq(businessProfiles.providerId, userId)
-        )
+          eq(businessProfiles.providerId, userId),
+        ),
       );
 
     if (business.length === 0) {
@@ -234,8 +257,8 @@ const addSlot = async (req, res) => {
       .where(
         and(
           eq(businessProfiles.id, businessId),
-          eq(businessProfiles.providerId, userId)
-        )
+          eq(businessProfiles.providerId, userId),
+        ),
       );
 
     if (business.length === 0) {
@@ -247,13 +270,13 @@ const addSlot = async (req, res) => {
       .insert(slots)
       .values({
         businessProfileId: businessId,
-        startTime: startTime
+        startTime: startTime,
       })
       .returning();
 
     res.status(201).json({
       message: "Slot created successfully",
-      slot: newSlot
+      slot: newSlot,
     });
   } catch (error) {
     console.error("Error adding slot:", error);
@@ -276,8 +299,8 @@ const deleteSlot = async (req, res) => {
       .where(
         and(
           eq(businessProfiles.id, businessId),
-          eq(businessProfiles.providerId, userId)
-        )
+          eq(businessProfiles.providerId, userId),
+        ),
       );
 
     if (business.length === 0) {
@@ -289,10 +312,7 @@ const deleteSlot = async (req, res) => {
       .select()
       .from(slots)
       .where(
-        and(
-          eq(slots.id, slotId),
-          eq(slots.businessProfileId, businessId)
-        )
+        and(eq(slots.id, slotId), eq(slots.businessProfileId, businessId)),
       );
 
     if (!slot) {
@@ -300,9 +320,7 @@ const deleteSlot = async (req, res) => {
     }
 
     // Delete slot
-    await db
-      .delete(slots)
-      .where(eq(slots.id, slotId));
+    await db.delete(slots).where(eq(slots.id, slotId));
 
     res.status(200).json({ message: "Slot deleted successfully" });
   } catch (error) {

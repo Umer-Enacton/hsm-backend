@@ -440,7 +440,10 @@ const getProviderBookings = async (req, res) => {
 
     // DEBUG: Log first booking to verify all fields
     if (bookingsWithCustomers.length > 0) {
-      console.log("[DEBUG] First booking in response:", JSON.stringify(bookingsWithCustomers[0], null, 2));
+      console.log(
+        "[DEBUG] First booking in response:",
+        JSON.stringify(bookingsWithCustomers[0], null, 2),
+      );
     }
 
     res.status(200).json({ bookings: bookingsWithCustomers });
@@ -624,12 +627,9 @@ const addBooking = async (req, res) => {
       );
 
     if (existingBooking.length > 0) {
-      return res
-        .status(400)
-        .json({
-          message:
-            "Slot is already booked for this service on the selected date",
-        });
+      return res.status(400).json({
+        message: "Slot is already booked for this service on the selected date",
+      });
     }
 
     const [newBooking] = await db
@@ -1195,12 +1195,9 @@ const requestReschedule = async (req, res) => {
       .limit(1);
 
     if (conflictingBooking) {
-      return res
-        .status(400)
-        .json({
-          message:
-            "Slot is already booked for this service on the selected date",
-        });
+      return res.status(400).json({
+        message: "Slot is already booked for this service on the selected date",
+      });
     }
 
     // Calculate reschedule fee (flat ₹100)
@@ -2338,7 +2335,9 @@ const initiateCompletion = async (req, res) => {
       return res.status(400).json({ message: "Booking ID is required" });
     }
 
-    console.log(`[initiateCompletion] Provider ${userId} initiating completion for booking ${bookingId}`);
+    console.log(
+      `[initiateCompletion] Provider ${userId} initiating completion for booking ${bookingId}`,
+    );
 
     // 1. Fetch booking with business profile and service
     const [booking] = await db
@@ -2348,7 +2347,10 @@ const initiateCompletion = async (req, res) => {
         service: services,
       })
       .from(bookings)
-      .innerJoin(businessProfiles, eq(bookings.businessProfileId, businessProfiles.id))
+      .innerJoin(
+        businessProfiles,
+        eq(bookings.businessProfileId, businessProfiles.id),
+      )
       .innerJoin(services, eq(bookings.serviceId, services.id))
       .where(eq(bookings.id, bookingId));
 
@@ -2366,7 +2368,9 @@ const initiateCompletion = async (req, res) => {
 
     // 3. Verify provider owns the business
     if (booking.business.providerId !== userId) {
-      return res.status(403).json({ message: "You are not authorized to complete this booking" });
+      return res
+        .status(403)
+        .json({ message: "You are not authorized to complete this booking" });
     }
 
     // 4. Generate OTP
@@ -2383,10 +2387,7 @@ const initiateCompletion = async (req, res) => {
     if (afterPhotoUrl) updateData.afterPhotoUrl = afterPhotoUrl;
     if (completionNotes) updateData.completionNotes = completionNotes;
 
-    await db
-      .update(bookings)
-      .set(updateData)
-      .where(eq(bookings.id, bookingId));
+    await db.update(bookings).set(updateData).where(eq(bookings.id, bookingId));
 
     // 6. Send OTP email to customer
     const customer = await db
@@ -2399,7 +2400,12 @@ const initiateCompletion = async (req, res) => {
       return res.status(404).json({ message: "Customer not found" });
     }
 
-    console.log('[initiateCompletion] Customer email:', customer[0].email, 'Customer name:', customer[0].name);
+    console.log(
+      "[initiateCompletion] Customer email:",
+      customer[0].email,
+      "Customer name:",
+      customer[0].name,
+    );
 
     if (!customer[0].email) {
       return res.status(400).json({ message: "Customer email not found" });
@@ -2413,7 +2419,8 @@ const initiateCompletion = async (req, res) => {
       .limit(1);
 
     const slotTime = slot.length > 0 ? slot[0].startTime : "N/A";
-    const serviceName = booking.service?.name || booking.booking.serviceName || "Service";
+    const serviceName =
+      booking.service?.name || booking.booking.serviceName || "Service";
 
     // Send OTP email (don't fail if email error occurs)
     try {
@@ -2427,19 +2434,18 @@ const initiateCompletion = async (req, res) => {
           })
         : "";
 
-      await sendCompletionOTPEmail(
-        customer[0].email,
-        otp,
-        {
-          customerName: customer[0].name,
-          providerName: booking.business.businessName,
-          serviceName,
-          date: formattedDate,
-          time: slotTime,
-        }
-      );
+      await sendCompletionOTPEmail(customer[0].email, otp, {
+        customerName: customer[0].name,
+        providerName: booking.business.businessName,
+        serviceName,
+        date: formattedDate,
+        time: slotTime,
+      });
     } catch (emailError) {
-      console.error("Email send failed (but OTP generated):", emailError.message);
+      console.error(
+        "Email send failed (but OTP generated):",
+        emailError.message,
+      );
       // Continue anyway - OTP is saved in database
     }
 
@@ -2484,7 +2490,10 @@ const verifyCompletionOTP = async (req, res) => {
         business: businessProfiles,
       })
       .from(bookings)
-      .innerJoin(businessProfiles, eq(bookings.businessProfileId, businessProfiles.id))
+      .innerJoin(
+        businessProfiles,
+        eq(bookings.businessProfileId, businessProfiles.id),
+      )
       .where(eq(bookings.id, bookingId));
 
     if (!booking) {
@@ -2493,7 +2502,9 @@ const verifyCompletionOTP = async (req, res) => {
 
     // 2. Verify provider owns the business
     if (booking.business.providerId !== userId) {
-      return res.status(403).json({ message: "You are not authorized to verify this booking" });
+      return res
+        .status(403)
+        .json({ message: "You are not authorized to verify this booking" });
     }
 
     // 3. Check if OTP was generated
@@ -2588,7 +2599,10 @@ const resendCompletionOTP = async (req, res) => {
         service: services,
       })
       .from(bookings)
-      .innerJoin(businessProfiles, eq(bookings.businessProfileId, businessProfiles.id))
+      .innerJoin(
+        businessProfiles,
+        eq(bookings.businessProfileId, businessProfiles.id),
+      )
       .innerJoin(users, eq(bookings.customerId, users.id))
       .innerJoin(services, eq(bookings.serviceId, services.id))
       .where(eq(bookings.id, bookingId));
@@ -2599,7 +2613,9 @@ const resendCompletionOTP = async (req, res) => {
 
     // 2. Verify provider owns the business
     if (booking.business.providerId !== userId) {
-      return res.status(403).json({ message: "You are not authorized for this action" });
+      return res
+        .status(403)
+        .json({ message: "You are not authorized for this action" });
     }
 
     // 3. Check booking status
@@ -2621,7 +2637,12 @@ const resendCompletionOTP = async (req, res) => {
       .where(eq(bookings.id, bookingId));
 
     // 6. Send OTP email
-    console.log('[resendCompletionOTP] Customer email:', booking.customer.email, 'Customer name:', booking.customer.name);
+    console.log(
+      "[resendCompletionOTP] Customer email:",
+      booking.customer.email,
+      "Customer name:",
+      booking.customer.name,
+    );
 
     if (!booking.customer.email) {
       return res.status(400).json({ message: "Customer email not found" });
@@ -2634,7 +2655,8 @@ const resendCompletionOTP = async (req, res) => {
       .limit(1);
 
     const slotTime = slot.length > 0 ? slot[0].startTime : "N/A";
-    const serviceName = booking.service?.name || booking.booking.serviceName || "Service";
+    const serviceName =
+      booking.service?.name || booking.booking.serviceName || "Service";
 
     // Send OTP email (don't fail if email error occurs)
     try {
@@ -2648,19 +2670,18 @@ const resendCompletionOTP = async (req, res) => {
           })
         : "";
 
-      await sendCompletionOTPEmail(
-        booking.customer.email,
-        otp,
-        {
-          customerName: booking.customer.name,
-          providerName: booking.business.businessName,
-          serviceName,
-          date: formattedDate,
-          time: slotTime,
-        }
-      );
+      await sendCompletionOTPEmail(booking.customer.email, otp, {
+        customerName: booking.customer.name,
+        providerName: booking.business.businessName,
+        serviceName,
+        date: formattedDate,
+        time: slotTime,
+      });
     } catch (emailError) {
-      console.error("Email send failed (but OTP was regenerated):", emailError.message);
+      console.error(
+        "Email send failed (but OTP was regenerated):",
+        emailError.message,
+      );
       // Continue anyway - OTP is saved in database
     }
 
@@ -2697,7 +2718,9 @@ const uploadCompletionPhotos = async (req, res) => {
       });
     }
 
-    console.log(`[uploadCompletionPhotos] Uploading photos for booking ${bookingId}`);
+    console.log(
+      `[uploadCompletionPhotos] Uploading photos for booking ${bookingId}`,
+    );
 
     // 1. Fetch booking with business profile
     const [booking] = await db
@@ -2706,7 +2729,10 @@ const uploadCompletionPhotos = async (req, res) => {
         business: businessProfiles,
       })
       .from(bookings)
-      .innerJoin(businessProfiles, eq(bookings.businessProfileId, businessProfiles.id))
+      .innerJoin(
+        businessProfiles,
+        eq(bookings.businessProfileId, businessProfiles.id),
+      )
       .where(eq(bookings.id, bookingId));
 
     if (!booking) {
