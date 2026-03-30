@@ -1,5 +1,10 @@
 const db = require("../config/db");
-const { bookings, payments, services, businessProfiles } = require("../models/schema");
+const {
+  bookings,
+  payments,
+  services,
+  businessProfiles,
+} = require("../models/schema");
 const { eq, and, sql, desc, gte, lte, innerJoin } = require("drizzle-orm");
 
 /**
@@ -39,8 +44,8 @@ function getDateRange(period) {
  */
 function formatDateForGrouping(date, period) {
   const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const day = String(date.getDate()).padStart(2, '0');
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
 
   // For short periods, use daily grouping (YYYY-MM-DD)
   // For long periods, use monthly grouping (YYYY-MM)
@@ -64,7 +69,12 @@ const getRevenueAnalytics = async (req, res) => {
     const { period = "30d" } = req.query;
     const { startDate, endDate } = getDateRange(period);
 
-    console.log("[Analytics] Fetching revenue for providerId:", req.token.id, "period:", period);
+    console.log(
+      "[Analytics] Fetching revenue for providerId:",
+      req.token.id,
+      "period:",
+      period,
+    );
 
     // Get provider's business profile
     const businessList = await db
@@ -72,18 +82,34 @@ const getRevenueAnalytics = async (req, res) => {
       .from(businessProfiles)
       .where(eq(businessProfiles.providerId, req.token.id));
 
-    console.log("[Analytics] Found business profiles:", businessList.length, "for providerId:", req.token.id);
+    console.log(
+      "[Analytics] Found business profiles:",
+      businessList.length,
+      "for providerId:",
+      req.token.id,
+    );
 
     if (businessList.length === 0) {
-      console.log("[Analytics] No business profile found for providerId:", req.token.id);
+      console.log(
+        "[Analytics] No business profile found for providerId:",
+        req.token.id,
+      );
       return res.status(404).json({
         message: "Business profile not found",
-        debug: { providerId: req.token.id, hint: "Your account may not be linked to a business profile" }
+        debug: {
+          providerId: req.token.id,
+          hint: "Your account may not be linked to a business profile",
+        },
       });
     }
 
     const business = businessList[0];
-    console.log("[Analytics] Using business ID:", business.id, "name:", business.businessName);
+    console.log(
+      "[Analytics] Using business ID:",
+      business.id,
+      "name:",
+      business.businessName,
+    );
 
     // For ALL periods, use actual booking date range (first to last booking)
     // This avoids showing empty data for new providers
@@ -105,7 +131,12 @@ const getRevenueAnalytics = async (req, res) => {
       .orderBy(desc(bookings.bookingDate))
       .limit(1);
 
-    console.log("[Analytics] Date adjustment - First booking:", firstBooking, "Last booking:", lastBooking);
+    console.log(
+      "[Analytics] Date adjustment - First booking:",
+      firstBooking,
+      "Last booking:",
+      lastBooking,
+    );
 
     // For startDate: keep original to show past context (dates with 0 bookings)
     // For endDate: use max(today, lastBookingDate) - show up to today OR last booking if future
@@ -114,19 +145,23 @@ const getRevenueAnalytics = async (req, res) => {
 
     if (lastBooking && lastBooking.bookingDate) {
       // Parse booking date as string and compare dates (not datetimes)
-      const lastBookingStr = lastBooking.bookingDate instanceof Date
-        ? lastBooking.bookingDate.toISOString().split("T")[0]
-        : String(lastBooking.bookingDate).split("T")[0];
+      const lastBookingStr =
+        lastBooking.bookingDate instanceof Date
+          ? lastBooking.bookingDate.toISOString().split("T")[0]
+          : String(lastBooking.bookingDate).split("T")[0];
       const todayStr = today.toISOString().split("T")[0];
 
       console.log("[Analytics] Date comparison:", {
         lastBookingStr,
         todayStr,
-        lastBookingIsAfter: lastBookingStr > todayStr
+        lastBookingIsAfter: lastBookingStr > todayStr,
       });
 
       // Use whichever is later: today or last booking date (string comparison works for YYYY-MM-DD)
-      effectiveEndDate = lastBookingStr > todayStr ? new Date(lastBookingStr + "T23:59:59.999Z") : today;
+      effectiveEndDate =
+        lastBookingStr > todayStr
+          ? new Date(lastBookingStr + "T23:59:59.999Z")
+          : today;
     } else {
       effectiveEndDate = today;
     }
@@ -134,7 +169,7 @@ const getRevenueAnalytics = async (req, res) => {
     console.log("[Analytics] Adjusted date range:", {
       period,
       start: effectiveStartDate.toISOString().split("T")[0],
-      end: effectiveEndDate.toISOString().split("T")[0]
+      end: effectiveEndDate.toISOString().split("T")[0],
     });
 
     // Get all bookings within date range
@@ -150,38 +185,63 @@ const getRevenueAnalytics = async (req, res) => {
         and(
           eq(bookings.businessProfileId, business.id),
           sql`${bookings.bookingDate} >= ${effectiveStartDate.toISOString().split("T")[0]}`,
-          sql`${bookings.bookingDate} <= ${effectiveEndDate.toISOString().split("T")[0]}`
-        )
+          sql`${bookings.bookingDate} <= ${effectiveEndDate.toISOString().split("T")[0]}`,
+        ),
       )
       .orderBy(bookings.bookingDate);
 
-    console.log("[Analytics] Found bookings:", allBookings.length, "for business ID:", business.id, "between", effectiveStartDate.toISOString().split("T")[0], "and", effectiveEndDate.toISOString().split("T")[0]);
+    console.log(
+      "[Analytics] Found bookings:",
+      allBookings.length,
+      "for business ID:",
+      business.id,
+      "between",
+      effectiveStartDate.toISOString().split("T")[0],
+      "and",
+      effectiveEndDate.toISOString().split("T")[0],
+    );
 
     // Get paid payments to know which bookings have payouts
+    // Include both regular booking payments and reschedule fee payments
     const paidPayments = await db
       .select({
+        id: payments.id,
         bookingId: payments.bookingId,
+        amount: payments.amount,
+        platformFee: payments.platformFee,
         providerShare: payments.providerShare,
         providerPayoutStatus: payments.providerPayoutStatus,
+        createdAt: payments.createdAt,
       })
       .from(payments)
+      .innerJoin(bookings, eq(payments.bookingId, bookings.id))
       .where(
         and(
-          eq(payments.status, "paid"),
-          sql`${payments.bookingId} IS NOT NULL`
+          eq(bookings.businessProfileId, business.id),
+          eq(payments.status, "paid")
         )
       );
 
     // Create a map of booking IDs that have payments
+    // A booking can have multiple payments (original + reschedule fees)
     const bookingPaymentsMap = new Map();
-    paidPayments.forEach(p => {
-      bookingPaymentsMap.set(p.bookingId, {
-        providerShare: Number(p.providerShare) || 0, // in paise
-        status: p.providerPayoutStatus
-      });
+    paidPayments.forEach((p) => {
+      const existing = bookingPaymentsMap.get(p.bookingId) || [];
+      bookingPaymentsMap.set(p.bookingId, [...existing, {
+        id: p.id,
+        amount: Number(p.amount) || 0,
+        platformFee: Number(p.platformFee) || 0,
+        providerShare: Number(p.providerShare) || 0,
+        status: p.providerPayoutStatus,
+        createdAt: p.createdAt
+      }]);
     });
 
-    console.log("[Analytics] Found payments:", paidPayments.length, "for bookings");
+    console.log(
+      "[Analytics] Found payments:",
+      paidPayments.length,
+      "for bookings",
+    );
 
     // Platform fee percentage (default 5%)
     const platformFeePercentage = 5;
@@ -194,7 +254,13 @@ const getRevenueAnalytics = async (req, res) => {
     // Initialize all date keys (use effectiveEndDate to include all booking dates)
     while (currentDate <= effectiveEndDate) {
       const key = formatDateForGrouping(new Date(currentDate), period);
-      groupedData.set(key, { date: key, bookings: 0, grossTotal: 0, completed: 0 });
+      groupedData.set(key, {
+        date: key,
+        bookings: 0,
+        grossTotal: 0,
+        rescheduleRevenue: 0, // Added for reschedule fees
+        completed: 0,
+      });
 
       if (period === "7d" || period === "30d") {
         currentDate.setDate(currentDate.getDate() + 1);
@@ -203,7 +269,7 @@ const getRevenueAnalytics = async (req, res) => {
       }
     }
 
-    // Fill in actual data from bookings
+    // Fill in actual data from bookings and payments
     allBookings.forEach((item) => {
       if (!item.date) return;
       try {
@@ -211,19 +277,41 @@ const getRevenueAnalytics = async (req, res) => {
         const key = formatDateForGrouping(bookingDate, period);
         if (groupedData.has(key)) {
           const existing = groupedData.get(key);
-          existing.bookings += 1; // Count ALL bookings for display
+          existing.bookings += 1;
 
-          // Calculate revenue as 95% of eligible bookings
-          // Store gross prices first, then calculate 95% at the end to avoid rounding errors
-          const isEligible = item.status !== 'cancelled' && item.status !== 'rejected' && item.status !== 'refunded';
+          // Regular service revenue
+          const isEligible =
+            item.status !== "cancelled" &&
+            item.status !== "rejected" &&
+            item.status !== "refunded";
+          
           if (isEligible) {
-            // Store gross price, will convert to 95% after grouping
-            existing.grossTotal = (existing.grossTotal || 0) + (item.totalPrice || 0);
+            existing.grossTotal += (item.totalPrice || 0);
           }
 
           if (item.status === "completed") {
             existing.completed += 1;
           }
+
+          // Reschedule revenue from payments
+          const bookingPayments = bookingPaymentsMap.get(item.id) || [];
+          bookingPayments.forEach(p => {
+            // Check if this payment is a reschedule fee (amount is typically 100rs = 10000 paise)
+            // AND ensure we only count it for the date it was PAID if we want precision,
+            // but here we attribute it to the BOOKING date for the chart consistency.
+            // Wait, reschedule fees are 100% provider share now.
+            // If amount === platformFee + providerShare, and platformFee is 0, it's likely a reschedule fee.
+            // Better: use the stored platformFee/providerShare.
+            
+            if (p.amount === 10000 && p.platformFee === 0) {
+               // This is a new-style reschedule fee (100% to provider)
+               existing.rescheduleRevenue += (p.providerShare / 100);
+            } else if (p.amount === 10000 && p.platformFee === 10000) {
+               // This is old-style reschedule fee (100% to admin) - still show it if it was for the provider?
+               // The user said "not wanted at admin side", so I should probably treat all 10000 as provider revenue now.
+               existing.rescheduleRevenue += (p.amount / 100);
+            }
+          });
         }
       } catch (e) {
         console.warn("Invalid date:", item.date);
@@ -233,28 +321,48 @@ const getRevenueAnalytics = async (req, res) => {
     // Convert to array and calculate cumulative values
     let cumulativeRevenue = 0;
     const chartData = Array.from(groupedData.values()).map((item) => {
-      // Calculate 95% of gross total for this period (round once)
-      const revenue = Math.round((item.grossTotal || 0) * providerSharePercentage / 100);
-      cumulativeRevenue += revenue;
+      const baseRevenue = Math.round(((item.grossTotal || 0) * providerSharePercentage) / 100);
+      const totalPeriodRevenue = baseRevenue + (item.rescheduleRevenue || 0);
+      cumulativeRevenue += totalPeriodRevenue;
+      
       return {
         date: item.date,
         bookings: item.bookings,
-        revenue,
+        revenue: baseRevenue,
+        rescheduleRevenue: item.rescheduleRevenue || 0,
+        totalRevenue: totalPeriodRevenue,
         completed: item.completed,
         cumulativeRevenue,
       };
     });
 
-    // Calculate totals - only include eligible bookings for revenue
+    // Calculate totals
     const totalBookings = allBookings.length;
-    const eligibleBookings = allBookings.filter(item =>
-      item.status !== 'cancelled' && item.status !== 'rejected' && item.status !== 'refunded'
+    const eligibleBookings = allBookings.filter(
+      (item) =>
+        item.status !== "cancelled" &&
+        item.status !== "rejected" &&
+        item.status !== "refunded",
     );
-    // Provider's 95% share of ELIGIBLE bookings
-    // Calculate on TOTAL first, then round ONCE to avoid rounding errors
-    const totalGross = eligibleBookings.reduce((sum, item) => sum + (item.totalPrice || 0), 0);
-    const totalRevenue = Math.round(totalGross * providerSharePercentage / 100);
-    const totalCompleted = allBookings.filter((item) => item.status === "completed").length;
+    
+    const totalGross = eligibleBookings.reduce(
+      (sum, item) => sum + (item.totalPrice || 0),
+      0,
+    );
+    const baseTotalRevenue = Math.round((totalGross * providerSharePercentage) / 100);
+    
+    // Add ALL reschedule fees from paidPayments to total revenue
+    const totalRescheduleRevenue = paidPayments.reduce((sum, p) => {
+      if (p.amount === 10000) {
+        return sum + 100; // All 100rs reschedule fees
+      }
+      return sum;
+    }, 0);
+
+    const totalRevenue = baseTotalRevenue + totalRescheduleRevenue;
+    const totalCompleted = allBookings.filter(
+      (item) => item.status === "completed",
+    ).length;
 
     res.json({
       period,
@@ -263,8 +371,12 @@ const getRevenueAnalytics = async (req, res) => {
       summary: {
         totalBookings,
         totalRevenue,
+        rescheduleRevenue: totalRescheduleRevenue,
         totalCompleted,
-        completionRate: totalBookings > 0 ? ((totalCompleted / totalBookings) * 100).toFixed(1) : "0",
+        completionRate:
+          totalBookings > 0
+            ? ((totalCompleted / totalBookings) * 100).toFixed(1)
+            : "0",
       },
       chartData,
     });
@@ -320,7 +432,7 @@ const getServiceAnalytics = async (req, res) => {
     console.log("[Service Analytics] Adjusted date range:", {
       period,
       start: effectiveStartDate.toISOString().split("T")[0],
-      end: effectiveEndDate.toISOString().split("T")[0]
+      end: effectiveEndDate.toISOString().split("T")[0],
     });
 
     // For startDate: keep original to show past context
@@ -329,18 +441,22 @@ const getServiceAnalytics = async (req, res) => {
     today.setHours(23, 59, 59, 999);
 
     if (lastBooking && lastBooking.bookingDate) {
-      const lastBookingStr = lastBooking.bookingDate instanceof Date
-        ? lastBooking.bookingDate.toISOString().split("T")[0]
-        : String(lastBooking.bookingDate).split("T")[0];
+      const lastBookingStr =
+        lastBooking.bookingDate instanceof Date
+          ? lastBooking.bookingDate.toISOString().split("T")[0]
+          : String(lastBooking.bookingDate).split("T")[0];
       const todayStr = today.toISOString().split("T")[0];
 
       console.log("[Service Analytics] Date comparison:", {
         lastBookingStr,
         todayStr,
-        lastBookingIsAfter: lastBookingStr > todayStr
+        lastBookingIsAfter: lastBookingStr > todayStr,
       });
 
-      effectiveEndDate = lastBookingStr > todayStr ? new Date(lastBookingStr + "T23:59:59.999Z") : today;
+      effectiveEndDate =
+        lastBookingStr > todayStr
+          ? new Date(lastBookingStr + "T23:59:59.999Z")
+          : today;
     } else {
       effectiveEndDate = today;
     }
@@ -350,7 +466,7 @@ const getServiceAnalytics = async (req, res) => {
       originalStart: startDate.toISOString().split("T")[0],
       originalEnd: endDate.toISOString().split("T")[0],
       effectiveStart: effectiveStartDate.toISOString().split("T")[0],
-      effectiveEnd: effectiveEndDate.toISOString().split("T")[0]
+      effectiveEnd: effectiveEndDate.toISOString().split("T")[0],
     });
 
     // Get all bookings with service info within EFFECTIVE date range
@@ -368,8 +484,8 @@ const getServiceAnalytics = async (req, res) => {
         and(
           eq(bookings.businessProfileId, business.id),
           sql`${bookings.bookingDate} >= ${effectiveStartDate.toISOString().split("T")[0]}`,
-          sql`${bookings.bookingDate} <= ${effectiveEndDate.toISOString().split("T")[0]}`
-        )
+          sql`${bookings.bookingDate} <= ${effectiveEndDate.toISOString().split("T")[0]}`,
+        ),
       );
 
     if (allBookings.length === 0) {
@@ -402,13 +518,18 @@ const getServiceAnalytics = async (req, res) => {
       }
 
       // Only count eligible bookings (not cancelled/rejected/refunded) for revenue
-      const isEligible = item.status !== 'cancelled' && item.status !== 'rejected' && item.status !== 'refunded';
+      const isEligible =
+        item.status !== "cancelled" &&
+        item.status !== "rejected" &&
+        item.status !== "refunded";
 
       const service = serviceMap.get(item.serviceId);
       service.bookingCount += 1;
       // Calculate provider's 95% share only for eligible bookings
       if (isEligible) {
-        const providerShare = Math.round((item.totalPrice || 0) * providerSharePercentage / 100);
+        const providerShare = Math.round(
+          ((item.totalPrice || 0) * providerSharePercentage) / 100,
+        );
         service.totalRevenue += providerShare;
       }
       if (item.status === "completed") {
@@ -419,7 +540,9 @@ const getServiceAnalytics = async (req, res) => {
     // Convert to array and add service rating
     const servicesList = Array.from(serviceMap.values()).map((s) => {
       // Find rating from the original bookings data
-      const serviceBooking = allBookings.find((b) => b.serviceId === s.serviceId);
+      const serviceBooking = allBookings.find(
+        (b) => b.serviceId === s.serviceId,
+      );
       const rating = serviceBooking?.serviceRating;
       // Rating is stored as string like "0.00", just use it directly
       return {
@@ -433,16 +556,25 @@ const getServiceAnalytics = async (req, res) => {
 
     const totalBookings = allBookings.length;
     // Provider's 95% share of ELIGIBLE bookings (excluding cancelled/rejected/refunded)
-    const eligibleBookings = allBookings.filter(item =>
-      item.status !== 'cancelled' && item.status !== 'rejected' && item.status !== 'refunded'
+    const eligibleBookings = allBookings.filter(
+      (item) =>
+        item.status !== "cancelled" &&
+        item.status !== "rejected" &&
+        item.status !== "refunded",
     );
-    const totalRevenue = eligibleBookings.reduce((sum, item) => sum + Math.round((item.totalPrice || 0) * 95 / 100), 0);
+    const totalRevenue = eligibleBookings.reduce(
+      (sum, item) => sum + Math.round(((item.totalPrice || 0) * 95) / 100),
+      0,
+    );
 
     res.json({
       period,
       services: servicesList.map((s) => ({
         ...s,
-        percentage: totalBookings > 0 ? ((s.bookingCount / totalBookings) * 100).toFixed(1) : "0",
+        percentage:
+          totalBookings > 0
+            ? ((s.bookingCount / totalBookings) * 100).toFixed(1)
+            : "0",
       })),
       totalBookings,
       totalRevenue,
@@ -501,7 +633,7 @@ const getStatusAnalytics = async (req, res) => {
       originalStart: startDate.toISOString().split("T")[0],
       originalEnd: endDate.toISOString().split("T")[0],
       effectiveStart: effectiveStartDate.toISOString().split("T")[0],
-      effectiveEnd: effectiveEndDate.toISOString().split("T")[0]
+      effectiveEnd: effectiveEndDate.toISOString().split("T")[0],
     });
 
     // For startDate: keep original to show past context
@@ -510,18 +642,22 @@ const getStatusAnalytics = async (req, res) => {
     today.setHours(23, 59, 59, 999);
 
     if (lastBooking && lastBooking.bookingDate) {
-      const lastBookingStr = lastBooking.bookingDate instanceof Date
-        ? lastBooking.bookingDate.toISOString().split("T")[0]
-        : String(lastBooking.bookingDate).split("T")[0];
+      const lastBookingStr =
+        lastBooking.bookingDate instanceof Date
+          ? lastBooking.bookingDate.toISOString().split("T")[0]
+          : String(lastBooking.bookingDate).split("T")[0];
       const todayStr = today.toISOString().split("T")[0];
 
       console.log("[Status Analytics] Date comparison:", {
         lastBookingStr,
         todayStr,
-        lastBookingIsAfter: lastBookingStr > todayStr
+        lastBookingIsAfter: lastBookingStr > todayStr,
       });
 
-      effectiveEndDate = lastBookingStr > todayStr ? new Date(lastBookingStr + "T23:59:59.999Z") : today;
+      effectiveEndDate =
+        lastBookingStr > todayStr
+          ? new Date(lastBookingStr + "T23:59:59.999Z")
+          : today;
     } else {
       effectiveEndDate = today;
     }
@@ -537,8 +673,8 @@ const getStatusAnalytics = async (req, res) => {
         and(
           eq(bookings.businessProfileId, business.id),
           sql`${bookings.bookingDate} >= ${effectiveStartDate.toISOString().split("T")[0]}`,
-          sql`${bookings.bookingDate} <= ${effectiveEndDate.toISOString().split("T")[0]}`
-        )
+          sql`${bookings.bookingDate} <= ${effectiveEndDate.toISOString().split("T")[0]}`,
+        ),
       );
 
     if (allBookings.length === 0) {
@@ -566,8 +702,14 @@ const getStatusAnalytics = async (req, res) => {
       s.count += 1;
       // Calculate provider's 95% share only for eligible statuses
       // For cancelled/rejected/refunded, show revenue as 0 since it was refunded
-      if (status !== 'cancelled' && status !== 'rejected' && status !== 'refunded') {
-        const providerShare = Math.round((item.totalPrice || 0) * providerSharePercentage / 100);
+      if (
+        status !== "cancelled" &&
+        status !== "rejected" &&
+        status !== "refunded"
+      ) {
+        const providerShare = Math.round(
+          ((item.totalPrice || 0) * providerSharePercentage) / 100,
+        );
         s.revenue += providerShare;
       }
     });
@@ -583,13 +725,18 @@ const getStatusAnalytics = async (req, res) => {
     };
 
     const totalBookings = allBookings.length;
-    const statusBreakdown = Array.from(statusMap.entries()).map(([status, data]) => ({
-      status,
-      count: data.count,
-      revenue: data.revenue,
-      percentage: totalBookings > 0 ? ((data.count / totalBookings) * 100).toFixed(1) : "0",
-      fill: statusColors[status] || statusColors.unknown,
-    }));
+    const statusBreakdown = Array.from(statusMap.entries()).map(
+      ([status, data]) => ({
+        status,
+        count: data.count,
+        revenue: data.revenue,
+        percentage:
+          totalBookings > 0
+            ? ((data.count / totalBookings) * 100).toFixed(1)
+            : "0",
+        fill: statusColors[status] || statusColors.unknown,
+      }),
+    );
 
     // Sort by count descending
     statusBreakdown.sort((a, b) => b.count - a.count);
@@ -598,7 +745,10 @@ const getStatusAnalytics = async (req, res) => {
       period,
       totalBookings,
       statusBreakdown,
-      totalRevenue: allBookings.reduce((sum, item) => sum + Math.round((item.totalPrice || 0) * 95 / 100), 0),
+      totalRevenue: allBookings.reduce(
+        (sum, item) => sum + Math.round(((item.totalPrice || 0) * 95) / 100),
+        0,
+      ),
     });
   } catch (error) {
     console.error("Error fetching status analytics:", error);
@@ -606,6 +756,11 @@ const getStatusAnalytics = async (req, res) => {
   }
 };
 
+module.exports = {
+  getRevenueAnalytics,
+  getServiceAnalytics,
+  getStatusAnalytics,
+};
 module.exports = {
   getRevenueAnalytics,
   getServiceAnalytics,

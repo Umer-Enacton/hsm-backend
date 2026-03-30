@@ -12,15 +12,9 @@ const {
   adminSettings,
 } = require("../models/schema");
 const { eq, and, gte, lte, desc, or, sql, ne } = require("drizzle-orm");
-const {
-  createRazorpayOrder,
-  createSplitOrder,
-  verifySignature,
-  initiateRefund,
-  rupeesToPaise,
-  paiseToRupees,
-} = require("../utils/razorpay");
+const { createRazorpayOrder, createSplitOrder, verifySignature, initiateRefund, rupeesToPaise, paiseToRupees } = require("../utils/razorpay");
 const { notificationTemplates } = require("../utils/notificationHelper");
+const { logBookingHistory } = require("../utils/historyHelper");
 
 // STARTUP LOG: Confirm this file is loaded
 console.log('✅ payment.controller.js loaded - version 2026-03-16-v2');
@@ -931,6 +925,15 @@ const verifyPayment = async (req, res) => {
           .where(eq(bookings.id, rescheduleBookingId))
           .returning();
 
+        // Log history for reschedule
+        await logBookingHistory(
+          rescheduleBookingId,
+          "reschedule_pending",
+          "Reschedule requested following fee payment.",
+          "customer",
+          userId
+        );
+
         bookingId = updatedBooking.id;
 
         console.log(`✅ Booking ${rescheduleBookingId} rescheduled successfully, status: reschedule_pending, rescheduleCount: ${updatedBooking.rescheduleCount}`);
@@ -943,20 +946,13 @@ const verifyPayment = async (req, res) => {
           razorpayOrderId: razorpayOrderId,
           razorpayPaymentId: razorpayPaymentId,
           amount: paymentIntent.amount, // Flat ₹100 reschedule fee
-          platformFee: paymentIntent.amount, // 100% to platform for reschedule fees
-          providerShare: 0, // No provider share for reschedule fees
+          platformFee: 0, // ✅ Reschedule fees go to provider, not platform
+          providerShare: paymentIntent.amount, // ✅ 100% to provider for reschedule fees
           currency: "INR",
           status: "paid",
           paymentMethod: "razorpay",
           completedAt: new Date(),
         };
-
-        // Only include signature if it exists (not empty string)
-        if (signature && signature.trim() !== "") {
-          paymentValues.razorpaySignature = signature;
-        }
-
-        console.log("💰 Inserting payment record:", paymentValues);
 
         await tx.insert(payments).values(paymentValues);
         console.log("✅ Payment record inserted successfully");
@@ -991,6 +987,16 @@ const verifyPayment = async (req, res) => {
               paymentStatus: "paid",
             })
             .returning();
+          
+          // Log history for new booking
+          await logBookingHistory(
+            newBooking.id,
+            "pending",
+            "Booking created following payment.",
+            "customer",
+            userId
+          );
+
           console.log("✅ New booking created with ID:", newBooking?.id);
         } catch (insertError) {
           console.error("❌ Error inserting booking:", insertError);

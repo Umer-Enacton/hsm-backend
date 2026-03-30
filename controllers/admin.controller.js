@@ -1,5 +1,13 @@
 const db = require("../config/db");
-const { payments, bookings, users, adminSettings, businessProfiles, services, paymentDetails } = require("../models/schema");
+const {
+  payments,
+  bookings,
+  users,
+  adminSettings,
+  businessProfiles,
+  services,
+  paymentDetails,
+} = require("../models/schema");
 const { eq, and, sql, desc, inArray } = require("drizzle-orm");
 const { notificationTemplates } = require("../utils/notificationHelper");
 
@@ -77,7 +85,10 @@ const getPlatformSettings = async (req, res) => {
     }
 
     const platformFee = await getAdminSetting("platform_fee_percentage", "5");
-    const minimumPayout = await getAdminSetting("minimum_payout_amount", "30000"); // Default ₹300
+    const minimumPayout = await getAdminSetting(
+      "minimum_payout_amount",
+      "30000",
+    ); // Default ₹300
 
     res.json({
       platformFeePercentage: Number(platformFee),
@@ -114,7 +125,7 @@ const updatePlatformSettings = async (req, res) => {
       await setAdminSetting(
         "platform_fee_percentage",
         platformFeePercentage.toString(),
-        "Platform commission percentage charged on each booking (1-10%)"
+        "Platform commission percentage charged on each booking (1-10%)",
       );
     }
 
@@ -129,17 +140,19 @@ const updatePlatformSettings = async (req, res) => {
       await setAdminSetting(
         "minimum_payout_amount",
         minimumPayoutAmount.toString(),
-        "Minimum amount required for provider payout in paise (₹300-₹1000)"
+        "Minimum amount required for provider payout in paise (₹300-₹1000)",
       );
     }
 
     // Return updated values
-    const updatedPlatformFee = platformFeePercentage !== undefined
-      ? platformFeePercentage
-      : Number(await getAdminSetting("platform_fee_percentage", "5"));
-    const updatedMinPayout = minimumPayoutAmount !== undefined
-      ? minimumPayoutAmount
-      : Number(await getAdminSetting("minimum_payout_amount", "30000"));
+    const updatedPlatformFee =
+      platformFeePercentage !== undefined
+        ? platformFeePercentage
+        : Number(await getAdminSetting("platform_fee_percentage", "5"));
+    const updatedMinPayout =
+      minimumPayoutAmount !== undefined
+        ? minimumPayoutAmount
+        : Number(await getAdminSetting("minimum_payout_amount", "30000"));
 
     res.json({
       message: "Platform settings updated successfully",
@@ -168,7 +181,9 @@ const getRevenueStats = async (req, res) => {
     const { startDate, endDate, groupBy } = req.query;
 
     // Get platform fee percentage
-    const platformFeePercentage = Number(await getAdminSetting("platform_fee_percentage", "5"));
+    const platformFeePercentage = Number(
+      await getAdminSetting("platform_fee_percentage", "5"),
+    );
 
     // Build date filter
     let dateFilter = sql`TRUE`;
@@ -190,12 +205,7 @@ const getRevenueStats = async (req, res) => {
         createdAt: payments.createdAt,
       })
       .from(payments)
-      .where(
-        and(
-          eq(payments.status, "paid"),
-          dateFilter
-        )
-      );
+      .where(and(eq(payments.status, "paid"), dateFilter));
 
     // Calculate totals
     let totalRevenue = 0;
@@ -226,12 +236,7 @@ const getRevenueStats = async (req, res) => {
         count: sql`COUNT(*)`,
       })
       .from(payments)
-      .where(
-        and(
-          eq(payments.status, "paid"),
-          dateFilter
-        )
-      )
+      .where(and(eq(payments.status, "paid"), dateFilter))
       .groupBy(sql`DATE_TRUNC('month', ${payments.createdAt})`)
       .orderBy(desc(sql`DATE_TRUNC('month', ${payments.createdAt})`));
 
@@ -239,7 +244,9 @@ const getRevenueStats = async (req, res) => {
       month: item.month,
       total: Number(item.total),
       count: Number(item.count),
-      platformFee: Math.round(Number(item.total) * (platformFeePercentage / 100)),
+      platformFee: Math.round(
+        Number(item.total) * (platformFeePercentage / 100),
+      ),
     }));
 
     // Get top providers by revenue
@@ -252,14 +259,16 @@ const getRevenueStats = async (req, res) => {
       })
       .from(bookings)
       .innerJoin(payments, eq(payments.bookingId, bookings.id))
-      .innerJoin(businessProfiles, eq(businessProfiles.id, bookings.businessProfileId))
-      .where(
-        and(
-          eq(payments.status, "paid"),
-          dateFilter
-        )
+      .innerJoin(
+        businessProfiles,
+        eq(businessProfiles.id, bookings.businessProfileId),
       )
-      .groupBy(businessProfiles.id, businessProfiles.providerId, businessProfiles.businessName)
+      .where(and(eq(payments.status, "paid"), dateFilter))
+      .groupBy(
+        businessProfiles.id,
+        businessProfiles.providerId,
+        businessProfiles.businessName,
+      )
       .orderBy(desc(sql`SUM(${payments.amount})`))
       .limit(10);
 
@@ -320,7 +329,9 @@ const getPayouts = async (req, res) => {
     const { status = "all", providerId } = req.query;
 
     // Get minimum payout amount from settings
-    const minimumPayoutAmount = Number(await getAdminSetting("minimum_payout_amount", "30000")); // Default ₹300
+    const minimumPayoutAmount = Number(
+      await getAdminSetting("minimum_payout_amount", "30000"),
+    ); // Default ₹300
 
     // Build query conditions
     let query = db
@@ -346,7 +357,10 @@ const getPayouts = async (req, res) => {
       })
       .from(payments)
       .innerJoin(bookings, eq(payments.bookingId, bookings.id))
-      .innerJoin(businessProfiles, eq(bookings.businessProfileId, businessProfiles.id))
+      .innerJoin(
+        businessProfiles,
+        eq(bookings.businessProfileId, businessProfiles.id),
+      )
       .innerJoin(users, eq(businessProfiles.providerId, users.id))
       .where(eq(payments.status, "paid"));
 
@@ -404,7 +418,9 @@ const getPayoutsSummary = async (req, res) => {
       return res.status(403).json({ message: "Access denied: Admin only" });
     }
 
-    const minimumPayoutAmount = Number(await getAdminSetting("minimum_payout_amount", "30000"));
+    const minimumPayoutAmount = Number(
+      await getAdminSetting("minimum_payout_amount", "30000"),
+    );
 
     // Get totals by payout status
     const [summary] = await db
@@ -427,10 +443,17 @@ const getPayoutsSummary = async (req, res) => {
       })
       .from(payments)
       .innerJoin(bookings, eq(payments.bookingId, bookings.id))
-      .innerJoin(businessProfiles, eq(bookings.businessProfileId, businessProfiles.id))
+      .innerJoin(
+        businessProfiles,
+        eq(bookings.businessProfileId, businessProfiles.id),
+      )
       .innerJoin(users, eq(businessProfiles.providerId, users.id))
       .where(eq(payments.providerPayoutStatus, "pending"))
-      .groupBy(businessProfiles.providerId, users.name, businessProfiles.businessName)
+      .groupBy(
+        businessProfiles.providerId,
+        users.name,
+        businessProfiles.businessName,
+      )
       .orderBy(desc(sql`SUM(COALESCE(${payments.providerShare}, 0))`));
 
     // Filter providers who meet minimum payout
@@ -496,7 +519,7 @@ const markPayoutAsPaid = async (req, res) => {
 
     if (paymentWithBooking.providerPayoutStatus !== "pending") {
       return res.status(400).json({
-        message: `Cannot mark as paid. Current status: ${paymentWithBooking.providerPayoutStatus || "null"}`
+        message: `Cannot mark as paid. Current status: ${paymentWithBooking.providerPayoutStatus || "null"}`,
       });
     }
 
@@ -511,7 +534,9 @@ const markPayoutAsPaid = async (req, res) => {
       .where(eq(payments.id, id));
 
     // Also update booking table to keep in sync
-    const providerPayoutAmountRupees = Math.round(Number(paymentWithBooking.providerShare) / 100);
+    const providerPayoutAmountRupees = Math.round(
+      Number(paymentWithBooking.providerShare) / 100,
+    );
     await db
       .update(bookings)
       .set({
@@ -556,7 +581,9 @@ const bulkProcessPayouts = async (req, res) => {
     }
 
     // Get minimum payout amount
-    const minimumPayoutAmount = Number(await getAdminSetting("minimum_payout_amount", "30000"));
+    const minimumPayoutAmount = Number(
+      await getAdminSetting("minimum_payout_amount", "30000"),
+    );
 
     // Fetch all payments with their provider info
     const paymentsToProcess = await db
@@ -568,7 +595,10 @@ const bulkProcessPayouts = async (req, res) => {
       })
       .from(payments)
       .innerJoin(bookings, eq(payments.bookingId, bookings.id))
-      .innerJoin(businessProfiles, eq(bookings.businessProfileId, businessProfiles.id))
+      .innerJoin(
+        businessProfiles,
+        eq(bookings.businessProfileId, businessProfiles.id),
+      )
       .where(sql`${payments.id} = ANY(${payoutIds})`);
 
     // Group by provider and check minimum
@@ -580,7 +610,7 @@ const bulkProcessPayouts = async (req, res) => {
       if (p.providerPayoutStatus !== "pending") {
         skippedPayments.push({
           id: p.paymentId,
-          reason: `Status is "${p.providerPayoutStatus}", not "pending"`
+          reason: `Status is "${p.providerPayoutStatus}", not "pending"`,
         });
         return;
       }
@@ -595,7 +625,7 @@ const bulkProcessPayouts = async (req, res) => {
       } else {
         skippedPayments.push({
           id: p.paymentId,
-          reason: `Provider total (₹${(newTotal / 100).toFixed(2)}) is below minimum (₹${(minimumPayoutAmount / 100).toFixed(2)})`
+          reason: `Provider total (₹${(newTotal / 100).toFixed(2)}) is below minimum (₹${(minimumPayoutAmount / 100).toFixed(2)})`,
         });
       }
     });
@@ -618,8 +648,13 @@ const bulkProcessPayouts = async (req, res) => {
 
     // Also update corresponding bookings to keep in sync
     // Get booking IDs from updated payments
-    const bookingIds = result.map(p => p.bookingId);
-    const providerShareMap = new Map(result.map(p => [p.bookingId, Math.round(Number(p.providerShare) / 100)]));
+    const bookingIds = result.map((p) => p.bookingId);
+    const providerShareMap = new Map(
+      result.map((p) => [
+        p.bookingId,
+        Math.round(Number(p.providerShare) / 100),
+      ]),
+    );
 
     for (const bookingId of bookingIds) {
       await db
@@ -643,7 +678,10 @@ const bulkProcessPayouts = async (req, res) => {
       processedCount: result.length,
       skippedCount: skippedPayments.length,
       skippedPayments,
-      totalAmount: result.reduce((sum, p) => sum + Number(p.providerShare || 0), 0),
+      totalAmount: result.reduce(
+        (sum, p) => sum + Number(p.providerShare || 0),
+        0,
+      ),
     });
   } catch (error) {
     console.error("Error processing bulk payouts:", error);
@@ -662,7 +700,9 @@ const getPayoutsByProvider = async (req, res) => {
     }
 
     const { filter = "all" } = req.query;
-    const minimumPayoutAmount = Number(await getAdminSetting("minimum_payout_amount", "30000"));
+    const minimumPayoutAmount = Number(
+      await getAdminSetting("minimum_payout_amount", "30000"),
+    );
 
     // Get all pending payouts grouped by provider
     const providerPayouts = await db
@@ -679,15 +719,25 @@ const getPayoutsByProvider = async (req, res) => {
       })
       .from(payments)
       .innerJoin(bookings, eq(payments.bookingId, bookings.id))
-      .innerJoin(businessProfiles, eq(bookings.businessProfileId, businessProfiles.id))
+      .innerJoin(
+        businessProfiles,
+        eq(bookings.businessProfileId, businessProfiles.id),
+      )
       .innerJoin(users, eq(businessProfiles.providerId, users.id))
       .where(
         and(
           eq(payments.providerPayoutStatus, "pending"),
-          eq(payments.status, "paid")
-        )
+          eq(payments.status, "paid"),
+        ),
       )
-      .groupBy(businessProfiles.providerId, users.name, users.email, users.phone, businessProfiles.businessName, businessProfiles.id)
+      .groupBy(
+        businessProfiles.providerId,
+        users.name,
+        users.email,
+        users.phone,
+        businessProfiles.businessName,
+        businessProfiles.id,
+      )
       .orderBy(desc(sql`SUM(${payments.providerShare})`));
 
     // Add metadata and fetch payment details for each provider
@@ -706,7 +756,12 @@ const getPayoutsByProvider = async (req, res) => {
             accountHolderName: paymentDetails.accountHolderName,
           })
           .from(paymentDetails)
-          .where(and(eq(paymentDetails.userId, p.providerId), eq(paymentDetails.isActive, true)))
+          .where(
+            and(
+              eq(paymentDetails.userId, p.providerId),
+              eq(paymentDetails.isActive, true),
+            ),
+          )
           .limit(1);
 
         // Mask bank account for security
@@ -723,15 +778,17 @@ const getPayoutsByProvider = async (req, res) => {
           paymentIds,
           canProcessPayout: totalPending >= minimumPayoutAmount,
           minimumPayoutAmount,
-          paymentDetails: activePaymentDetails ? {
-            upiId: activePaymentDetails.upiId,
-            bankAccount: activePaymentDetails.bankAccount,
-            bankAccountMasked,
-            ifscCode: activePaymentDetails.ifscCode,
-            accountHolderName: activePaymentDetails.accountHolderName,
-          } : null,
+          paymentDetails: activePaymentDetails
+            ? {
+                upiId: activePaymentDetails.upiId,
+                bankAccount: activePaymentDetails.bankAccount,
+                bankAccountMasked,
+                ifscCode: activePaymentDetails.ifscCode,
+                accountHolderName: activePaymentDetails.accountHolderName,
+              }
+            : null,
         };
-      })
+      }),
     );
 
     // Apply filter
@@ -773,21 +830,29 @@ const payProvider = async (req, res) => {
       })
       .from(payments)
       .innerJoin(bookings, eq(payments.bookingId, bookings.id))
-      .innerJoin(businessProfiles, eq(bookings.businessProfileId, businessProfiles.id))
+      .innerJoin(
+        businessProfiles,
+        eq(bookings.businessProfileId, businessProfiles.id),
+      )
       .where(
         and(
           eq(businessProfiles.providerId, Number(providerId)),
           eq(payments.providerPayoutStatus, "pending"),
-          eq(payments.status, "paid")
-        )
+          eq(payments.status, "paid"),
+        ),
       );
 
     if (providerPayments.length === 0) {
-      return res.status(404).json({ message: "No pending payouts found for this provider" });
+      return res
+        .status(404)
+        .json({ message: "No pending payouts found for this provider" });
     }
 
     const paymentIds = providerPayments.map((p) => p.paymentId);
-    const totalAmount = providerPayments.reduce((sum, p) => sum + Number(p.providerShare || 0), 0);
+    const totalAmount = providerPayments.reduce(
+      (sum, p) => sum + Number(p.providerShare || 0),
+      0,
+    );
 
     // Update all payments as paid
     const updateData = {
@@ -807,7 +872,9 @@ const payProvider = async (req, res) => {
 
     // Also update corresponding bookings to keep in sync
     for (const payment of result) {
-      const providerPayoutAmountRupees = Math.round(Number(payment.providerShare) / 100);
+      const providerPayoutAmountRupees = Math.round(
+        Number(payment.providerShare) / 100,
+      );
       await db
         .update(bookings)
         .set({
@@ -819,10 +886,13 @@ const payProvider = async (req, res) => {
         .where(eq(bookings.id, payment.bookingId));
     }
 
-    console.log("✅ Provider payouts processed - updated payments and bookings:", {
-      providerId: Number(providerId),
-      processedCount: result.length,
-    });
+    console.log(
+      "✅ Provider payouts processed - updated payments and bookings:",
+      {
+        providerId: Number(providerId),
+        processedCount: result.length,
+      },
+    );
 
     res.json({
       message: "Provider payouts processed successfully",
@@ -848,9 +918,7 @@ const getDashboardStats = async (req, res) => {
     }
 
     // Get counts for users, businesses, services, bookings
-    const [userCount] = await db
-      .select({ count: sql`COUNT(*)` })
-      .from(users);
+    const [userCount] = await db.select({ count: sql`COUNT(*)` }).from(users);
 
     const [businessCount] = await db
       .select({
@@ -875,22 +943,32 @@ const getDashboardStats = async (req, res) => {
       .from(bookings)
       .groupBy(bookings.status);
 
-    const totalBookings = bookingStats.reduce((sum, b) => sum + Number(b.count), 0);
-    const completedBookings = Number(bookingStats.find((b) => b.status === "completed")?.count || 0);
-    const pendingBookings = Number(bookingStats.find((b) => b.status === "pending")?.count || 0);
+    const totalBookings = bookingStats.reduce(
+      (sum, b) => sum + Number(b.count),
+      0,
+    );
+    const completedBookings = Number(
+      bookingStats.find((b) => b.status === "completed")?.count || 0,
+    );
+    const pendingBookings = Number(
+      bookingStats.find((b) => b.status === "pending")?.count || 0,
+    );
 
     // Get platform revenue from paid payments
+    // EXCLUDE reschedule fees from platform fee total (reschedule fees are flat 100rs = 10000 paise)
     const [revenueData] = await db
       .select({
         totalRevenue: sql`COALESCE(SUM(${payments.amount}), 0)`,
-        totalPlatformFee: sql`COALESCE(SUM(${payments.platformFee}), 0)`,
+        totalPlatformFee: sql`COALESCE(SUM(CASE WHEN ${payments.amount} != 10000 THEN ${payments.platformFee} ELSE 0 END), 0)`,
         paymentCount: sql`COUNT(*)`,
       })
       .from(payments)
       .where(eq(payments.status, "paid"));
 
     // Get payout summary
-    const minimumPayoutAmount = Number(await getAdminSetting("minimum_payout_amount", "30000"));
+    const minimumPayoutAmount = Number(
+      await getAdminSetting("minimum_payout_amount", "30000"),
+    );
     const [payoutSummary] = await db
       .select({
         totalPending: sql`COALESCE(SUM(CASE WHEN ${payments.providerPayoutStatus} = 'pending' THEN ${payments.providerShare} ELSE 0 END), 0)`,
@@ -906,7 +984,9 @@ const getDashboardStats = async (req, res) => {
       businesses: {
         total: Number(businessCount?.total) || 0,
         verified: Number(businessCount?.verified) || 0,
-        pending: (Number(businessCount?.total) || 0) - (Number(businessCount?.verified) || 0),
+        pending:
+          (Number(businessCount?.total) || 0) -
+          (Number(businessCount?.verified) || 0),
       },
       services: {
         total: Number(serviceCount?.total) || 0,
@@ -952,7 +1032,9 @@ const blockBusiness = async (req, res) => {
     const { reason } = req.body;
 
     if (!reason || reason.trim().length === 0) {
-      return res.status(400).json({ message: "Reason is required to block a business" });
+      return res
+        .status(400)
+        .json({ message: "Reason is required to block a business" });
     }
 
     // Check if business exists
@@ -991,7 +1073,7 @@ const blockBusiness = async (req, res) => {
     await notificationTemplates.businessBlocked(
       business.providerId,
       business.businessName,
-      reason.trim()
+      reason.trim(),
     );
 
     res.json({
@@ -1051,7 +1133,7 @@ const unblockBusiness = async (req, res) => {
     // Send notification to provider
     await notificationTemplates.businessUnblocked(
       business.providerId,
-      business.businessName
+      business.businessName,
     );
 
     res.json({
@@ -1082,7 +1164,9 @@ const deactivateService = async (req, res) => {
     const { reason } = req.body;
 
     if (!reason || reason.trim().length === 0) {
-      return res.status(400).json({ message: "Reason is required to deactivate a service" });
+      return res
+        .status(400)
+        .json({ message: "Reason is required to deactivate a service" });
     }
 
     // Check if service exists
@@ -1097,7 +1181,9 @@ const deactivateService = async (req, res) => {
     }
 
     if (!service.isActive) {
-      return res.status(400).json({ message: "Service is already deactivated" });
+      return res
+        .status(400)
+        .json({ message: "Service is already deactivated" });
     }
 
     // Deactivate the service
@@ -1129,7 +1215,7 @@ const deactivateService = async (req, res) => {
       await notificationTemplates.serviceDeactivated(
         business.providerId,
         service.name,
-        reason.trim()
+        reason.trim(),
       );
     }
 
@@ -1198,7 +1284,7 @@ const activateService = async (req, res) => {
     if (business) {
       await notificationTemplates.serviceReactivated(
         business.providerId,
-        service.name
+        service.name,
       );
     }
 
@@ -1247,11 +1333,14 @@ const getAllServicesForAdmin = async (req, res) => {
         businessCategoryId: businessProfiles.categoryId,
       })
       .from(services)
-      .leftJoin(businessProfiles, eq(services.businessProfileId, businessProfiles.id))
+      .leftJoin(
+        businessProfiles,
+        eq(services.businessProfileId, businessProfiles.id),
+      )
       .orderBy(desc(services.createdAt));
 
     // Map EstimateDuration to duration for frontend compatibility
-    const servicesWithDuration = allServices.map(service => ({
+    const servicesWithDuration = allServices.map((service) => ({
       ...service,
       duration: service.EstimateDuration,
       estimateDuration: service.EstimateDuration,

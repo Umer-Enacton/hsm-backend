@@ -88,13 +88,16 @@ const savePaymentDetails = async (req, res) => {
     // Only admin (roleId: 3) and providers (roleId: 2) can add payment details
     if (userRoleId !== 3 && userRoleId !== 2) {
       return res.status(403).json({
-        message: "Access denied: Only admin and providers can add payment details",
+        message:
+          "Access denied: Only admin and providers can add payment details",
       });
     }
 
     // Validate based on payment type
     if (paymentType === "upi" && !upiId) {
-      return res.status(400).json({ message: "UPI ID is required for UPI type" });
+      return res
+        .status(400)
+        .json({ message: "UPI ID is required for UPI type" });
     }
     if (
       paymentType === "bank" &&
@@ -102,7 +105,10 @@ const savePaymentDetails = async (req, res) => {
     ) {
       return res
         .status(400)
-        .json({ message: "Bank account, IFSC code, and account holder name are required for bank type" });
+        .json({
+          message:
+            "Bank account, IFSC code, and account holder name are required for bank type",
+        });
     }
 
     // Get user details for Razorpay contact
@@ -120,7 +126,7 @@ const savePaymentDetails = async (req, res) => {
     const contact = await createContact(
       user.name,
       user.email,
-      user.phone || "+919999999999"
+      user.phone || "+919999999999",
     );
 
     let fundAccount;
@@ -133,7 +139,7 @@ const savePaymentDetails = async (req, res) => {
         bankAccount,
         ifscCode,
         accountHolderName,
-        contact.id
+        contact.id,
       );
     }
 
@@ -277,7 +283,8 @@ const updatePaymentDetails = async (req, res) => {
     // Only admin (roleId: 3) and providers (roleId: 2) can update payment details
     if (userRoleId !== 3 && userRoleId !== 2) {
       return res.status(403).json({
-        message: "Access denied: Only admin and providers can update payment details",
+        message:
+          "Access denied: Only admin and providers can update payment details",
       });
     }
 
@@ -305,7 +312,9 @@ const updatePaymentDetails = async (req, res) => {
 
     // Validate based on payment type
     if (paymentType === "upi" && !upiId) {
-      return res.status(400).json({ message: "UPI ID is required for UPI type" });
+      return res
+        .status(400)
+        .json({ message: "UPI ID is required for UPI type" });
     }
     if (
       paymentType === "bank" &&
@@ -313,14 +322,17 @@ const updatePaymentDetails = async (req, res) => {
     ) {
       return res
         .status(400)
-        .json({ message: "Bank account, IFSC code, and account holder name are required for bank type" });
+        .json({
+          message:
+            "Bank account, IFSC code, and account holder name are required for bank type",
+        });
     }
 
     // Create Razorpay contact
     const contact = await createContact(
       user.name,
       user.email,
-      user.phone || "+919999999999"
+      user.phone || "+919999999999",
     );
 
     let fundAccount;
@@ -333,7 +345,7 @@ const updatePaymentDetails = async (req, res) => {
         bankAccount,
         ifscCode,
         accountHolderName,
-        contact.id
+        contact.id,
       );
     }
 
@@ -399,9 +411,7 @@ const deletePaymentDetails = async (req, res) => {
     }
 
     // Delete the payment detail
-    await db
-      .delete(paymentDetails)
-      .where(eq(paymentDetails.id, id));
+    await db.delete(paymentDetails).where(eq(paymentDetails.id, id));
 
     // Check if user still has payment details
     const [remaining] = await db
@@ -467,11 +477,19 @@ const getPlatformSettings = async (req, res) => {
   try {
     // Only admin (roleId: 3) can access settings
     if (req.token.roleId !== 3) {
-      return res.status(403).json({ message: "Access denied: Admin access required" });
+      return res
+        .status(403)
+        .json({ message: "Access denied: Admin access required" });
     }
 
-    const platformFeePercentage = await getAdminSetting("platform_fee_percentage", "5");
-    const minimumPayoutAmount = await getAdminSetting("minimum_payout_amount", "100000");
+    const platformFeePercentage = await getAdminSetting(
+      "platform_fee_percentage",
+      "5",
+    );
+    const minimumPayoutAmount = await getAdminSetting(
+      "minimum_payout_amount",
+      "100000",
+    );
 
     res.json({
       platformFeePercentage: Number(platformFeePercentage),
@@ -491,7 +509,9 @@ const updatePlatformSettings = async (req, res) => {
   try {
     // Only admin (roleId: 3) can update settings
     if (req.token.roleId !== 3) {
-      return res.status(403).json({ message: "Access denied: Admin access required" });
+      return res
+        .status(403)
+        .json({ message: "Access denied: Admin access required" });
     }
 
     const { platformFeePercentage, minimumPayoutAmount } = req.body;
@@ -501,15 +521,16 @@ const updatePlatformSettings = async (req, res) => {
       platformFeePercentage !== undefined &&
       (platformFeePercentage < 1 || platformFeePercentage > 50)
     ) {
-      return res.status(400).json({ message: "Platform fee must be between 1 and 50 percent" });
+      return res
+        .status(400)
+        .json({ message: "Platform fee must be between 1 and 50 percent" });
     }
 
     // Validate minimum payout amount (at least ₹100 = 10000 paise)
-    if (
-      minimumPayoutAmount !== undefined &&
-      minimumPayoutAmount < 10000
-    ) {
-      return res.status(400).json({ message: "Minimum payout must be at least ₹100" });
+    if (minimumPayoutAmount !== undefined && minimumPayoutAmount < 10000) {
+      return res
+        .status(400)
+        .json({ message: "Minimum payout must be at least ₹100" });
     }
 
     // Update settings if provided
@@ -517,7 +538,7 @@ const updatePlatformSettings = async (req, res) => {
       await setAdminSetting(
         "platform_fee_percentage",
         String(platformFeePercentage),
-        "Platform fee percentage charged on each booking"
+        "Platform fee percentage charged on each booking",
       );
     }
 
@@ -525,18 +546,20 @@ const updatePlatformSettings = async (req, res) => {
       await setAdminSetting(
         "minimum_payout_amount",
         String(minimumPayoutAmount),
-        "Minimum payout amount in paise"
+        "Minimum payout amount in paise",
       );
     }
 
     res.json({
       message: "Settings updated successfully",
-      platformFeePercentage: platformFeePercentage !== undefined
-        ? Number(platformFeePercentage)
-        : Number(await getAdminSetting("platform_fee_percentage", "5")),
-      minimumPayoutAmount: minimumPayoutAmount !== undefined
-        ? Number(minimumPayoutAmount)
-        : Number(await getAdminSetting("minimum_payout_amount", "100000")),
+      platformFeePercentage:
+        platformFeePercentage !== undefined
+          ? Number(platformFeePercentage)
+          : Number(await getAdminSetting("platform_fee_percentage", "5")),
+      minimumPayoutAmount:
+        minimumPayoutAmount !== undefined
+          ? Number(minimumPayoutAmount)
+          : Number(await getAdminSetting("minimum_payout_amount", "100000")),
     });
   } catch (error) {
     console.error("Error updating platform settings:", error);
@@ -552,7 +575,9 @@ const getRevenueStats = async (req, res) => {
   try {
     // Only admin (roleId: 3) can access revenue stats
     if (req.token.roleId !== 3) {
-      return res.status(403).json({ message: "Access denied: Admin access required" });
+      return res
+        .status(403)
+        .json({ message: "Access denied: Admin access required" });
     }
 
     const { startDate, endDate, groupBy } = req.query;
@@ -623,87 +648,107 @@ const getProviderRevenueStats = async (req, res) => {
       console.log("❌ Business profile not found for provider:", providerId);
       return res.status(404).json({
         message: "Business profile not found",
-        debug: { providerId, hint: "Your account may not be linked to a business profile" }
+        debug: {
+          providerId,
+          hint: "Your account may not be linked to a business profile",
+        },
       });
     }
     const business = businessList[0];
-    console.log("✅ Found business:", { id: business.id, name: business.businessName });
+    console.log("✅ Found business:", {
+      id: business.id,
+      name: business.businessName,
+    });
 
-    // Get ALL bookings for this provider's business (not just paid ones)
+    // Get ALL bookings for this provider's business
     const allBookings = await db
       .select()
       .from(bookings)
       .where(eq(bookings.businessProfileId, business.id));
 
-    console.log("🔍 Found bookings:", allBookings.length, "for business ID:", business.id);
-
     // Platform fee: 5%, Provider share: 95%
     const platformFeePercentage = 5;
-    const providerSharePercentage = 100 - platformFeePercentage; // 95%
+    const providerSharePercentage = 95;
 
-    // Filter out cancelled, rejected, and refunded bookings - they don't count toward earnings
-    const earningsBookings = allBookings.filter(b =>
-      b.status !== 'cancelled' && b.status !== 'rejected' && b.status !== 'refunded' && !b.isRefunded
+    // Filter out cancelled, rejected, and refunded bookings for base earnings
+    const earningsBookings = allBookings.filter(
+      (b) =>
+        b.status !== "cancelled" &&
+        b.status !== "rejected" &&
+        b.status !== "refunded" &&
+        !b.isRefunded,
     );
 
-    console.log("🔍 Earnings-eligible bookings:", earningsBookings.length, "out of", allBookings.length);
-
-    // Debug: Show each eligible booking
-    console.log("📋 Eligible bookings breakdown:");
-    earningsBookings.forEach((b, idx) => {
-      console.log(`  ${idx + 1}. Booking ID: ${b.id}, Price: ₹${b.totalPrice}, Status: ${b.status}`);
-    });
-
-    // Calculate provider's 95% share of ELIGIBLE bookings
-    // IMPORTANT: Calculate on TOTAL first, then round ONCE (not per booking)
-    // This avoids rounding errors: 4 × ₹237.50 = ₹950 (not 4 × ₹238 = ₹952)
-    const totalGross = earningsBookings.reduce((sum, booking) => sum + (booking.totalPrice || 0), 0);
-    const totalEarnings = Math.round(totalGross * providerSharePercentage / 100);
-
-    console.log("💰 Calculation: Total Gross = ₹" + totalGross + ", 95% = ₹" + totalEarnings);
-
-    // Count by status (from all bookings)
-    const totalBookings = allBookings.length;
-    const completedBookings = allBookings.filter(b => b.status === 'completed').length;
-    const pendingBookings = allBookings.filter(b => b.status === 'pending').length;
-    const confirmedBookings = allBookings.filter(b => b.status === 'confirmed').length;
-    const cancelledBookings = allBookings.filter(b => b.status === 'cancelled').length;
-    const rejectedBookings = allBookings.filter(b => b.status === 'rejected').length;
-    const refundedBookings = allBookings.filter(b => b.status === 'refunded' || b.isRefunded).length;
-
-    // For pending/paid payouts, we need to check actual payment records
-    const providerPayments = await db
+    // Fetch all successful payments for this business up front
+    // Use a unique name to avoid any TDZ/shadowing issues
+    const allPaidPayments = await db
       .select()
       .from(payments)
       .innerJoin(bookings, eq(payments.bookingId, bookings.id))
-      .where(eq(bookings.businessProfileId, business.id));
+      .where(
+        and(
+          eq(bookings.businessProfileId, business.id),
+          eq(payments.status, "paid")
+        )
+      );
 
-    // providerShare in payments table is stored in paise, convert to rupees (divide by 100)
-    const pendingPayouts = providerPayments.reduce((sum, p) => {
-      const payment = p.payments;
-      return payment.providerPayoutStatus === 'pending' ? sum + (Number(payment.providerShare) || 0) : sum;
-    }, 0) / 100; // Convert paise to rupees
-    const paidPayouts = providerPayments.reduce((sum, p) => {
-      const payment = p.payments;
-      return payment.providerPayoutStatus === 'paid' ? sum + (Number(payment.providerShare) || 0) : sum;
-    }, 0) / 100; // Convert paise to rupees
+    // Calculate base earnings from eligible bookings
+    const totalGross = earningsBookings.reduce(
+      (sum, booking) => sum + (booking.totalPrice || 0),
+      0,
+    );
+    const baseEarnings = Math.round((totalGross * providerSharePercentage) / 100);
 
-    const earningsData = {
-      totalEarnings,
-      pendingPayouts,
-      paidPayouts,
-      totalBookings,
-      completedBookings,
-      pendingBookings,
-      confirmedBookings,
-      cancelledBookings,
-      rejectedBookings,
-      refundedBookings,
+    // Calculate reschedule fees (100rs each)
+    const reschedulePayments = allPaidPayments.filter(p => p.payments.amount === 10000);
+    const totalRescheduleRevenue = reschedulePayments.length * 100;
+
+    const totalEarnings = baseEarnings + totalRescheduleRevenue;
+
+    console.log(
+      "💰 Calculation: Base Earned = ₹" +
+        baseEarnings +
+        ", Reschedule Fees = ₹" +
+        totalRescheduleRevenue +
+        ", Total = ₹" +
+        totalEarnings,
+    );
+
+    // Count by status (from all bookings)
+    const stats = {
+      totalBookings: allBookings.length,
+      completedBookings: allBookings.filter(b => b.status === "completed").length,
+      pendingBookings: allBookings.filter(b => b.status === "pending").length,
+      confirmedBookings: allBookings.filter(b => b.status === "confirmed").length,
+      cancelledBookings: allBookings.filter(b => b.status === "cancelled").length,
+      rejectedBookings: allBookings.filter(b => b.status === "rejected").length,
+      refundedBookings: allBookings.filter(b => b.status === "refunded" || b.isRefunded).length,
     };
 
-    console.log("📊 Provider earnings data:", earningsData);
+    // Calculate payout totals
+    const pendingPayouts = allPaidPayments.reduce((sum, p) => {
+      return p.payments.providerPayoutStatus === "pending"
+        ? sum + (Number(p.payments.providerShare) || 0)
+        : sum;
+    }, 0) / 100;
 
-    // Get monthly breakdown for the current year based on ELIGIBLE bookings (not cancelled/rejected/refunded)
+    const paidPayouts = allPaidPayments.reduce((sum, p) => {
+      return p.payments.providerPayoutStatus === "paid"
+        ? sum + (Number(p.payments.providerShare) || 0)
+        : sum;
+    }, 0) / 100;
+
+    const response = {
+      totalEarnings: Number(totalEarnings) || 0,
+      baseEarnings: Number(baseEarnings) || 0,
+      rescheduleRevenue: Number(totalRescheduleRevenue) || 0,
+      pendingPayouts: Number(pendingPayouts) || 0,
+      paidPayouts: Number(paidPayouts) || 0,
+      ...stats,
+      breakdown: [] // Will be populated if needed
+    };
+
+    // Monthly breakdown current year
     const currentYear = new Date().getFullYear();
     const monthlyBreakdown = await db
       .select({
@@ -712,33 +757,23 @@ const getProviderRevenueStats = async (req, res) => {
         bookings: sql`COUNT(*)`,
       })
       .from(bookings)
-      .where(eq(bookings.businessProfileId, business.id))
-      .where(sql`EXTRACT(YEAR FROM ${bookings.bookingDate}) = ${currentYear}`)
-      .where(sql`${bookings.status} NOT IN ('cancelled', 'rejected', 'refunded')`)
-      .where(sql`${bookings.isRefunded} = false`)
+      .where(
+        and(
+          eq(bookings.businessProfileId, business.id),
+          sql`EXTRACT(YEAR FROM ${bookings.bookingDate}) = ${currentYear}`,
+          sql`${bookings.status} NOT IN ('cancelled', 'rejected', 'refunded')`,
+          sql`${bookings.isRefunded} = false`
+        )
+      )
       .groupBy(sql`TO_CHAR(${bookings.bookingDate}, 'Mon')`)
       .orderBy(sql`TO_CHAR(${bookings.bookingDate}, 'Mon')`);
 
-    // Format the breakdown - calculate provider's 95% share
-    const breakdown = monthlyBreakdown.map((item) => ({
+    response.breakdown = monthlyBreakdown.map((item) => ({
       period: item.period,
-      earnings: Math.round((Number(item.totalRevenue) || 0) * providerSharePercentage / 100),
+      earnings: Math.round(((Number(item.totalRevenue) || 0) * providerSharePercentage) / 100),
       bookings: Number(item.bookings),
     }));
 
-    const response = {
-      totalEarnings: Number(earningsData.totalEarnings) || 0,
-      pendingPayouts: Number(earningsData.pendingPayouts) || 0,
-      paidPayouts: Number(earningsData.paidPayouts) || 0,
-      totalBookings: Number(earningsData.totalBookings) || 0,
-      completedBookings: Number(earningsData.completedBookings) || 0,
-      pendingBookings: Number(earningsData.pendingBookings) || 0,
-      confirmedBookings: Number(earningsData.confirmedBookings) || 0,
-      cancelledBookings: Number(earningsData.cancelledBookings) || 0,
-      rejectedBookings: Number(earningsData.rejectedBookings) || 0,
-      refundedBookings: Number(earningsData.refundedBookings) || 0,
-      breakdown,
-    };
     console.log("📊 Sending provider revenue response:", response);
     res.json(response);
   } catch (error) {

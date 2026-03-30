@@ -824,6 +824,15 @@ const acceptBooking = async (req, res) => {
     // 6. Send notification to customer
     await notificationTemplates.bookingConfirmed(bookingId);
 
+    // 7. Log history
+    await logBookingHistory(
+      bookingId,
+      "confirmed",
+      "Booking was confirmed by provider.",
+      "provider",
+      userId
+    );
+
     return res.status(200).json({
       message: "Booking accepted successfully",
       booking: updatedBooking,
@@ -943,6 +952,17 @@ const rejectBooking = async (req, res) => {
 
     // 7. Send notification to customer
     await notificationTemplates.bookingRejected(bookingId);
+
+    // 8. Log history
+    await logBookingHistory(
+      bookingId,
+      "rejected",
+      refundDetails 
+        ? `Booking was rejected by provider. Refund of ₹${refundDetails.refundAmount} initiated.`
+        : "Booking was rejected by provider.",
+      "provider",
+      userId
+    );
 
     return res.status(200).json({
       message: refundDetails
@@ -1250,6 +1270,15 @@ const requestReschedule = async (req, res) => {
     // Send notification to provider about reschedule request
     await notificationTemplates.rescheduleRequested(bookingId);
 
+    // Log history
+    await logBookingHistory(
+      bookingId,
+      "reschedule_pending",
+      `Reschedule requested by customer. Reason: ${reason || "No reason provided"}.`,
+      "customer",
+      userId
+    );
+
     return res.status(200).json({
       message:
         "Reschedule request submitted. Provider will review your request.",
@@ -1394,6 +1423,15 @@ const cancelRescheduleRequest = async (req, res) => {
         }
       }
     });
+
+    // Log history
+    await logBookingHistory(
+      bookingId,
+      "reschedule_cancelled",
+      "Customer cancelled the reschedule request. Original slot restored.",
+      "customer",
+      userId
+    );
 
     return res.status(200).json({
       message: refundDetails
@@ -1564,6 +1602,15 @@ const cancelBooking = async (req, res) => {
     // Send notification to provider about cancellation
     await notificationTemplates.bookingCancelled(bookingId);
 
+    // Send history log
+    await logBookingHistory(
+      bookingId,
+      "cancelled",
+      `Booking was cancelled by customer. Reason: ${reason || "Cancelled by customer"}.`,
+      "customer",
+      userId
+    );
+
     return res.status(200).json({
       message: refundDetails
         ? "Booking cancelled and refund initiated successfully"
@@ -1646,6 +1693,15 @@ const approveReschedule = async (req, res) => {
 
     // Send notification to customer about approved reschedule
     await notificationTemplates.rescheduleApproved(bookingId);
+
+    // Log history
+    await logBookingHistory(
+      bookingId,
+      "confirmed",
+      "Provider approved the reschedule request.",
+      "provider",
+      userId
+    );
 
     return res.status(200).json({
       message:
@@ -1783,6 +1839,15 @@ const declineReschedule = async (req, res) => {
 
     // Send notification to customer about declined reschedule
     await notificationTemplates.rescheduleDeclined(bookingId);
+
+    // Log history
+    await logBookingHistory(
+      bookingId,
+      "confirmed",
+      "Provider declined the reschedule request. Original time restored.",
+      "provider",
+      userId
+    );
 
     return res.status(200).json({
       message:
@@ -1956,6 +2021,15 @@ const rescheduleBooking = async (req, res) => {
       .where(eq(bookings.id, bookingId))
       .returning();
 
+    // Log history
+    await logBookingHistory(
+      bookingId,
+      "rescheduled",
+      "Booking was rescheduled by customer (legacy flow).",
+      "customer",
+      userId
+    );
+
     return res.status(200).json({
       message: "Booking rescheduled successfully",
       booking: updatedBooking,
@@ -2068,6 +2142,15 @@ const completeBooking = async (req, res) => {
 
     // Send notification to customer about booking completion
     await notificationTemplates.bookingCompleted(bookingId);
+
+    // 7. Log history
+    await logBookingHistory(
+      bookingId,
+      "completed",
+      "Booking was marked as completed by provider.",
+      "provider",
+      userId
+    );
 
     return res.status(200).json({
       message: "Booking completed successfully",
@@ -2398,7 +2481,7 @@ const initiateCompletion = async (req, res) => {
     if (completionNotes) updateData.completionNotes = completionNotes;
 
     await db.update(bookings).set(updateData).where(eq(bookings.id, bookingId));
-    await logBookingHistory(bookingId, "completed", "Booking was marked as completed.", "provider", userId);
+    await logBookingHistory(bookingId, "completion_initiated", "Provider initiated booking completion (OTP sent).", "provider", userId);
 
     // 6. Send OTP email to customer
     const customer = await db
@@ -2571,6 +2654,14 @@ const verifyCompletionOTP = async (req, res) => {
 
     // 8. Send notification to customer
     await notificationTemplates.bookingCompleted(bookingId);
+
+    // 9. Log history
+    await logBookingHistory(
+      bookingId,
+      "completed",
+      "Booking was successfully completed after OTP verification.",
+      "system"
+    );
 
     return res.status(200).json({
       message: "Booking completed successfully",
@@ -2769,7 +2860,6 @@ const uploadCompletionPhotos = async (req, res) => {
       .set(updateData)
       .where(eq(bookings.id, bookingId))
       .returning();
-    if (req.body.reason) { await logBookingHistory(bookingId, "reschedule_requested", `Reschedule requested.`, "customer", userId); }
 
     return res.status(200).json({
       message: "Photos uploaded successfully",

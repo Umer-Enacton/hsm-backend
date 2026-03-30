@@ -1,5 +1,13 @@
 const db = require("../config/db");
-const { payments, bookings, businessProfiles, services, Category, users } = require("../models/schema");
+const {
+  adminSettings,
+  payments,
+  bookings,
+  businessProfiles,
+  services,
+  Category,
+  users,
+} = require("../models/schema");
 const { eq, and, sql, desc, innerJoin, gte, lte } = require("drizzle-orm");
 
 /**
@@ -7,7 +15,6 @@ const { eq, and, sql, desc, innerJoin, gte, lte } = require("drizzle-orm");
  */
 async function getAdminSetting(key, defaultValue = "0") {
   try {
-    const { adminSettings } = require("../models/schema");
     const [setting] = await db
       .select()
       .from(adminSettings)
@@ -56,8 +63,8 @@ function getDateRange(period) {
  */
 function formatDateForGrouping(date, period) {
   const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const day = String(date.getDate()).padStart(2, '0');
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
 
   if (period === "7d" || period === "30d") {
     return `${year}-${month}-${day}`;
@@ -81,7 +88,9 @@ const getRevenueAnalytics = async (req, res) => {
     console.log("[Admin Analytics] Fetching revenue for period:", period);
 
     // Get platform fee percentage
-    const platformFeePercentage = Number(await getAdminSetting("platform_fee_percentage", "5"));
+    const platformFeePercentage = Number(
+      await getAdminSetting("platform_fee_percentage", "5"),
+    );
     const providerSharePercentage = 100 - platformFeePercentage;
 
     // Get first and last payment dates
@@ -99,7 +108,12 @@ const getRevenueAnalytics = async (req, res) => {
       .orderBy(desc(payments.createdAt))
       .limit(1);
 
-    console.log("[Admin Analytics] First payment:", firstPayment, "Last payment:", lastPayment);
+    console.log(
+      "[Admin Analytics] First payment:",
+      firstPayment,
+      "Last payment:",
+      lastPayment,
+    );
 
     // Adjust date range based on actual payment data AND booking data
     // This allows showing future booking dates in the chart (like provider does)
@@ -135,15 +149,16 @@ const getRevenueAnalytics = async (req, res) => {
 
     if (lastBooking && lastBooking.bookingDate) {
       // Parse booking date as string and compare
-      const lastBookingStr = lastBooking.bookingDate instanceof Date
-        ? lastBooking.bookingDate.toISOString().split("T")[0]
-        : String(lastBooking.bookingDate).split("T")[0];
+      const lastBookingStr =
+        lastBooking.bookingDate instanceof Date
+          ? lastBooking.bookingDate.toISOString().split("T")[0]
+          : String(lastBooking.bookingDate).split("T")[0];
       const todayStr = today.toISOString().split("T")[0];
 
       console.log("[Admin Analytics] Date comparison for chart end date:", {
         lastBookingStr,
         todayStr,
-        lastBookingIsAfter: lastBookingStr > todayStr
+        lastBookingIsAfter: lastBookingStr > todayStr,
       });
 
       // If last booking is in future, use that date
@@ -161,7 +176,7 @@ const getRevenueAnalytics = async (req, res) => {
     console.log("[Admin Analytics] Adjusted date range:", {
       period,
       start: effectiveStartDate.toISOString().split("T")[0],
-      end: effectiveEndDate.toISOString().split("T")[0]
+      end: effectiveEndDate.toISOString().split("T")[0],
     });
 
     // Get all paid payments - join with bookings to get booking dates
@@ -191,15 +206,16 @@ const getRevenueAnalytics = async (req, res) => {
           eq(payments.status, "paid"),
           gte(bookings.bookingDate, startOfDay),
           lte(bookings.bookingDate, endOfDay),
-          // Exclude refunded/cancelled/rejected bookings - they shouldn't count toward platform fees
-          sql`(${bookings.status} NOT IN ('cancelled', 'rejected', 'refunded') AND ${bookings.isRefunded} = false)`
-        )
+          // Include all bookings that have a SUCCESSFUL payment
+          // This ensures cancelled bookings with PAID reschedule fees are counted
+          sql`(${payments.status} = 'paid')`,
+        ),
       )
       .orderBy(bookings.bookingDate);
 
     console.log("[Admin Analytics] Date filter (by booking date):", {
       start: startOfDay.toISOString(),
-      end: endOfDay.toISOString()
+      end: endOfDay.toISOString(),
     });
     console.log("[Admin Analytics] Found payments:", allPayments.length);
 
@@ -210,7 +226,12 @@ const getRevenueAnalytics = async (req, res) => {
     // Initialize all date keys (use effectiveEndDate to include future booking dates)
     while (currentDate <= effectiveEndDate) {
       const key = formatDateForGrouping(new Date(currentDate), period);
-      groupedData.set(key, { date: key, bookings: 0, revenue: 0, completed: 0 });
+      groupedData.set(key, {
+        date: key,
+        bookings: 0,
+        revenue: 0,
+        completed: 0,
+      });
 
       if (period === "7d" || period === "30d") {
         currentDate.setDate(currentDate.getDate() + 1);
@@ -227,14 +248,31 @@ const getRevenueAnalytics = async (req, res) => {
         const key = formatDateForGrouping(bookingDate, period);
         if (groupedData.has(key)) {
           const existing = groupedData.get(key);
-          existing.bookings += 1;
+          
+          // Only increment booking count if it's not a duplicate for the same booking in the same group?
+          // Actually, allPayments might have multiple entries for one booking (original + reschedule).
+          // But our query already joins payments and bookings.
+          // Let's use a Set to track unique bookings per group for the count.
+          if (!existing.uniqueBookings) existing.uniqueBookings = new Set();
+          existing.uniqueBookings.add(item.bookingId);
+          existing.bookings = existing.uniqueBookings.size;
 
-          // Use stored platform fee, or calculate if not available
-          if (item.platformFee) {
-            existing.revenue += Number(item.platformFee) / 100; // Convert paise to rupees
-          } else {
-            const fee = Math.round((Number(item.amount) || 0) * platformFeePercentage / 100);
-            existing.revenue += fee / 100;
+          // Only add revenue if the booking is NOT cancelled/rejected/refunded
+          // This keeps the "Revenue" (Platform Fees) correct: it should NOT include fees from cancelled bookings
+          // EXCEPT if we wanted to keep the platform fee for cancellations, but the user said they don't want reschedule fee there.
+          const isEligibleForPlatformFee = 
+            item.bookingStatus !== 'cancelled' && 
+            item.bookingStatus !== 'rejected' && 
+            item.bookingStatus !== 'refunded' && 
+            item.isRefunded === false;
+
+          if (isEligibleForPlatformFee) {
+            if (item.platformFee) {
+              existing.revenue += Number(item.platformFee) / 100;
+            } else {
+              const fee = Math.round(((Number(item.amount) || 0) * platformFeePercentage) / 100);
+              existing.revenue += fee / 100;
+            }
           }
         }
       } catch (e) {
@@ -256,19 +294,41 @@ const getRevenueAnalytics = async (req, res) => {
     });
 
     // Calculate totals
-    const totalBookings = allPayments.length;
-    const totalRevenue = allPayments.reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
-    const totalPlatformFees = allPayments.reduce((sum, item) => {
+    const uniqueBookingIds = new Set(allPayments.map(p => p.bookingId));
+    const totalBookings = uniqueBookingIds.size;
+
+    // Filter payments for total revenue and platform fee calculations
+    // Exclude those originally rejected/cancelled unless it's a reschedule fee? 
+    // Actually, user said platform fee should NOT include reschedule fee.
+    // And platform fee typically comes from regular bookings.
+    const eligiblePayments = allPayments.filter(item => 
+      item.bookingStatus !== 'cancelled' && 
+      item.bookingStatus !== 'rejected' && 
+      item.bookingStatus !== 'refunded' && 
+      item.isRefunded === false
+    );
+
+    const totalRevenue = eligiblePayments.reduce(
+      (sum, item) => sum + (Number(item.amount) || 0),
+      0,
+    );
+    const totalPlatformFees = eligiblePayments.reduce((sum, item) => {
       if (item.platformFee) {
         return sum + Number(item.platformFee);
       }
-      return sum + Math.round((Number(item.amount) || 0) * platformFeePercentage / 100);
+      return (
+        sum +
+        Math.round(((Number(item.amount) || 0) * platformFeePercentage) / 100)
+      );
     }, 0);
-    const totalProviderPayouts = allPayments.reduce((sum, item) => {
+    const totalProviderPayouts = eligiblePayments.reduce((sum, item) => {
       if (item.providerShare) {
         return sum + Number(item.providerShare);
       }
-      return sum + Math.round((Number(item.amount) || 0) * providerSharePercentage / 100);
+      return (
+        sum +
+        Math.round(((Number(item.amount) || 0) * providerSharePercentage) / 100)
+      );
     }, 0);
 
     res.json({
@@ -303,7 +363,9 @@ const getCategoryAnalytics = async (req, res) => {
     const { period = "30d" } = req.query;
     const { startDate, endDate } = getDateRange(period);
 
-    const platformFeePercentage = Number(await getAdminSetting("platform_fee_percentage", "5"));
+    const platformFeePercentage = Number(
+      await getAdminSetting("platform_fee_percentage", "5"),
+    );
 
     // Get first and last payment dates
     const [firstPayment] = await db
@@ -353,20 +415,25 @@ const getCategoryAnalytics = async (req, res) => {
         amount: payments.amount,
         platformFee: payments.platformFee,
         bookingDate: bookings.bookingDate,
+        bookingStatus: bookings.status,
+        isRefunded: bookings.isRefunded,
       })
       .from(payments)
       .innerJoin(bookings, eq(payments.bookingId, bookings.id))
       .innerJoin(services, eq(bookings.serviceId, services.id))
-      .innerJoin(businessProfiles, eq(services.businessProfileId, businessProfiles.id))
+      .innerJoin(
+        businessProfiles,
+        eq(services.businessProfileId, businessProfiles.id),
+      )
       .innerJoin(Category, eq(businessProfiles.categoryId, Category.id))
       .where(
         and(
           eq(payments.status, "paid"),
           gte(bookings.bookingDate, startOfDay),
           lte(bookings.bookingDate, endOfDay),
-          // Exclude refunded/cancelled/rejected bookings
-          sql`(${bookings.status} NOT IN ('cancelled', 'rejected', 'refunded') AND ${bookings.isRefunded} = false)`
-        )
+          // Include all bookings with a paid payment
+          sql`${payments.status} = 'paid'`,
+        ),
       )
       .orderBy(bookings.bookingDate);
 
@@ -397,15 +464,35 @@ const getCategoryAnalytics = async (req, res) => {
       }
 
       const category = categoryMap.get(item.categoryId);
-      category.bookingCount += 1;
-      const amount = Number(item.amount) || 0;
-      category.totalRevenue += amount;
 
-      // Use stored platform fee or calculate
-      if (item.platformFee) {
-        category.platformFees += Number(item.platformFee);
-      } else {
-        category.platformFees += Math.round(amount * platformFeePercentage / 100);
+      const amount = Number(item.amount) || 0;
+      
+      // Only count revenue/fees for non-cancelled bookings
+      // (Unless it's a reschedule fee, but user said those shouldn't be in platform fees)
+      // Since it's Category Analytics, we want to know how much the CATEGORY earned for admin
+      const isEligible = 
+        item.bookingStatus !== 'cancelled' && 
+        item.bookingStatus !== 'rejected' && 
+        item.bookingStatus !== 'refunded' && 
+        item.isRefunded === false;
+
+      if (isEligible) {
+        category.totalRevenue += amount;
+
+        // Use stored platform fee or calculate
+        if (item.platformFee) {
+          category.platformFees += Number(item.platformFee);
+        } else {
+          category.platformFees += (amount * platformFeePercentage) / 100;
+        }
+      }
+      
+      // Always count the booking if it had a paid payment (like reschedule)
+      // Wait, we need to track unique bookings to avoid double counting if multiple payments exist
+      if (!category.uniqueBookingIds) category.uniqueBookingIds = new Set();
+      if (!category.uniqueBookingIds.has(item.bookingId)) {
+        category.bookingCount += 1;
+        category.uniqueBookingIds.add(item.bookingId);
       }
     });
 
@@ -420,14 +507,22 @@ const getCategoryAnalytics = async (req, res) => {
     categoriesList.sort((a, b) => b.platformFees - a.platformFees);
 
     const totalBookings = allPayments.length;
-    const totalRevenue = allPayments.reduce((sum, item) => sum + (Number(item.amount) || 0), 0) / 100;
-    const totalPlatformFees = categoriesList.reduce((sum, cat) => sum + cat.platformFees, 0);
+    const totalRevenue =
+      allPayments.reduce((sum, item) => sum + (Number(item.amount) || 0), 0) /
+      100;
+    const totalPlatformFees = categoriesList.reduce(
+      (sum, cat) => sum + cat.platformFees,
+      0,
+    );
 
     res.json({
       period,
       categories: categoriesList.map((c) => ({
         ...c,
-        percentage: totalPlatformFees > 0 ? ((c.platformFees / totalPlatformFees) * 100).toFixed(1) : "0",
+        percentage:
+          totalPlatformFees > 0
+            ? ((c.platformFees / totalPlatformFees) * 100).toFixed(1)
+            : "0",
       })),
       totalBookings,
       totalRevenue,
@@ -452,7 +547,9 @@ const getStatusAnalytics = async (req, res) => {
     const { period = "30d" } = req.query;
     const { startDate, endDate } = getDateRange(period);
 
-    const platformFeePercentage = Number(await getAdminSetting("platform_fee_percentage", "5"));
+    const platformFeePercentage = Number(
+      await getAdminSetting("platform_fee_percentage", "5"),
+    );
 
     // Get first and last payment dates
     const [firstPayment] = await db
@@ -507,8 +604,8 @@ const getStatusAnalytics = async (req, res) => {
         and(
           eq(payments.status, "paid"),
           gte(payments.createdAt, startOfDay),
-          lte(payments.createdAt, endOfDay)
-        )
+          lte(payments.createdAt, endOfDay),
+        ),
       );
 
     if (allBookings.length === 0) {
@@ -522,28 +619,53 @@ const getStatusAnalytics = async (req, res) => {
 
     // Group by status
     const statusMap = new Map();
+    const uniqueBookingsPerStatus = new Map(); // status -> Set(bookingId)
 
     allBookings.forEach((item) => {
       const status = item.status || "unknown";
       const isRefunded = item.isRefunded || false;
-      // Treat refunded bookings as 'refunded' status for proper display
-      const effectiveStatus = isRefunded ? 'refunded' : status;
+
+      // Skip refunded bookings from the status breakdown as requested
+      if (isRefunded || status === 'refunded') return;
+
+      const effectiveStatus = status;
+      const bookingId = item.id;
 
       if (!statusMap.has(effectiveStatus)) {
-        statusMap.set(effectiveStatus, { count: 0, revenue: 0, platformFees: 0 });
+        statusMap.set(effectiveStatus, {
+          count: 0,
+          revenue: 0,
+          platformFees: 0,
+        });
+        uniqueBookingsPerStatus.set(effectiveStatus, new Set());
       }
+      
       const s = statusMap.get(effectiveStatus);
-      s.count += 1;
+      const uniqueSet = uniqueBookingsPerStatus.get(effectiveStatus);
+
+      // Only increment count for unique bookings
+      if (!uniqueSet.has(bookingId)) {
+        s.count += 1;
+        uniqueSet.add(bookingId);
+      }
+
       const amount = Number(item.amount) || 0;
       s.revenue += amount;
 
       // Only add platform fees for bookings that are NOT cancelled/rejected/refunded
-      // For those statuses, platform fees were refunded to customer
-      if (status !== 'cancelled' && status !== 'rejected' && status !== 'refunded' && !isRefunded) {
+      if (
+        status !== "cancelled" &&
+        status !== "rejected" &&
+        status !== "refunded" &&
+        !isRefunded
+      ) {
         if (item.platformFee) {
           s.platformFees += Number(item.platformFee);
         } else {
-          s.platformFees += Math.round(amount * platformFeePercentage / 100);
+          // If it's a reschedule fee (amount 10000), platform fee is 0
+          if (amount !== 10000) {
+            s.platformFees += (amount * platformFeePercentage) / 100;
+          }
         }
       }
     });
@@ -560,30 +682,37 @@ const getStatusAnalytics = async (req, res) => {
     };
 
     const totalBookings = allBookings.length;
-    const statusBreakdown = Array.from(statusMap.entries()).map(([status, data]) => ({
-      status,
-      count: data.count,
-      revenue: data.revenue / 100, // Convert to rupees
-      platformFees: data.platformFees / 100, // Convert to rupees
-      percentage: totalBookings > 0 ? ((data.count / totalBookings) * 100).toFixed(1) : "0",
-      fill: statusColors[status] || statusColors.unknown,
-    }));
+    const statusBreakdown = Array.from(statusMap.entries()).map(
+      ([status, data]) => ({
+        status,
+        count: data.count,
+        revenue: data.revenue / 100, // Convert to rupees
+        platformFees: data.platformFees / 100, // Convert to rupees
+        percentage:
+          totalBookings > 0
+            ? ((data.count / totalBookings) * 100).toFixed(1)
+            : "0",
+        fill: statusColors[status] || statusColors.unknown,
+      }),
+    );
 
     // Sort by count descending
     statusBreakdown.sort((a, b) => b.count - a.count);
 
-    const totalPlatformFees = allBookings.reduce((sum, item) => {
-      if (item.platformFee) {
-        return sum + Number(item.platformFee);
-      }
-      return sum + Math.round((Number(item.amount) || 0) * platformFeePercentage / 100);
-    }, 0) / 100;
+    const totalPlatformFees = Array.from(statusMap.values()).reduce(
+      (sum, data) => sum + data.platformFees,
+      0,
+    ) / 100;
 
+    const totalRevenue = Array.from(statusMap.values()).reduce(
+      (sum, data) => sum + data.revenue,
+      0,
+    ) / 100;
     res.json({
       period,
       totalBookings,
       statusBreakdown,
-      totalRevenue: allBookings.reduce((sum, item) => sum + (Number(item.amount) || 0), 0) / 100,
+      totalRevenue,
       totalPlatformFees,
     });
   } catch (error) {
@@ -605,7 +734,9 @@ const getTopProvidersAnalytics = async (req, res) => {
     const { period = "30d" } = req.query;
     const { startDate, endDate } = getDateRange(period);
 
-    const platformFeePercentage = Number(await getAdminSetting("platform_fee_percentage", "5"));
+    const platformFeePercentage = Number(
+      await getAdminSetting("platform_fee_percentage", "5"),
+    );
 
     // Get first and last payment dates
     const [firstPayment] = await db
@@ -656,7 +787,10 @@ const getTopProvidersAnalytics = async (req, res) => {
       })
       .from(payments)
       .innerJoin(bookings, eq(payments.bookingId, bookings.id))
-      .innerJoin(businessProfiles, eq(bookings.businessProfileId, businessProfiles.id))
+      .innerJoin(
+        businessProfiles,
+        eq(bookings.businessProfileId, businessProfiles.id),
+      )
       .innerJoin(users, eq(businessProfiles.providerId, users.id))
       .where(
         and(
@@ -664,8 +798,8 @@ const getTopProvidersAnalytics = async (req, res) => {
           gte(payments.createdAt, startOfDay),
           lte(payments.createdAt, endOfDay),
           // Exclude refunded/cancelled/rejected bookings
-          sql`(${bookings.status} NOT IN ('cancelled', 'rejected', 'refunded') AND ${bookings.isRefunded} = false)`
-        )
+          sql`(${bookings.status} NOT IN ('cancelled', 'rejected', 'refunded') AND ${bookings.isRefunded} = false)`,
+        ),
       );
 
     if (allPayments.length === 0) {
@@ -703,7 +837,7 @@ const getTopProvidersAnalytics = async (req, res) => {
       if (item.platformFee) {
         provider.platformFees += Number(item.platformFee);
       } else {
-        provider.platformFees += Math.round(amount * platformFeePercentage / 100);
+        provider.platformFees += (amount * platformFeePercentage) / 100;
       }
     });
 
@@ -718,13 +852,19 @@ const getTopProvidersAnalytics = async (req, res) => {
       .slice(0, 10); // Top 10 providers
 
     const totalBookings = allPayments.length;
-    const totalPlatformFees = providersList.reduce((sum, p) => sum + p.platformFees, 0);
+    const totalPlatformFees = providersList.reduce(
+      (sum, p) => sum + p.platformFees,
+      0,
+    );
 
     res.json({
       period,
       providers: providersList.map((p) => ({
         ...p,
-        percentage: totalPlatformFees > 0 ? ((p.platformFees / totalPlatformFees) * 100).toFixed(1) : "0",
+        percentage:
+          totalPlatformFees > 0
+            ? ((p.platformFees / totalPlatformFees) * 100).toFixed(1)
+            : "0",
       })),
       totalBookings,
       totalPlatformFees,
@@ -748,7 +888,9 @@ const getPaymentStatusAnalytics = async (req, res) => {
     const { period = "30d" } = req.query;
     const { startDate, endDate } = getDateRange(period);
 
-    const platformFeePercentage = Number(await getAdminSetting("platform_fee_percentage", "5"));
+    const platformFeePercentage = Number(
+      await getAdminSetting("platform_fee_percentage", "5"),
+    );
 
     // Get first and last payment dates
     const [firstPayment] = await db
@@ -798,8 +940,8 @@ const getPaymentStatusAnalytics = async (req, res) => {
       .where(
         and(
           gte(payments.createdAt, startOfDay),
-          lte(payments.createdAt, endOfDay)
-        )
+          lte(payments.createdAt, endOfDay),
+        ),
       );
 
     if (allPayments.length === 0) {
@@ -829,7 +971,7 @@ const getPaymentStatusAnalytics = async (req, res) => {
       if (item.platformFee) {
         s.platformFees += Number(item.platformFee);
       } else {
-        s.platformFees += Math.round(amount * platformFeePercentage / 100);
+        s.platformFees += Math.round((amount * platformFeePercentage) / 100);
       }
     });
 
@@ -852,27 +994,46 @@ const getPaymentStatusAnalytics = async (req, res) => {
     };
 
     const totalPayments = allPayments.length;
-    const statusBreakdown = Array.from(statusMap.entries()).map(([status, data]) => ({
-      status,
-      statusLabel: statusLabels[status] || status,
-      count: data.count,
-      amount: data.amount / 100, // Convert paise to rupees
-      platformFees: data.platformFees / 100, // Convert to rupees
-      percentage: totalPayments > 0 ? ((data.count / totalPayments) * 100).toFixed(1) : "0",
-      fill: statusColors[status] || statusColors.unknown,
-    }));
+    const statusBreakdown = Array.from(statusMap.entries()).map(
+      ([status, data]) => ({
+        status,
+        statusLabel: statusLabels[status] || status,
+        count: data.count,
+        amount: data.amount / 100, // Convert paise to rupees
+        platformFees: data.platformFees / 100, // Convert to rupees
+        percentage:
+          totalPayments > 0
+            ? ((data.count / totalPayments) * 100).toFixed(1)
+            : "0",
+        fill: statusColors[status] || statusColors.unknown,
+      }),
+    );
 
     // Sort: paid first, then pending, then failed, then refunded
-    const sortOrder = { paid: 1, pending: 2, failed: 3, refunded: 4, unknown: 5 };
-    statusBreakdown.sort((a, b) => (sortOrder[a.status] || 99) - (sortOrder[b.status] || 99));
+    const sortOrder = {
+      paid: 1,
+      pending: 2,
+      failed: 3,
+      refunded: 4,
+      unknown: 5,
+    };
+    statusBreakdown.sort(
+      (a, b) => (sortOrder[a.status] || 99) - (sortOrder[b.status] || 99),
+    );
 
-    const totalAmount = allPayments.reduce((sum, item) => sum + (Number(item.amount) || 0), 0) / 100;
-    const totalPlatformFees = allPayments.reduce((sum, item) => {
-      if (item.platformFee) {
-        return sum + Number(item.platformFee);
-      }
-      return sum + Math.round((Number(item.amount) || 0) * platformFeePercentage / 100);
-    }, 0) / 100;
+    const totalAmount =
+      allPayments.reduce((sum, item) => sum + (Number(item.amount) || 0), 0) /
+      100;
+    const totalPlatformFees =
+      allPayments.reduce((sum, item) => {
+        if (item.platformFee) {
+          return sum + Number(item.platformFee);
+        }
+        return (
+          sum +
+          Math.round(((Number(item.amount) || 0) * platformFeePercentage) / 100)
+        );
+      }, 0) / 100;
 
     res.json({
       period,
@@ -903,7 +1064,7 @@ const getAverageOrderValueAnalytics = async (req, res) => {
     console.log("[Admin AOV] Fetching average order value for period:", period);
     console.log("[Admin AOV] Date range:", {
       startDate: startDate.toISOString(),
-      endDate: endDate.toISOString()
+      endDate: endDate.toISOString(),
     });
 
     // Get first and last payment dates
@@ -958,8 +1119,8 @@ const getAverageOrderValueAnalytics = async (req, res) => {
           gte(bookings.bookingDate, startOfDay),
           lte(bookings.bookingDate, endOfDay),
           // Exclude refunded/cancelled/rejected bookings
-          sql`(${bookings.status} NOT IN ('cancelled', 'rejected', 'refunded') AND ${bookings.isRefunded} = false)`
-        )
+          sql`(${bookings.status} NOT IN ('cancelled', 'rejected', 'refunded') AND ${bookings.isRefunded} = false)`,
+        ),
       )
       .orderBy(bookings.bookingDate);
 
@@ -1006,14 +1167,21 @@ const getAverageOrderValueAnalytics = async (req, res) => {
     // Calculate average order value for each period
     const chartData = Array.from(groupedData.values()).map((item) => ({
       date: item.date,
-      avgOrderValue: item.bookingCount > 0 ? (item.totalAmount / item.bookingCount) / 100 : 0, // Convert paise to rupees
+      avgOrderValue:
+        item.bookingCount > 0 ? item.totalAmount / item.bookingCount / 100 : 0, // Convert paise to rupees
       bookingCount: item.bookingCount,
     }));
 
     // Calculate overall average
-    const overallAvg = allPayments.length > 0
-      ? (allPayments.reduce((sum, item) => sum + (Number(item.amount) || 0), 0) / allPayments.length) / 100
-      : 0;
+    const overallAvg =
+      allPayments.length > 0
+        ? allPayments.reduce(
+            (sum, item) => sum + (Number(item.amount) || 0),
+            0,
+          ) /
+          allPayments.length /
+          100
+        : 0;
 
     console.log("[Admin AOV] Results:", {
       period,
