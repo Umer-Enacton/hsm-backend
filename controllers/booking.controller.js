@@ -21,6 +21,7 @@ const {
   ne,
   inArray,
 } = require("drizzle-orm");
+const { logBookingHistory } = require("../utils/historyHelper");
 const {
   initiateRefund,
   paiseToRupees,
@@ -646,6 +647,15 @@ const addBooking = async (req, res) => {
       .returning();
 
     console.log("🔔 Booking created successfully, ID:", newBooking.id);
+
+    // Log history
+    await logBookingHistory(
+      newBooking.id,
+      "booked",
+      "Booking was created successfully.",
+      "customer",
+      userId
+    );
 
     // Send notification to provider about new booking
     console.log("🔔 Creating notification for new booking:", newBooking.id);
@@ -2388,6 +2398,7 @@ const initiateCompletion = async (req, res) => {
     if (completionNotes) updateData.completionNotes = completionNotes;
 
     await db.update(bookings).set(updateData).where(eq(bookings.id, bookingId));
+    await logBookingHistory(bookingId, "completed", "Booking was marked as completed.", "provider", userId);
 
     // 6. Send OTP email to customer
     const customer = await db
@@ -2734,6 +2745,8 @@ const uploadCompletionPhotos = async (req, res) => {
         eq(bookings.businessProfileId, businessProfiles.id),
       )
       .where(eq(bookings.id, bookingId));
+    await logBookingHistory(bookingId, "reschedule_rejected", "Provider rejected the requested reschedule.", "provider", userId);
+    await logBookingHistory(bookingId, "reschedule_accepted", "Provider accepted the requested reschedule.", "provider", userId);
 
     if (!booking) {
       return res.status(404).json({ message: "Booking not found" });
@@ -2756,6 +2769,7 @@ const uploadCompletionPhotos = async (req, res) => {
       .set(updateData)
       .where(eq(bookings.id, bookingId))
       .returning();
+    if (req.body.reason) { await logBookingHistory(bookingId, "reschedule_requested", `Reschedule requested.`, "customer", userId); }
 
     return res.status(200).json({
       message: "Photos uploaded successfully",
@@ -2771,6 +2785,22 @@ const uploadCompletionPhotos = async (req, res) => {
   }
 };
 
+const { bookingHistory } = require("../models/schema");
+
+const getBookingHistory = async (req, res) => {
+  try {
+    const bookingId = Number(req.params.id);
+    const userId = req.token.id;
+    if (!bookingId) return res.status(400).json({ message: "Booking ID is required" });
+    const [booking] = await db.select({ booking: bookings, business: businessProfiles }).from(bookings).leftJoin(businessProfiles, eq(bookings.businessProfileId, businessProfiles.id)).where(eq(bookings.id, bookingId));
+    if (!booking) return res.status(404).json({ message: "Booking not found" });
+    if (booking.booking.customerId !== userId && (!booking.business || booking.business.providerId !== userId) && req.token.roleId !== 3) return res.status(403).json({ message: "Not authorized" });
+    const history = await db.select().from(bookingHistory).where(eq(bookingHistory.bookingId, bookingId)).orderBy(bookingHistory.createdAt);
+    return res.status(200).json({ history });
+  } catch (error) {
+    return res.status(500).json({ message: "Server error", error: error.message });
+  }
+};
 module.exports = {
   getBookingById,
   getCustomerBookings,
@@ -2794,4 +2824,7 @@ module.exports = {
   verifyCompletionOTP,
   resendCompletionOTP,
   uploadCompletionPhotos,
+  getBookingHistory,
 };
+
+

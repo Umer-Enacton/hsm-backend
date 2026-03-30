@@ -214,6 +214,19 @@ const bookings = pgTable("bookings", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
+const bookingHistory = pgTable("booking_history", {
+  id: serial("id").primaryKey(),
+  bookingId: integer("booking_id")
+    .notNull()
+    .references(() => bookings.id, { onDelete: "cascade" }),
+  action: varchar("action", { length: 100 }).notNull(),
+  message: varchar("message", { length: 1000 }).notNull(),
+  actor: varchar("actor", { length: 50 }), // 'customer', 'provider', 'system'
+  actorId: integer("actor_id").references(() => users.id, { onDelete: "set null" }),
+  historyData: text("history_data"), // JSON string for extra info
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
 const payments = pgTable("payments", {
   id: serial("id").primaryKey(),
   bookingId: integer("booking_id")
@@ -378,6 +391,7 @@ module.exports = {
   services,
   slots,
   bookings,
+  bookingHistory,
   payments,
   paymentIntents,
   feedback,

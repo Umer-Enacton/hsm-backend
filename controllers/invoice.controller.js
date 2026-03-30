@@ -559,14 +559,37 @@ const generateInvoice = async (req, res) => {
 
     // PAID Badge — right-aligned below "Issued" date
     const badgeY = currentY + 62;
-    const badgeWidth = 55;
+    const badgeWidth = 70;
     const badgeHeight = 20;
     const badgeX = pageWidth - marginRight - badgeWidth; // flush right
+    
+    let badgeBgColor = "#bbf7d0";
+    let badgeBorderColor = "#15803d";
+    let badgeTextColor = "#15803d";
+    let badgeText = "PAID";
+
+    if (booking.status === "cancelled") {
+      badgeBgColor = "#fee2e2";
+      badgeBorderColor = "#b91c1c";
+      badgeTextColor = "#b91c1c";
+      badgeText = "CANCELLED";
+    } else if (booking.status === "rejected") {
+      badgeBgColor = "#fee2e2";
+      badgeBorderColor = "#b91c1c";
+      badgeTextColor = "#b91c1c";
+      badgeText = "REJECTED";
+    } else if (booking.isRefunded) {
+      badgeBgColor = "#f1f5f9";
+      badgeBorderColor = "#334155";
+      badgeTextColor = "#334155";
+      badgeText = "REFUNDED";
+    }
+
     doc
       .roundedRect(badgeX, badgeY, badgeWidth, badgeHeight, 3)
-      .fillAndStroke("#bbf7d0", "#15803d");
-    doc.fontSize(10).fillColor("#15803d").font("Helvetica-Bold");
-    doc.text("PAID", badgeX, badgeY + 6, {
+      .fillAndStroke(badgeBgColor, badgeBorderColor);
+    doc.fontSize(9).fillColor(badgeTextColor).font("Helvetica-Bold");
+    doc.text(badgeText, badgeX, badgeY + 6, {
       width: badgeWidth,
       align: "center",
     });
@@ -736,10 +759,27 @@ const generateInvoice = async (req, res) => {
 
     // Notes (Left)
     // Totals Box
-    const totalsBoxWidth = 170;
+    const totalsBoxWidth = 175;
     const totalsBoxX = pageWidth - marginRight - totalsBoxWidth;
-    const totalsBoxHeight = booking.rescheduleOutcome ? 145 : 115; // Extra height for reschedule fee
-    const totalsPadding = 20;
+    
+    let extraHeight = 0;
+    if (booking.rescheduleOutcome) extraHeight += 30;
+    let willShowCancel = false;
+    let willShowRefund = false;
+    let displayRefund = 0;
+    const servicePrice = service?.price || booking.totalPrice;
+
+    if ((booking.status === 'cancelled' || booking.status === 'rejected') && booking.isRefunded) {
+      let rawRefund = booking.refundAmount || servicePrice;
+      displayRefund = rawRefund > servicePrice * 10 ? Math.round(rawRefund / 100) : rawRefund;
+      if (servicePrice - displayRefund > 0) willShowCancel = true;
+      willShowRefund = true;
+      if (willShowCancel) extraHeight += 22;
+      if (willShowRefund) extraHeight += 22;
+    }
+
+    const totalsBoxHeight = 115 + extraHeight;
+    const totalsPadding = 15; // tweaked padding to fit text
     const totalsInnerWidth = totalsBoxWidth - totalsPadding * 2;
 
     doc
@@ -749,7 +789,6 @@ const generateInvoice = async (req, res) => {
     let totalsY = currentY + 8;
 
     // Service Charge
-    const servicePrice = service?.price || booking.totalPrice;
     doc.fontSize(10).fillColor("#64748b").font("Helvetica");
     doc.text("Service Charge", totalsBoxX + totalsPadding, totalsY, {
       width: totalsInnerWidth,
@@ -763,6 +802,42 @@ const generateInvoice = async (req, res) => {
     );
 
     totalsY += 22;
+
+    // Cancellation & Refund Logic
+    if (willShowRefund) {
+      const cancelCharge = servicePrice - displayRefund;
+
+      if (willShowCancel) {
+        // Cancel Charge
+        doc.fontSize(10).fillColor("#dc2626"); // Red
+        doc.text("Cancel Charge", totalsBoxX + totalsPadding, totalsY, {
+          width: totalsInnerWidth,
+          align: "left",
+        });
+        doc.text(
+          formatCurrency(cancelCharge),
+          totalsBoxX + totalsPadding,
+          totalsY,
+          { width: totalsInnerWidth, align: "right" },
+        );
+        totalsY += 22;
+      }
+
+      // Amount Refunded
+      doc.fontSize(10).fillColor("#16a34a"); // Green
+      doc.text("Refunded", totalsBoxX + totalsPadding, totalsY, {
+        width: totalsInnerWidth,
+        align: "left",
+      });
+      doc.text(
+        `-${formatCurrency(displayRefund)}`,
+        totalsBoxX + totalsPadding,
+        totalsY,
+        { width: totalsInnerWidth, align: "right" },
+      );
+      doc.fontSize(10).fillColor("#64748b"); // Reset
+      totalsY += 22;
+    }
 
     // Reschedule Fee (if applicable)
     let rescheduleFeeAmount = 0;
@@ -799,7 +874,7 @@ const generateInvoice = async (req, res) => {
       totalsY += 22;
 
       // Show the refund
-      doc.fontSize(9).fillColor("#16a34a"); // Green for refund
+      doc.fontSize(10).fillColor("#16a34a"); // Green for refund
       doc.text("Refund", totalsBoxX + totalsPadding, totalsY, {
         width: totalsInnerWidth,
         align: "left",
@@ -819,7 +894,7 @@ const generateInvoice = async (req, res) => {
       width: totalsInnerWidth,
       align: "left",
     });
-    doc.fontSize(8).fillColor("#cbd5e1");
+    doc.fontSize(9).fillColor("#cbd5e1");
     doc.text("Included", totalsBoxX + totalsPadding, totalsY, {
       width: totalsInnerWidth,
       align: "right",
@@ -838,7 +913,14 @@ const generateInvoice = async (req, res) => {
     totalsY += 12;
 
     // Total
-    const finalTotal = hasRescheduleRefund ? servicePrice : (servicePrice + rescheduleFeeAmount);
+    let finalTotal = hasRescheduleRefund ? servicePrice : (servicePrice + rescheduleFeeAmount);
+    
+    // Subtract refund if applicable
+    if (willShowRefund) {
+      finalTotal -= displayRefund;
+    }
+    finalTotal = Math.max(0, finalTotal);
+
     doc.fontSize(11).fillColor("#0f172a").font("Helvetica-Bold");
     doc.text("TOTAL", totalsBoxX + totalsPadding, totalsY + 2, {
       width: totalsInnerWidth,
