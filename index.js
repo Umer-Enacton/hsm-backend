@@ -16,6 +16,7 @@ console.log("");
 
 const express = require("express");
 const cors = require("cors");
+const compression = require("compression");
 const authRoutes = require("./routes/auth.route");
 const googleAuthRoutes = require("./routes/googleAuth.route");
 const invoiceRoutes = require("./routes/invoice.route");
@@ -80,6 +81,9 @@ app.use(
     exposedHeaders: ["Set-Cookie"],
   }),
 );
+
+// Compression middleware - reduces response size by 60-80%
+app.use(compression());
 
 // Middleware
 app.use(express.json());

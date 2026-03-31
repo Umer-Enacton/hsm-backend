@@ -153,6 +153,7 @@ const getBookingById = async (req, res) => {
 };
 
 // Get all bookings for logged-in customer
+// OPTIMIZED: Uses batch queries instead of N+1 pattern
 const getCustomerBookings = async (req, res) => {
   try {
     const userId = req.token.id;
@@ -162,91 +163,98 @@ const getCustomerBookings = async (req, res) => {
       .where(eq(bookings.customerId, userId))
       .orderBy(desc(bookings.bookingDate));
 
-    // Fetch related data for each booking
-    const bookingsWithDetails = await Promise.all(
-      customerBookings.map(async (booking) => {
-        // Get service info
-        const [service] = await db
-          .select()
-          .from(services)
-          .where(eq(services.id, booking.serviceId))
-          .limit(1);
+    if (customerBookings.length === 0) {
+      return res.status(200).json({ bookings: [] });
+    }
 
-        // Get business profile info (provider)
-        const [businessProfile] = await db
-          .select()
-          .from(businessProfiles)
-          .where(eq(businessProfiles.id, booking.businessProfileId))
-          .limit(1);
+    // Collect all IDs for batch queries (same pattern as getProviderBookings)
+    const serviceIds = [...new Set(customerBookings.map((b) => b.serviceId).filter(Boolean))];
+    const businessIds = [...new Set(customerBookings.map((b) => b.businessProfileId).filter(Boolean))];
+    const addressIds = [...new Set(customerBookings.map((b) => b.addressId).filter(Boolean))];
+    const slotIds = [...new Set(customerBookings.map((b) => b.slotId).filter(Boolean))];
+    const bookingIds = customerBookings.map((b) => b.id);
 
-        // Get address info
-        const [address] = await db
-          .select()
-          .from(Address)
-          .where(eq(Address.id, booking.addressId))
-          .limit(1);
+    // Batch fetch all related data in parallel (5 queries instead of N*5)
+    const [serviceList, businessProfilesData, addresses, slotsData, feedbackRecords] =
+      await Promise.all([
+        serviceIds.length > 0
+          ? db.select().from(services).where(inArray(services.id, serviceIds))
+          : Promise.resolve([]),
+        businessIds.length > 0
+          ? db.select().from(businessProfiles).where(inArray(businessProfiles.id, businessIds))
+          : Promise.resolve([]),
+        addressIds.length > 0
+          ? db.select().from(Address).where(inArray(Address.id, addressIds))
+          : Promise.resolve([]),
+        slotIds.length > 0
+          ? db.select().from(slots).where(inArray(slots.id, slotIds))
+          : Promise.resolve([]),
+        bookingIds.length > 0
+          ? db.select().from(feedback).where(inArray(feedback.bookingId, bookingIds))
+          : Promise.resolve([]),
+      ]);
 
-        // Get slot info
-        const [slot] = await db
-          .select()
-          .from(slots)
-          .where(eq(slots.id, booking.slotId))
-          .limit(1);
+    // Create maps for O(1) lookup
+    const serviceMap = new Map(serviceList.map((s) => [s.id, s]));
+    const businessMap = new Map(businessProfilesData.map((b) => [b.id, b]));
+    const addressMap = new Map(addresses.map((a) => [a.id, a]));
+    const slotMap = new Map(slotsData.map((s) => [s.id, s]));
+    const feedbackMap = new Map(feedbackRecords.map((f) => [f.bookingId, f]));
 
-        // Get feedback info if exists
-        const [bookingFeedback] = await db
-          .select()
-          .from(feedback)
-          .where(eq(feedback.bookingId, booking.id))
-          .limit(1);
+    // Format the response using maps (no additional queries)
+    const bookingsWithDetails = customerBookings.map((booking) => {
+      const service = serviceMap.get(booking.serviceId);
+      const businessProfile = businessMap.get(booking.businessProfileId);
+      const address = addressMap.get(booking.addressId);
+      const slot = slotMap.get(booking.slotId);
+      const feedbackData = feedbackMap.get(booking.id);
 
-        return {
-          ...booking,
-          service: service
-            ? {
-                id: service.id,
-                name: service.name,
-                description: service.description,
-                price: service.price,
-                duration: service.duration,
-                imageUrl: service.imageUrl,
-                provider: businessProfile
-                  ? {
-                      id: businessProfile.id,
-                      businessName: businessProfile.businessName,
-                      rating: businessProfile.rating,
-                      totalReviews: businessProfile.totalReviews,
-                      isVerified: businessProfile.isVerified,
-                    }
-                  : undefined,
-              }
-            : null,
-          address: address
-            ? {
-                id: address.id,
-                street: address.street,
-                city: address.city,
-                state: address.state,
-                zipCode: address.zipCode,
-              }
-            : null,
-          slot: slot
-            ? {
-                id: slot.id,
-                startTime: slot.startTime,
-                endTime: slot.endTime,
-              }
-            : null,
-          feedback: bookingFeedback
-            ? {
-                id: bookingFeedback.id,
-                rating: bookingFeedback.rating,
-                comments: bookingFeedback.comments,
-              }
-            : null,
-        };
-      }),
-    );
+      return {
+        ...booking,
+        service: service
+          ? {
+              id: service.id,
+              name: service.name,
+              description: service.description,
+              price: service.price,
+              duration: service.duration,
+              imageUrl: service.imageUrl,
+              provider: businessProfile
+                ? {
+                    id: businessProfile.id,
+                    businessName: businessProfile.businessName,
+                    rating: businessProfile.rating,
+                    totalReviews: businessProfile.totalReviews,
+                    isVerified: businessProfile.isVerified,
+                  }
+                : undefined,
+            }
+          : null,
+        address: address
+          ? {
+              id: address.id,
+              street: address.street,
+              city: address.city,
+              state: address.state,
+              zipCode: address.zipCode,
+            }
+          : null,
+        slot: slot
+          ? {
+              id: slot.id,
+              startTime: slot.startTime,
+              endTime: slot.endTime,
+            }
+          : null,
+        feedback: feedbackData
+          ? {
+              id: feedbackData.id,
+              rating: feedbackData.rating,
+              comments: feedbackData.comments,
+            }
+          : null,
+      };
+    });
 
     res.status(200).json({ bookings: bookingsWithDetails });
   } catch (error) {
@@ -2298,6 +2306,7 @@ const providerReschedule = async (req, res) => {
 
 /**
  * Get all bookings (admin only)
+ * OPTIMIZED: Uses batch queries instead of N+1 pattern
  * GET /admin/bookings/all
  */
 const getAllBookingsForAdmin = async (req, res) => {
@@ -2312,70 +2321,84 @@ const getAllBookingsForAdmin = async (req, res) => {
       .limit(Number(limit))
       .offset(Number(offset));
 
-    // Enrich bookings with related data
-    const enrichedBookings = await Promise.all(
-      allBookings.map(async (booking) => {
-        // Get customer info (note: bookings table uses customerId, not userId)
-        const [customer] = await db
-          .select({
-            id: users.id,
-            name: users.name,
-            email: users.email,
-            phone: users.phone,
-          })
-          .from(users)
-          .where(eq(users.id, booking.customerId))
-          .limit(1);
+    if (allBookings.length === 0) {
+      const [{ count }] = await db.select({ count: sql`count(*)` }).from(bookings);
+      return res.status(200).json({
+        bookings: [],
+        total: count,
+        limit: Number(limit),
+        offset: Number(offset),
+      });
+    }
 
-        // Get business profile
-        const [business] = await db
-          .select({
-            id: businessProfiles.id,
-            name: businessProfiles.businessName,
-            phone: businessProfiles.phone,
-            city: businessProfiles.city,
-            state: businessProfiles.state,
-          })
-          .from(businessProfiles)
-          .where(eq(businessProfiles.id, booking.businessProfileId))
-          .limit(1);
+    // Collect all IDs for batch queries
+    const customerIds = [...new Set(allBookings.map((b) => b.customerId).filter(Boolean))];
+    const businessIds = [...new Set(allBookings.map((b) => b.businessProfileId).filter(Boolean))];
+    const serviceIds = [...new Set(allBookings.map((b) => b.serviceId).filter(Boolean))];
+    const addressIds = [...new Set(allBookings.map((b) => b.addressId).filter(Boolean))];
 
-        // Get service info
-        const [service] = await db
-          .select({
-            id: services.id,
-            name: services.name,
-            price: services.price,
-          })
-          .from(services)
-          .where(eq(services.id, booking.serviceId))
-          .limit(1);
+    // Batch fetch all related data in parallel (4 queries instead of N*4)
+    const [customers, businesses, serviceList, addresses] = await Promise.all([
+      customerIds.length > 0
+        ? db
+            .select({
+              id: users.id,
+              name: users.name,
+              email: users.email,
+              phone: users.phone,
+            })
+            .from(users)
+            .where(inArray(users.id, customerIds))
+        : Promise.resolve([]),
+      businessIds.length > 0
+        ? db
+            .select({
+              id: businessProfiles.id,
+              name: businessProfiles.businessName,
+              phone: businessProfiles.phone,
+              city: businessProfiles.city,
+              state: businessProfiles.state,
+            })
+            .from(businessProfiles)
+            .where(inArray(businessProfiles.id, businessIds))
+        : Promise.resolve([]),
+      serviceIds.length > 0
+        ? db
+            .select({
+              id: services.id,
+              name: services.name,
+              price: services.price,
+            })
+            .from(services)
+            .where(inArray(services.id, serviceIds))
+        : Promise.resolve([]),
+      addressIds.length > 0
+        ? db.select().from(Address).where(inArray(Address.id, addressIds))
+        : Promise.resolve([]),
+    ]);
 
-        // Get address info
-        const [address] = await db
-          .select()
-          .from(Address)
-          .where(eq(Address.id, booking.addressId))
-          .limit(1);
+    // Create maps for O(1) lookup
+    const customerMap = new Map(customers.map((c) => [c.id, c]));
+    const businessMap = new Map(businesses.map((b) => [b.id, b]));
+    const serviceMap = new Map(serviceList.map((s) => [s.id, s]));
+    const addressMap = new Map(addresses.map((a) => [a.id, a]));
 
-        return {
-          ...booking,
-          // Map bookingDate to createdAt for frontend compatibility
-          createdAt: booking.bookingDate,
-          user: customer || null,
-          businessProfile: business || null,
-          service: service || null,
-          address: address || null,
-          slot: booking.bookingDate
-            ? {
-                date: booking.bookingDate,
-                startTime: booking.slotStartTime,
-                endTime: booking.slotEndTime,
-              }
-            : null,
-        };
-      }),
-    );
+    // Format the response using maps
+    const enrichedBookings = allBookings.map((booking) => ({
+      ...booking,
+      createdAt: booking.bookingDate,
+      user: customerMap.get(booking.customerId) || null,
+      businessProfile: businessMap.get(booking.businessProfileId) || null,
+      service: serviceMap.get(booking.serviceId) || null,
+      address: addressMap.get(booking.addressId) || null,
+      slot: booking.bookingDate
+        ? {
+            date: booking.bookingDate,
+            startTime: booking.slotStartTime,
+            endTime: booking.slotEndTime,
+          }
+        : null,
+    }));
 
     // Apply status filter if provided
     let filteredBookings = enrichedBookings;

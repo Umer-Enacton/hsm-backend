@@ -9,6 +9,7 @@ const {
   time,
   pgEnum,
   uniqueIndex,
+  index,
   text,
 } = require("drizzle-orm/pg-core");
 const { sql } = require("drizzle-orm");
@@ -115,7 +116,11 @@ const businessProfiles = pgTable("business_profiles", {
   blockedAt: timestamp("blocked_at"), // When business was blocked
   blockedBy: integer("blocked_by").references(() => users.id), // Admin who blocked
   createdAt: timestamp("created_at").defaultNow().notNull(),
-});
+}, (table) => ({
+  providerIdIdx: index("business_profiles_provider_id_idx").on(table.providerId),
+  isVerifiedIdx: index("business_profiles_is_verified_idx").on(table.isVerified),
+  cityIdx: index("business_profiles_city_idx").on(table.city),
+}));
 
 const services = pgTable("services", {
   id: serial("id").primaryKey(),
@@ -134,7 +139,10 @@ const services = pgTable("services", {
   rating: decimal("rating", { precision: 3, scale: 2 }).default(0),
   totalReviews: integer("total_reviews").default(0),
   createdAt: timestamp("created_at").defaultNow().notNull(),
-});
+}, (table) => ({
+  businessProfileIdIdx: index("services_business_profile_id_idx").on(table.businessProfileId),
+  isActiveIdx: index("services_is_active_idx").on(table.isActive),
+}));
 
 const slots = pgTable("slots", {
   id: serial("id").primaryKey(),
@@ -212,7 +220,15 @@ const bookings = pgTable("bookings", {
   actualCompletionTime: timestamp("actual_completion_time"), // Actual time service was completed
   lastPendingReminderAt: timestamp("last_pending_reminder_at"), // Used for repeated 'take action' reminders
   createdAt: timestamp("created_at").defaultNow().notNull(),
-});
+}, (table) => ({
+  customerIdIdx: index("bookings_customer_id_idx").on(table.customerId),
+  businessProfileIdIdx: index("bookings_business_profile_id_idx").on(table.businessProfileId),
+  serviceIdIdx: index("bookings_service_id_idx").on(table.serviceId),
+  statusIdx: index("bookings_status_idx").on(table.status),
+  bookingDateIdx: index("bookings_booking_date_idx").on(table.bookingDate),
+  // Composite index for provider bookings query (businessProfileId + bookingDate)
+  businessProfileIdDateIdx: index("bookings_business_profile_id_date_idx").on(table.businessProfileId, table.bookingDate),
+}));
 
 const bookingHistory = pgTable("booking_history", {
   id: serial("id").primaryKey(),
@@ -353,7 +369,11 @@ const feedback = pgTable("feedback", {
     onDelete: "set null",
   }),
   hiddenAt: timestamp("hidden_at"),
-});
+}, (table) => ({
+  bookingIdIdx: index("feedback_booking_id_idx").on(table.bookingId),
+  serviceIdIdx: index("feedback_service_id_idx").on(table.serviceId),
+  isVisibleIdx: index("feedback_is_visible_idx").on(table.isVisible),
+}));
 
 // Notifications - Store user notifications for in-app display and push
 const notifications = pgTable("notifications", {
@@ -368,7 +388,13 @@ const notifications = pgTable("notifications", {
   isRead: boolean("is_read").default(false).notNull(),
   readAt: timestamp("read_at"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
-});
+}, (table) => ({
+  userIdIdx: index("notifications_user_id_idx").on(table.userId),
+  isReadIdx: index("notifications_is_read_idx").on(table.isRead),
+  createdAtIdx: index("notifications_created_at_idx").on(table.createdAt),
+  // Composite index for user's unread notifications
+  userIdIsReadIdx: index("notifications_user_id_is_read_idx").on(table.userId, table.isRead),
+}));
 
 // Device Tokens - Store FCM tokens for push notifications
 const deviceTokens = pgTable("device_tokens", {
