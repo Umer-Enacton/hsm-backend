@@ -256,7 +256,7 @@ const getCustomerBookings = async (req, res) => {
       };
     });
 
-    res.status(200).json({ bookings: bookingsWithDetails });
+    res.status(200).json({ bookings: bookingsWithDetails, total: customerBookings.length });
   } catch (error) {
     console.error("Error fetching customer bookings:", error);
     res.status(500).json({ message: "Server error", error: error.message });
@@ -2291,6 +2291,10 @@ const providerReschedule = async (req, res) => {
       .where(eq(bookings.id, bookingId))
       .returning();
 
+    // Send notification to customer about provider reschedule
+    const { notificationTemplates } = require('../utils/notificationHelper');
+    await notificationTemplates.providerRescheduled(bookingId, reason);
+
     return res.status(200).json({
       message: "Booking rescheduled successfully. Customer will be notified.",
       booking: updatedBooking,
@@ -2384,21 +2388,38 @@ const getAllBookingsForAdmin = async (req, res) => {
     const addressMap = new Map(addresses.map((a) => [a.id, a]));
 
     // Format the response using maps
-    const enrichedBookings = allBookings.map((booking) => ({
-      ...booking,
-      createdAt: booking.bookingDate,
-      user: customerMap.get(booking.customerId) || null,
-      businessProfile: businessMap.get(booking.businessProfileId) || null,
-      service: serviceMap.get(booking.serviceId) || null,
-      address: addressMap.get(booking.addressId) || null,
-      slot: booking.bookingDate
-        ? {
-            date: booking.bookingDate,
-            startTime: booking.slotStartTime,
-            endTime: booking.slotEndTime,
-          }
-        : null,
-    }));
+    const enrichedBookings = allBookings.map((booking) => {
+      const customer = customerMap.get(booking.customerId);
+      const business = businessMap.get(booking.businessProfileId);
+      const service = serviceMap.get(booking.serviceId);
+      const address = addressMap.get(booking.addressId);
+
+      return {
+        id: booking.id,
+        bookingId: booking.id.toString(),
+        customerId: booking.customerId,
+        customerName: customer?.name || "N/A",
+        customerPhone: customer?.phone || "N/A",
+        customerEmail: customer?.email || "N/A",
+        businessId: booking.businessProfileId,
+        businessName: business?.name || "N/A",
+        providerId: business?.providerId || null,
+        providerName: business?.name || "N/A", // Defaulting to business Name
+        providerPhone: business?.phone || "N/A",
+        serviceId: booking.serviceId,
+        serviceName: service?.name || "N/A",
+        price: booking.totalPrice || service?.price || 0,
+        status: booking.status,
+        bookingDate: booking.bookingDate,
+        startTime: booking.slotStartTime,
+        endTime: booking.slotEndTime,
+        address: address ? `${address.street}, ${address.city}, ${address.state}` : "N/A",
+        createdAt: booking.bookingDate || booking.createdAt,
+        beforePhotoUrl: booking.beforePhotoUrl,
+        afterPhotoUrl: booking.afterPhotoUrl,
+        completionNotes: booking.completionNotes,
+      };
+    });
 
     // Apply status filter if provided
     let filteredBookings = enrichedBookings;

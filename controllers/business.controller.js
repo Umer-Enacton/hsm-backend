@@ -5,7 +5,8 @@ const {
   Category,
   services,
 } = require("../models/schema");
-const { eq, and, or } = require("drizzle-orm");
+const { eq, and, or, sql, inArray } = require("drizzle-orm");
+const { feedback: feedbackTable } = require("../models/schema");
 
 const getAllBusinesses = async (req, res) => {
   try {
@@ -42,15 +43,43 @@ const getAllBusinesses = async (req, res) => {
       .leftJoin(users, eq(businessProfiles.providerId, users.id))
       .leftJoin(Category, eq(businessProfiles.categoryId, Category.id));
 
-    // Add computed fields to each business
-    const businessesWithStatus = businesses.map((business) => ({
-      ...business,
-      status: business.isVerified ? "active" : "pending",
-      totalReviews: 0, // TODO: Calculate from feedback table
-      email: business.providerEmail, // For contact purposes
-    }));
+    // Fetch ratings and total reviews for all businesses in parallel
+    const businessesWithStats = await Promise.all(
+      businesses.map(async (business) => {
+        const serviceData = await db
+          .select({ id: services.id })
+          .from(services)
+          .where(eq(services.businessProfileId, business.id));
 
-    res.status(200).json({ businesses: businessesWithStatus });
+        const serviceIds = serviceData.map((s) => s.id);
+
+        let rating = 0;
+        let totalReviews = 0;
+
+        if (serviceIds.length > 0) {
+          const [stats] = await db
+            .select({
+              avgRating: sql`avg(${feedbackTable.rating})`,
+              count: sql`count(*)`,
+            })
+            .from(feedbackTable)
+            .where(inArray(feedbackTable.serviceId, serviceIds));
+
+          rating = Number(stats?.avgRating) || 0;
+          totalReviews = Number(stats?.count) || 0;
+        }
+
+        return {
+          ...business,
+          status: business.isVerified ? "active" : "pending",
+          rating,
+          totalReviews,
+          email: business.providerEmail,
+        };
+      }),
+    );
+
+    res.status(200).json({ businesses: businessesWithStats });
   } catch (error) {
     console.error("Error in getAllBusinesses:", error);
     res.status(500).json({ message: "Server error", error: error.message });
@@ -105,12 +134,34 @@ const getBusinessByProviderId = async (req, res) => {
     }
 
     const business = result[0];
+    
     // Add computed fields
     business.status = business.isVerified ? "active" : "pending";
-    business.totalReviews = 0; // TODO: Calculate from feedback table
-
-    // Email is provider's email (for contact)
     business.email = business.providerEmail;
+
+    // Calculate real rating and total reviews from feedback table
+    const serviceData = await db
+      .select({ id: services.id })
+      .from(services)
+      .where(eq(services.businessProfileId, business.id));
+    
+    const serviceIds = serviceData.map(s => s.id);
+    
+    if (serviceIds.length > 0) {
+      const [stats] = await db
+        .select({
+          avgRating: sql`avg(${feedbackTable.rating})`,
+          count: sql`count(*)`
+        })
+        .from(feedbackTable)
+        .where(inArray(feedbackTable.serviceId, serviceIds));
+      
+      business.rating = Number(stats?.avgRating) || 0;
+      business.totalReviews = Number(stats?.count) || 0;
+    } else {
+      business.rating = 0;
+      business.totalReviews = 0;
+    }
 
     res.status(200).json({ business });
   } catch (error) {
@@ -168,8 +219,31 @@ const getBusinessById = async (req, res) => {
 
     const business = result[0];
     business.status = business.isVerified ? "active" : "pending";
-    business.totalReviews = 0;
     business.email = business.providerEmail;
+
+    // Calculate real rating and total reviews from feedback table
+    const serviceData = await db
+      .select({ id: services.id })
+      .from(services)
+      .where(eq(services.businessProfileId, business.id));
+    
+    const serviceIds = serviceData.map(s => s.id);
+    
+    if (serviceIds.length > 0) {
+      const [stats] = await db
+        .select({
+          avgRating: sql`avg(${feedbackTable.rating})`,
+          count: sql`count(*)`
+        })
+        .from(feedbackTable)
+        .where(inArray(feedbackTable.serviceId, serviceIds));
+      
+      business.rating = Number(stats?.avgRating) || 0;
+      business.totalReviews = Number(stats?.count) || 0;
+    } else {
+      business.rating = 0;
+      business.totalReviews = 0;
+    }
 
     res.status(200).json({ business });
   } catch (error) {
@@ -312,6 +386,7 @@ const addBusiness = async (req, res) => {
 
     const business = result[0];
     business.status = business.isVerified ? "active" : "pending";
+    business.rating = 0;
     business.totalReviews = 0;
     business.email = business.providerEmail; // For contact purposes
 
@@ -416,9 +491,36 @@ const updateBusiness = async (req, res) => {
 
     const businessData = result[0];
     businessData.status = businessData.isVerified ? "active" : "pending";
-    businessData.totalReviews = 0;
-    businessData.email = businessData.providerEmail; // For contact purposes
+    businessData.email = businessData.providerEmail;
 
+    // Calculate real rating and total reviews from feedback table
+    const serviceData = await db
+      .select({ id: services.id })
+      .from(services)
+      .where(eq(services.businessProfileId, businessData.id));
+    
+    const serviceIds = serviceData.map(s => s.id);
+    
+    if (serviceIds.length > 0) {
+      const [stats] = await db
+        .select({
+          avgRating: sql`avg(${feedbackTable.rating})`,
+          count: sql`count(*)`
+        })
+        .from(feedbackTable)
+        .where(inArray(feedbackTable.serviceId, serviceIds));
+      
+      businessData.rating = Number(stats?.avgRating) || 0;
+      businessData.totalReviews = Number(stats?.count) || 0;
+    } else {
+      businessData.rating = 0;
+      businessData.totalReviews = 0;
+    }
+
+    res.status(200).json({
+      message: "Business profile updated successfully",
+      business: businessData,
+    });
     res.status(200).json({
       message: "Business profile updated successfully",
       business: businessData,

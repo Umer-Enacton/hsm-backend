@@ -386,12 +386,26 @@ const getPayouts = async (req, res) => {
       providerTotals.set(p.providerId, current + Number(p.providerShare || 0));
     });
 
-    // Add metadata to each payout
+    // Add metadata to each payout — reshape to match frontend Payout interface
     const payoutsWithMeta = payouts.map((p) => {
       const providerTotal = providerTotals.get(p.providerId) || 0;
       return {
-        ...p,
+        id: p.paymentId,
+        bookingId: p.bookingId,
+        providerId: p.providerId,
+        amount: Number(p.providerShare || 0), // Frontend displays provider share as amount
+        status: p.providerPayoutStatus === "paid" ? "completed" : p.providerPayoutStatus,
+        createdAt: p.paymentCreatedAt,
+        processedAt: p.paymentCompletedAt,
+        // Nested provider object for frontend compatibility
+        provider: {
+          name: p.providerName,
+          email: p.providerEmail,
+          business: p.providerBusiness,
+        },
+        // Extra metadata
         providerShare: Number(p.providerShare || 0),
+        platformFee: Number(p.platformFee || 0),
         canProcessPayout: providerTotal >= minimumPayoutAmount,
         providerTotalEarnings: providerTotal,
         minimumPayoutAmount,
@@ -1318,6 +1332,8 @@ const getAllServicesForAdmin = async (req, res) => {
         EstimateDuration: services.EstimateDuration,
         image: services.image,
         isActive: services.isActive,
+        rating: services.rating,
+        totalReviews: services.totalReviews,
         businessProfileId: services.businessProfileId,
         deactivationReason: services.deactivationReason,
         deactivatedAt: services.deactivatedAt,

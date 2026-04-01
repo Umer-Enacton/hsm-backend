@@ -229,6 +229,25 @@ const notificationTemplates = {
   },
 
   /**
+   * Provider initiated reschedule - Notify customer
+   * This is when the provider proactively changes the booking time
+   */
+  async providerRescheduled(bookingId, reason = '') {
+    const details = await getBookingDetails(bookingId);
+    if (!details) return null;
+
+    const { booking, service } = details;
+
+    return createNotification({
+      userId: booking.customerId,
+      type: 'provider_rescheduled',
+      title: 'Booking Rescheduled by Provider',
+      message: `Your booking for ${service.name} has been rescheduled by the provider${reason ? `: ${reason}` : ''}`,
+      data: { bookingId: bookingId.toString(), actionUrl: `/customer/bookings` },
+    });
+  },
+
+  /**
    * Reminder to accept/reject booking - Notify provider
    */
   async acceptReminder(bookingId) {

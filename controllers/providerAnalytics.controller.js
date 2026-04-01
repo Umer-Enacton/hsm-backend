@@ -185,7 +185,7 @@ const getRevenueAnalytics = async (req, res) => {
         and(
           eq(bookings.businessProfileId, business.id),
           sql`${bookings.bookingDate} >= ${effectiveStartDate.toISOString().split("T")[0]}`,
-          sql`${bookings.bookingDate} <= ${effectiveEndDate.toISOString().split("T")[0]}`,
+          sql`${bookings.bookingDate} <= ${effectiveEndDate.toISOString()}`,
         ),
       )
       .orderBy(bookings.bookingDate);
@@ -269,13 +269,19 @@ const getRevenueAnalytics = async (req, res) => {
       }
     }
 
+    // Debug: log all initialized keys
+    console.log("[Analytics] Initialized groupedData keys:", Array.from(groupedData.keys()));
+
     // Fill in actual data from bookings and payments
     allBookings.forEach((item) => {
       if (!item.date) return;
       try {
         const bookingDate = new Date(item.date);
         const key = formatDateForGrouping(bookingDate, period);
-        if (groupedData.has(key)) {
+        const hasKey = groupedData.has(key);
+        console.log(`[Analytics] Booking #${item.id}: date=${item.date}, key=${key}, hasKey=${hasKey}, status=${item.status}, totalPrice=${item.totalPrice}`);
+        
+        if (hasKey) {
           const existing = groupedData.get(key);
           existing.bookings += 1;
 
@@ -296,22 +302,14 @@ const getRevenueAnalytics = async (req, res) => {
           // Reschedule revenue from payments
           const bookingPayments = bookingPaymentsMap.get(item.id) || [];
           bookingPayments.forEach(p => {
-            // Check if this payment is a reschedule fee (amount is typically 100rs = 10000 paise)
-            // AND ensure we only count it for the date it was PAID if we want precision,
-            // but here we attribute it to the BOOKING date for the chart consistency.
-            // Wait, reschedule fees are 100% provider share now.
-            // If amount === platformFee + providerShare, and platformFee is 0, it's likely a reschedule fee.
-            // Better: use the stored platformFee/providerShare.
-            
             if (p.amount === 10000 && p.platformFee === 0) {
-               // This is a new-style reschedule fee (100% to provider)
                existing.rescheduleRevenue += (p.providerShare / 100);
             } else if (p.amount === 10000 && p.platformFee === 10000) {
-               // This is old-style reschedule fee (100% to admin) - still show it if it was for the provider?
-               // The user said "not wanted at admin side", so I should probably treat all 10000 as provider revenue now.
                existing.rescheduleRevenue += (p.amount / 100);
             }
           });
+        } else {
+          console.warn(`[Analytics] SKIPPED booking #${item.id}: key ${key} not in groupedData!`);
         }
       } catch (e) {
         console.warn("Invalid date:", item.date);
