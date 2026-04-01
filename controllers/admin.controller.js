@@ -194,7 +194,7 @@ const getRevenueStats = async (req, res) => {
       dateFilter = sql`${dateFilter} AND ${payments.createdAt} <= ${new Date(endDate)}`;
     }
 
-    // Get completed payments for revenue calculation
+    // Get completed payments for revenue calculation - exclude cancelled/rejected/refunded bookings
     const completedPayments = await db
       .select({
         id: payments.id,
@@ -202,10 +202,20 @@ const getRevenueStats = async (req, res) => {
         platformFee: payments.platformFee,
         providerShare: payments.providerShare,
         status: payments.status,
+        bookingStatus: bookings.status,
+        isRefunded: bookings.isRefunded,
         createdAt: payments.createdAt,
       })
       .from(payments)
-      .where(and(eq(payments.status, "paid"), dateFilter));
+      .innerJoin(bookings, eq(payments.bookingId, bookings.id))
+      .where(
+        and(
+          eq(payments.status, "paid"),
+          sql`(${bookings.status} NOT IN ('cancelled', 'rejected', 'refunded'))`,
+          sql`(${bookings.isRefunded} = false OR ${bookings.isRefunded} IS NULL)`,
+          dateFilter,
+        ),
+      );
 
     // Calculate totals
     let totalRevenue = 0;
@@ -214,6 +224,9 @@ const getRevenueStats = async (req, res) => {
     let totalPayments = completedPayments.length;
 
     completedPayments.forEach((payment) => {
+      // Skip reschedule fees (amount = 10000 paise = ₹100)
+      if (payment.amount === 10000) return;
+
       totalRevenue += payment.amount;
 
       // Use stored split values if available, otherwise calculate
@@ -228,15 +241,26 @@ const getRevenueStats = async (req, res) => {
       }
     });
 
-    // Get monthly breakdown (always returned)
+    // Recalculate totalPayments excluding reschedule fees
+    totalPayments = completedPayments.filter(p => p.amount !== 10000).length;
+
+    // Get monthly breakdown - exclude cancelled/rejected/refunded bookings AND reschedule fees
     const monthlyData = await db
       .select({
         month: sql`DATE_TRUNC('month', ${payments.createdAt})::DATE`,
-        total: sql`SUM(${payments.amount})`,
+        total: sql`SUM(CASE WHEN ${payments.amount} != 10000 THEN ${payments.amount} ELSE 0 END)`,
         count: sql`COUNT(*)`,
       })
       .from(payments)
-      .where(and(eq(payments.status, "paid"), dateFilter))
+      .innerJoin(bookings, eq(payments.bookingId, bookings.id))
+      .where(
+        and(
+          eq(payments.status, "paid"),
+          sql`(${bookings.status} NOT IN ('cancelled', 'rejected', 'refunded'))`,
+          sql`(${bookings.isRefunded} = false OR ${bookings.isRefunded} IS NULL)`,
+          dateFilter,
+        ),
+      )
       .groupBy(sql`DATE_TRUNC('month', ${payments.createdAt})`)
       .orderBy(desc(sql`DATE_TRUNC('month', ${payments.createdAt})`));
 
@@ -249,13 +273,13 @@ const getRevenueStats = async (req, res) => {
       ),
     }));
 
-    // Get top providers by revenue
+    // Get top providers by revenue - exclude cancelled/rejected/refunded bookings AND reschedule fees
     const topProviders = await db
       .select({
         providerId: businessProfiles.providerId,
         businessName: businessProfiles.businessName,
         totalBookings: sql`COUNT(*)`,
-        totalRevenue: sql`SUM(${payments.amount})`,
+        totalRevenue: sql`SUM(CASE WHEN ${payments.amount} != 10000 THEN ${payments.amount} ELSE 0 END)`,
       })
       .from(bookings)
       .innerJoin(payments, eq(payments.bookingId, bookings.id))
@@ -263,13 +287,20 @@ const getRevenueStats = async (req, res) => {
         businessProfiles,
         eq(businessProfiles.id, bookings.businessProfileId),
       )
-      .where(and(eq(payments.status, "paid"), dateFilter))
+      .where(
+        and(
+          eq(payments.status, "paid"),
+          sql`(${bookings.status} NOT IN ('cancelled', 'rejected', 'refunded'))`,
+          sql`(${bookings.isRefunded} = false OR ${bookings.isRefunded} IS NULL)`,
+          dateFilter,
+        ),
+      )
       .groupBy(
         businessProfiles.id,
         businessProfiles.providerId,
         businessProfiles.businessName,
       )
-      .orderBy(desc(sql`SUM(${payments.amount})`))
+      .orderBy(desc(sql`SUM(CASE WHEN ${payments.amount} != 10000 THEN ${payments.amount} ELSE 0 END)`))
       .limit(10);
 
     // Get booking status breakdown
@@ -394,7 +425,10 @@ const getPayouts = async (req, res) => {
         bookingId: p.bookingId,
         providerId: p.providerId,
         amount: Number(p.providerShare || 0), // Frontend displays provider share as amount
-        status: p.providerPayoutStatus === "paid" ? "completed" : p.providerPayoutStatus,
+        status:
+          p.providerPayoutStatus === "paid"
+            ? "completed"
+            : p.providerPayoutStatus,
         createdAt: p.paymentCreatedAt,
         processedAt: p.paymentCompletedAt,
         // Nested provider object for frontend compatibility
@@ -969,7 +1003,7 @@ const getDashboardStats = async (req, res) => {
     );
 
     // Get platform revenue from paid payments
-    // EXCLUDE reschedule fees from platform fee total (reschedule fees are flat 100rs = 10000 paise)
+    // EXCLUDE: reschedule fees (amount = 10000 paise) AND cancelled/rejected/refunded bookings
     const [revenueData] = await db
       .select({
         totalRevenue: sql`COALESCE(SUM(${payments.amount}), 0)`,
@@ -977,9 +1011,16 @@ const getDashboardStats = async (req, res) => {
         paymentCount: sql`COUNT(*)`,
       })
       .from(payments)
-      .where(eq(payments.status, "paid"));
+      .innerJoin(bookings, eq(payments.bookingId, bookings.id))
+      .where(
+        and(
+          eq(payments.status, "paid"),
+          sql`(${bookings.status} NOT IN ('cancelled', 'rejected', 'refunded'))`,
+          sql`(${bookings.isRefunded} = false OR ${bookings.isRefunded} IS NULL)`,
+        ),
+      );
 
-    // Get payout summary
+    // Get payout summary - exclude cancelled/rejected/refunded bookings
     const minimumPayoutAmount = Number(
       await getAdminSetting("minimum_payout_amount", "30000"),
     );
@@ -989,7 +1030,14 @@ const getDashboardStats = async (req, res) => {
         countPending: sql`COUNT(CASE WHEN ${payments.providerPayoutStatus} = 'pending' THEN 1 END)`,
       })
       .from(payments)
-      .where(sql`${payments.providerPayoutStatus} IS NOT NULL`);
+      .innerJoin(bookings, eq(payments.bookingId, bookings.id))
+      .where(
+        and(
+          sql`${payments.providerPayoutStatus} IS NOT NULL`,
+          sql`(${bookings.status} NOT IN ('cancelled', 'rejected', 'refunded'))`,
+          sql`(${bookings.isRefunded} = false OR ${bookings.isRefunded} IS NULL)`,
+        ),
+      );
 
     res.json({
       users: {

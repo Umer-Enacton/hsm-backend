@@ -115,17 +115,13 @@ const getRevenueAnalytics = async (req, res) => {
       lastPayment,
     );
 
-    // Adjust date range based on actual payment data AND booking data
-    // This allows showing future booking dates in the chart (like provider does)
+    // Use the requested period range for the chart
+    // This ensures all days in the period are shown, even if some have zero revenue
     let effectiveStartDate = startDate;
     let effectiveEndDate = endDate;
 
-    if (firstPayment && firstPayment.createdAt) {
-      effectiveStartDate = new Date(firstPayment.createdAt);
-      effectiveStartDate.setDate(effectiveStartDate.getDate() - 1);
-    }
-
-    // ALSO check last BOOKING date (not just payment date) to show future dates
+    // Only extend the end date to include future booking dates (like provider does)
+    // But NEVER shrink the start date - always show the full requested period
     const [lastBooking] = await db
       .select({ bookingDate: bookings.bookingDate })
       .from(bookings)
@@ -137,37 +133,23 @@ const getRevenueAnalytics = async (req, res) => {
     const today = new Date();
     today.setHours(23, 59, 59, 999);
 
-    // Determine effective end date: max(today, last payment date, last booking date)
-    let endDateCandidate = today;
+    // Determine effective end date: max(endDate, today, last booking date)
+    let endDateCandidate = endDate;
 
-    if (lastPayment && lastPayment.createdAt) {
-      const lastPaymentDate = new Date(lastPayment.createdAt);
-      if (lastPaymentDate > endDateCandidate) {
-        endDateCandidate = lastPaymentDate;
-      }
+    if (today > endDateCandidate) {
+      endDateCandidate = today;
     }
 
     if (lastBooking && lastBooking.bookingDate) {
-      // Parse booking date as string and compare
       const lastBookingStr =
         lastBooking.bookingDate instanceof Date
           ? lastBooking.bookingDate.toISOString().split("T")[0]
           : String(lastBooking.bookingDate).split("T")[0];
-      const todayStr = today.toISOString().split("T")[0];
 
-      console.log("[Admin Analytics] Date comparison for chart end date:", {
-        lastBookingStr,
-        todayStr,
-        lastBookingIsAfter: lastBookingStr > todayStr,
-      });
-
-      // If last booking is in future, use that date
-      if (lastBookingStr > todayStr) {
-        // Create date from booking date string
-        const bookingDate = new Date(lastBookingStr + "T23:59:59.999Z");
-        if (bookingDate > endDateCandidate) {
-          endDateCandidate = bookingDate;
-        }
+      // If last booking is in future, extend the chart to include it
+      const bookingDate = new Date(lastBookingStr + "T23:59:59.999Z");
+      if (bookingDate > endDateCandidate) {
+        endDateCandidate = bookingDate;
       }
     }
 
@@ -248,7 +230,7 @@ const getRevenueAnalytics = async (req, res) => {
         const key = formatDateForGrouping(bookingDate, period);
         if (groupedData.has(key)) {
           const existing = groupedData.get(key);
-          
+
           // Only increment booking count if it's not a duplicate for the same booking in the same group?
           // Actually, allPayments might have multiple entries for one booking (original + reschedule).
           // But our query already joins payments and bookings.
@@ -257,20 +239,22 @@ const getRevenueAnalytics = async (req, res) => {
           existing.uniqueBookings.add(item.bookingId);
           existing.bookings = existing.uniqueBookings.size;
 
-          // Only add revenue if the booking is NOT cancelled/rejected/refunded
-          // This keeps the "Revenue" (Platform Fees) correct: it should NOT include fees from cancelled bookings
-          // EXCEPT if we wanted to keep the platform fee for cancellations, but the user said they don't want reschedule fee there.
-          const isEligibleForPlatformFee = 
-            item.bookingStatus !== 'cancelled' && 
-            item.bookingStatus !== 'rejected' && 
-            item.bookingStatus !== 'refunded' && 
-            item.isRefunded === false;
+          // Only add revenue if the booking is NOT cancelled/rejected/refunded AND not a reschedule fee
+          // This keeps the "Revenue" (Platform Fees) correct: it should NOT include fees from cancelled bookings or reschedule fees
+          const isEligibleForPlatformFee =
+            item.bookingStatus !== "cancelled" &&
+            item.bookingStatus !== "rejected" &&
+            item.bookingStatus !== "refunded" &&
+            item.isRefunded === false &&
+            item.amount !== 10000; // Exclude reschedule fees (₹100 = 10000 paise)
 
           if (isEligibleForPlatformFee) {
             if (item.platformFee) {
               existing.revenue += Number(item.platformFee) / 100;
             } else {
-              const fee = Math.round(((Number(item.amount) || 0) * platformFeePercentage) / 100);
+              const fee = Math.round(
+                ((Number(item.amount) || 0) * platformFeePercentage) / 100,
+              );
               existing.revenue += fee / 100;
             }
           }
@@ -294,18 +278,19 @@ const getRevenueAnalytics = async (req, res) => {
     });
 
     // Calculate totals
-    const uniqueBookingIds = new Set(allPayments.map(p => p.bookingId));
+    const uniqueBookingIds = new Set(allPayments.map((p) => p.bookingId));
     const totalBookings = uniqueBookingIds.size;
 
     // Filter payments for total revenue and platform fee calculations
-    // Exclude those originally rejected/cancelled unless it's a reschedule fee? 
+    // Exclude those originally rejected/cancelled unless it's a reschedule fee?
     // Actually, user said platform fee should NOT include reschedule fee.
     // And platform fee typically comes from regular bookings.
-    const eligiblePayments = allPayments.filter(item => 
-      item.bookingStatus !== 'cancelled' && 
-      item.bookingStatus !== 'rejected' && 
-      item.bookingStatus !== 'refunded' && 
-      item.isRefunded === false
+    const eligiblePayments = allPayments.filter(
+      (item) =>
+        item.bookingStatus !== "cancelled" &&
+        item.bookingStatus !== "rejected" &&
+        item.bookingStatus !== "refunded" &&
+        item.isRefunded === false,
     );
 
     const totalRevenue = eligiblePayments.reduce(
@@ -313,6 +298,9 @@ const getRevenueAnalytics = async (req, res) => {
       0,
     );
     const totalPlatformFees = eligiblePayments.reduce((sum, item) => {
+      // Skip reschedule fees (amount = 10000 paise = ₹100)
+      if (item.amount === 10000) return sum;
+
       if (item.platformFee) {
         return sum + Number(item.platformFee);
       }
@@ -382,21 +370,14 @@ const getCategoryAnalytics = async (req, res) => {
       .orderBy(desc(payments.createdAt))
       .limit(1);
 
-    // Adjust date range
+    // Use the requested period range - don't adjust start date
     let effectiveStartDate = startDate;
     let effectiveEndDate = endDate;
 
-    if (firstPayment && firstPayment.createdAt) {
-      effectiveStartDate = new Date(firstPayment.createdAt);
-      effectiveStartDate.setDate(effectiveStartDate.getDate() - 1);
-    }
-
-    if (lastPayment && lastPayment.createdAt) {
-      const lastPaymentDate = new Date(lastPayment.createdAt);
-      const today = new Date();
-      const todayStr = today.toISOString().split("T")[0];
-      const lastPaymentStr = lastPaymentDate.toISOString().split("T")[0];
-      effectiveEndDate = lastPaymentStr > todayStr ? lastPaymentDate : today;
+    // Only extend end date if needed (for future bookings)
+    const today = new Date();
+    if (today > effectiveEndDate) {
+      effectiveEndDate = today;
     }
 
     // Use proper date comparison with gte/lte
@@ -466,15 +447,14 @@ const getCategoryAnalytics = async (req, res) => {
       const category = categoryMap.get(item.categoryId);
 
       const amount = Number(item.amount) || 0;
-      
-      // Only count revenue/fees for non-cancelled bookings
-      // (Unless it's a reschedule fee, but user said those shouldn't be in platform fees)
-      // Since it's Category Analytics, we want to know how much the CATEGORY earned for admin
-      const isEligible = 
-        item.bookingStatus !== 'cancelled' && 
-        item.bookingStatus !== 'rejected' && 
-        item.bookingStatus !== 'refunded' && 
-        item.isRefunded === false;
+
+      // Only count revenue/fees for non-cancelled bookings AND exclude reschedule fees
+      const isEligible =
+        item.bookingStatus !== "cancelled" &&
+        item.bookingStatus !== "rejected" &&
+        item.bookingStatus !== "refunded" &&
+        item.isRefunded === false &&
+        amount !== 10000; // Exclude reschedule fees (₹100 = 10000 paise)
 
       if (isEligible) {
         category.totalRevenue += amount;
@@ -486,7 +466,7 @@ const getCategoryAnalytics = async (req, res) => {
           category.platformFees += (amount * platformFeePercentage) / 100;
         }
       }
-      
+
       // Always count the booking if it had a paid payment (like reschedule)
       // Wait, we need to track unique bookings to avoid double counting if multiple payments exist
       if (!category.uniqueBookingIds) category.uniqueBookingIds = new Set();
@@ -566,21 +546,14 @@ const getStatusAnalytics = async (req, res) => {
       .orderBy(desc(payments.createdAt))
       .limit(1);
 
-    // Adjust date range
+    // Use the requested period range - don't adjust start date
     let effectiveStartDate = startDate;
     let effectiveEndDate = endDate;
 
-    if (firstPayment && firstPayment.createdAt) {
-      effectiveStartDate = new Date(firstPayment.createdAt);
-      effectiveStartDate.setDate(effectiveStartDate.getDate() - 1);
-    }
-
-    if (lastPayment && lastPayment.createdAt) {
-      const lastPaymentDate = new Date(lastPayment.createdAt);
-      const today = new Date();
-      const todayStr = today.toISOString().split("T")[0];
-      const lastPaymentStr = lastPaymentDate.toISOString().split("T")[0];
-      effectiveEndDate = lastPaymentStr > todayStr ? lastPaymentDate : today;
+    // Only extend end date if needed (for future bookings)
+    const today = new Date();
+    if (today > effectiveEndDate) {
+      effectiveEndDate = today;
     }
 
     // Use proper date comparison with gte/lte
@@ -589,7 +562,7 @@ const getStatusAnalytics = async (req, res) => {
     const endOfDay = new Date(effectiveEndDate);
     endOfDay.setHours(23, 59, 59, 999);
 
-    // Get all bookings with status within date range (based on payment date)
+    // Get all bookings with status within date range (based on booking date)
     const allBookings = await db
       .select({
         status: bookings.status,
@@ -597,14 +570,15 @@ const getStatusAnalytics = async (req, res) => {
         totalPrice: bookings.totalPrice,
         amount: payments.amount,
         platformFee: payments.platformFee,
+        bookingDate: bookings.bookingDate,
       })
       .from(bookings)
       .innerJoin(payments, eq(payments.bookingId, bookings.id))
       .where(
         and(
           eq(payments.status, "paid"),
-          gte(payments.createdAt, startOfDay),
-          lte(payments.createdAt, endOfDay),
+          gte(bookings.bookingDate, startOfDay),
+          lte(bookings.bookingDate, endOfDay),
         ),
       );
 
@@ -626,7 +600,7 @@ const getStatusAnalytics = async (req, res) => {
       const isRefunded = item.isRefunded || false;
 
       // Skip refunded bookings from the status breakdown as requested
-      if (isRefunded || status === 'refunded') return;
+      if (isRefunded || status === "refunded") return;
 
       const effectiveStatus = status;
       const bookingId = item.id;
@@ -639,7 +613,7 @@ const getStatusAnalytics = async (req, res) => {
         });
         uniqueBookingsPerStatus.set(effectiveStatus, new Set());
       }
-      
+
       const s = statusMap.get(effectiveStatus);
       const uniqueSet = uniqueBookingsPerStatus.get(effectiveStatus);
 
@@ -650,22 +624,23 @@ const getStatusAnalytics = async (req, res) => {
       }
 
       const amount = Number(item.amount) || 0;
-      s.revenue += amount;
+      // Skip reschedule fees from revenue calculation
+      if (amount !== 10000) {
+        s.revenue += amount;
+      }
 
-      // Only add platform fees for bookings that are NOT cancelled/rejected/refunded
+      // Only add platform fees for bookings that are NOT cancelled/rejected/refunded AND not reschedule fees
       if (
         status !== "cancelled" &&
         status !== "rejected" &&
         status !== "refunded" &&
-        !isRefunded
+        !isRefunded &&
+        amount !== 10000
       ) {
         if (item.platformFee) {
           s.platformFees += Number(item.platformFee);
         } else {
-          // If it's a reschedule fee (amount 10000), platform fee is 0
-          if (amount !== 10000) {
-            s.platformFees += (amount * platformFeePercentage) / 100;
-          }
+          s.platformFees += (amount * platformFeePercentage) / 100;
         }
       }
     });
@@ -699,15 +674,17 @@ const getStatusAnalytics = async (req, res) => {
     // Sort by count descending
     statusBreakdown.sort((a, b) => b.count - a.count);
 
-    const totalPlatformFees = Array.from(statusMap.values()).reduce(
-      (sum, data) => sum + data.platformFees,
-      0,
-    ) / 100;
+    const totalPlatformFees =
+      Array.from(statusMap.values()).reduce(
+        (sum, data) => sum + data.platformFees,
+        0,
+      ) / 100;
 
-    const totalRevenue = Array.from(statusMap.values()).reduce(
-      (sum, data) => sum + data.revenue,
-      0,
-    ) / 100;
+    const totalRevenue =
+      Array.from(statusMap.values()).reduce(
+        (sum, data) => sum + data.revenue,
+        0,
+      ) / 100;
     res.json({
       period,
       totalBookings,
@@ -753,21 +730,14 @@ const getTopProvidersAnalytics = async (req, res) => {
       .orderBy(desc(payments.createdAt))
       .limit(1);
 
-    // Adjust date range
+    // Use the requested period range - don't adjust start date
     let effectiveStartDate = startDate;
     let effectiveEndDate = endDate;
 
-    if (firstPayment && firstPayment.createdAt) {
-      effectiveStartDate = new Date(firstPayment.createdAt);
-      effectiveStartDate.setDate(effectiveStartDate.getDate() - 1);
-    }
-
-    if (lastPayment && lastPayment.createdAt) {
-      const lastPaymentDate = new Date(lastPayment.createdAt);
-      const today = new Date();
-      const todayStr = today.toISOString().split("T")[0];
-      const lastPaymentStr = lastPaymentDate.toISOString().split("T")[0];
-      effectiveEndDate = lastPaymentStr > todayStr ? lastPaymentDate : today;
+    // Only extend end date if needed (for future bookings)
+    const today = new Date();
+    if (today > effectiveEndDate) {
+      effectiveEndDate = today;
     }
 
     // Use proper date comparison with gte/lte
@@ -817,6 +787,10 @@ const getTopProvidersAnalytics = async (req, res) => {
     allPayments.forEach((item) => {
       if (!item.providerId) return;
 
+      // Skip reschedule fees (amount = 10000 paise = ₹100)
+      const amount = Number(item.amount) || 0;
+      if (amount === 10000) return;
+
       if (!providerMap.has(item.providerId)) {
         providerMap.set(item.providerId, {
           providerId: item.providerId,
@@ -830,7 +804,6 @@ const getTopProvidersAnalytics = async (req, res) => {
 
       const provider = providerMap.get(item.providerId);
       provider.bookingCount += 1;
-      const amount = Number(item.amount) || 0;
       provider.totalRevenue += amount;
 
       // Use stored platform fee or calculate
@@ -905,21 +878,14 @@ const getPaymentStatusAnalytics = async (req, res) => {
       .orderBy(desc(payments.createdAt))
       .limit(1);
 
-    // Adjust date range
+    // Use the requested period range - don't adjust start date
     let effectiveStartDate = startDate;
     let effectiveEndDate = endDate;
 
-    if (firstPayment && firstPayment.createdAt) {
-      effectiveStartDate = new Date(firstPayment.createdAt);
-      effectiveStartDate.setDate(effectiveStartDate.getDate() - 1);
-    }
-
-    if (lastPayment && lastPayment.createdAt) {
-      const lastPaymentDate = new Date(lastPayment.createdAt);
-      const today = new Date();
-      const todayStr = today.toISOString().split("T")[0];
-      const lastPaymentStr = lastPaymentDate.toISOString().split("T")[0];
-      effectiveEndDate = lastPaymentStr > todayStr ? lastPaymentDate : today;
+    // Only extend end date if needed (for future bookings)
+    const today = new Date();
+    if (today > effectiveEndDate) {
+      effectiveEndDate = today;
     }
 
     // Use proper date comparison with gte/lte
@@ -965,13 +931,17 @@ const getPaymentStatusAnalytics = async (req, res) => {
       const s = statusMap.get(status);
       s.count += 1;
       const amount = Number(item.amount) || 0;
+
+      // Skip reschedule fees from platform fees (but still count the payment)
       s.amount += amount;
 
-      // Use stored platform fee or calculate
-      if (item.platformFee) {
-        s.platformFees += Number(item.platformFee);
-      } else {
-        s.platformFees += Math.round((amount * platformFeePercentage) / 100);
+      if (amount !== 10000) {
+        // Use stored platform fee or calculate (only for non-reschedule fees)
+        if (item.platformFee) {
+          s.platformFees += Number(item.platformFee);
+        } else {
+          s.platformFees += Math.round((amount * platformFeePercentage) / 100);
+        }
       }
     });
 
@@ -1082,21 +1052,14 @@ const getAverageOrderValueAnalytics = async (req, res) => {
       .orderBy(desc(payments.createdAt))
       .limit(1);
 
-    // Adjust date range
+    // Use the requested period range - don't adjust start date
     let effectiveStartDate = startDate;
     let effectiveEndDate = endDate;
 
-    if (firstPayment && firstPayment.createdAt) {
-      effectiveStartDate = new Date(firstPayment.createdAt);
-      effectiveStartDate.setDate(effectiveStartDate.getDate() - 1);
-    }
-
-    if (lastPayment && lastPayment.createdAt) {
-      const lastPaymentDate = new Date(lastPayment.createdAt);
-      const today = new Date();
-      const todayStr = today.toISOString().split("T")[0];
-      const lastPaymentStr = lastPaymentDate.toISOString().split("T")[0];
-      effectiveEndDate = lastPaymentStr > todayStr ? lastPaymentDate : today;
+    // Only extend end date if needed (for future bookings)
+    const today = new Date();
+    if (today > effectiveEndDate) {
+      effectiveEndDate = today;
     }
 
     // Use proper date comparison with gte/lte
@@ -1149,15 +1112,21 @@ const getAverageOrderValueAnalytics = async (req, res) => {
     }
 
     // Fill in actual data - group by booking date
+    // Exclude reschedule fees from average order value calculation
     allPayments.forEach((item) => {
       if (!item.bookingDate) return;
+
+      // Skip reschedule fees (amount = 10000 paise = ₹100)
+      const amount = Number(item.amount) || 0;
+      if (amount === 10000) return;
+
       try {
         const bookingDate = new Date(item.bookingDate);
         const key = formatDateForGrouping(bookingDate, period);
         if (groupedData.has(key)) {
           const existing = groupedData.get(key);
           existing.bookingCount += 1;
-          existing.totalAmount += Number(item.amount) || 0;
+          existing.totalAmount += amount;
         }
       } catch (e) {
         console.warn("Invalid date:", item.bookingDate);
@@ -1172,14 +1141,15 @@ const getAverageOrderValueAnalytics = async (req, res) => {
       bookingCount: item.bookingCount,
     }));
 
-    // Calculate overall average
+    // Calculate overall average (excluding reschedule fees)
+    const nonReschedulePayments = allPayments.filter(p => (p.amount || 0) !== 10000);
     const overallAvg =
-      allPayments.length > 0
-        ? allPayments.reduce(
+      nonReschedulePayments.length > 0
+        ? nonReschedulePayments.reduce(
             (sum, item) => sum + (Number(item.amount) || 0),
             0,
           ) /
-          allPayments.length /
+          nonReschedulePayments.length /
           100
         : 0;
 
