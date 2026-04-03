@@ -8,7 +8,7 @@ const {
   Category,
   users,
 } = require("../models/schema");
-const { eq, and, sql, desc, innerJoin, gte, lte } = require("drizzle-orm");
+const { eq, and, sql, desc, innerJoin, gte, lte, inArray } = require("drizzle-orm");
 
 /**
  * Get admin setting value by key
@@ -87,10 +87,8 @@ const getRevenueAnalytics = async (req, res) => {
 
     console.log("[Admin Analytics] Fetching revenue for period:", period);
 
-    // Get platform fee percentage
-    const platformFeePercentage = Number(
-      await getAdminSetting("platform_fee_percentage", "5"),
-    );
+    // Platform fee is hardcoded at 5%
+    const platformFeePercentage = 5;
     const providerSharePercentage = 100 - platformFeePercentage;
 
     // Get first and last payment dates
@@ -126,7 +124,7 @@ const getRevenueAnalytics = async (req, res) => {
       .select({ bookingDate: bookings.bookingDate })
       .from(bookings)
       .innerJoin(payments, eq(payments.bookingId, bookings.id))
-      .where(eq(payments.status, "paid"))
+      .where(inArray(payments.status, ["paid", "refunded"]))
       .orderBy(desc(bookings.bookingDate))
       .limit(1);
 
@@ -185,12 +183,9 @@ const getRevenueAnalytics = async (req, res) => {
       .innerJoin(bookings, eq(payments.bookingId, bookings.id))
       .where(
         and(
-          eq(payments.status, "paid"),
+          inArray(payments.status, ["paid", "refunded"]),
           gte(bookings.bookingDate, startOfDay),
           lte(bookings.bookingDate, endOfDay),
-          // Include all bookings that have a SUCCESSFUL payment
-          // This ensures cancelled bookings with PAID reschedule fees are counted
-          sql`(${payments.status} = 'paid')`,
         ),
       )
       .orderBy(bookings.bookingDate);
@@ -239,24 +234,14 @@ const getRevenueAnalytics = async (req, res) => {
           existing.uniqueBookings.add(item.bookingId);
           existing.bookings = existing.uniqueBookings.size;
 
-          // Only add revenue if the booking is NOT cancelled/rejected/refunded AND not a reschedule fee
-          // This keeps the "Revenue" (Platform Fees) correct: it should NOT include fees from cancelled bookings or reschedule fees
-          const isEligibleForPlatformFee =
-            item.bookingStatus !== "cancelled" &&
-            item.bookingStatus !== "rejected" &&
-            item.bookingStatus !== "refunded" &&
-            item.isRefunded === false &&
-            item.amount !== 10000; // Exclude reschedule fees (₹100 = 10000 paise)
-
-          if (isEligibleForPlatformFee) {
-            if (item.platformFee) {
-              existing.revenue += Number(item.platformFee) / 100;
-            } else {
-              const fee = Math.round(
-                ((Number(item.amount) || 0) * platformFeePercentage) / 100,
-              );
-              existing.revenue += fee / 100;
-            }
+          // Count platform fee for ALL paid payments
+          if (item.platformFee !== null && item.platformFee !== undefined) {
+            existing.revenue += Number(item.platformFee) / 100;
+          } else {
+            const fee = Math.round(
+              ((Number(item.amount) || 0) * platformFeePercentage) / 100,
+            );
+            existing.revenue += fee / 100;
           }
         }
       } catch (e) {
@@ -281,27 +266,12 @@ const getRevenueAnalytics = async (req, res) => {
     const uniqueBookingIds = new Set(allPayments.map((p) => p.bookingId));
     const totalBookings = uniqueBookingIds.size;
 
-    // Filter payments for total revenue and platform fee calculations
-    // Exclude those originally rejected/cancelled unless it's a reschedule fee?
-    // Actually, user said platform fee should NOT include reschedule fee.
-    // And platform fee typically comes from regular bookings.
-    const eligiblePayments = allPayments.filter(
-      (item) =>
-        item.bookingStatus !== "cancelled" &&
-        item.bookingStatus !== "rejected" &&
-        item.bookingStatus !== "refunded" &&
-        item.isRefunded === false,
-    );
-
-    const totalRevenue = eligiblePayments.reduce(
+    const totalRevenue = allPayments.reduce(
       (sum, item) => sum + (Number(item.amount) || 0),
       0,
     );
-    const totalPlatformFees = eligiblePayments.reduce((sum, item) => {
-      // Skip reschedule fees (amount = 10000 paise = ₹100)
-      if (item.amount === 10000) return sum;
-
-      if (item.platformFee) {
+    const totalPlatformFees = allPayments.reduce((sum, item) => {
+      if (item.platformFee !== null && item.platformFee !== undefined) {
         return sum + Number(item.platformFee);
       }
       return (
@@ -309,14 +279,14 @@ const getRevenueAnalytics = async (req, res) => {
         Math.round(((Number(item.amount) || 0) * platformFeePercentage) / 100)
       );
     }, 0);
-    const totalProviderPayouts = eligiblePayments.reduce((sum, item) => {
-      if (item.providerShare) {
-        return sum + Number(item.providerShare);
+
+    const totalProviderPayouts = allPayments.reduce((sum, item) => {
+      const amount = Number(item.amount) || 0;
+      if (item.platformFee !== null && item.platformFee !== undefined) {
+        return sum + (amount - Number(item.platformFee));
       }
-      return (
-        sum +
-        Math.round(((Number(item.amount) || 0) * providerSharePercentage) / 100)
-      );
+      const fee = Math.round((amount * platformFeePercentage) / 100);
+      return sum + (amount - fee);
     }, 0);
 
     res.json({
@@ -375,10 +345,35 @@ const getCategoryAnalytics = async (req, res) => {
     let effectiveEndDate = endDate;
 
     // Only extend end date if needed (for future bookings)
+    const [lastBooking] = await db
+      .select({ bookingDate: bookings.bookingDate })
+      .from(bookings)
+      .innerJoin(payments, eq(payments.bookingId, bookings.id))
+      .where(inArray(payments.status, ["paid", "refunded"]))
+      .orderBy(desc(bookings.bookingDate))
+      .limit(1);
+
     const today = new Date();
-    if (today > effectiveEndDate) {
-      effectiveEndDate = today;
+    today.setHours(23, 59, 59, 999);
+
+    let endDateCandidate = endDate;
+    if (today > endDateCandidate) {
+      endDateCandidate = today;
     }
+
+    if (lastBooking && lastBooking.bookingDate) {
+      const lastBookingStr =
+        lastBooking.bookingDate instanceof Date
+          ? lastBooking.bookingDate.toISOString().split("T")[0]
+          : String(lastBooking.bookingDate).split("T")[0];
+
+      const bookingDate = new Date(lastBookingStr + "T23:59:59.999Z");
+      if (bookingDate > endDateCandidate) {
+        endDateCandidate = bookingDate;
+      }
+    }
+
+    effectiveEndDate = endDateCandidate;
 
     // Use proper date comparison with gte/lte
     const startOfDay = new Date(effectiveStartDate);
@@ -396,6 +391,7 @@ const getCategoryAnalytics = async (req, res) => {
         amount: payments.amount,
         platformFee: payments.platformFee,
         bookingDate: bookings.bookingDate,
+        bookingId: bookings.id,
         bookingStatus: bookings.status,
         isRefunded: bookings.isRefunded,
       })
@@ -409,11 +405,9 @@ const getCategoryAnalytics = async (req, res) => {
       .innerJoin(Category, eq(businessProfiles.categoryId, Category.id))
       .where(
         and(
-          eq(payments.status, "paid"),
+          inArray(payments.status, ["paid", "refunded"]),
           gte(bookings.bookingDate, startOfDay),
           lte(bookings.bookingDate, endOfDay),
-          // Include all bookings with a paid payment
-          sql`${payments.status} = 'paid'`,
         ),
       )
       .orderBy(bookings.bookingDate);
@@ -448,23 +442,13 @@ const getCategoryAnalytics = async (req, res) => {
 
       const amount = Number(item.amount) || 0;
 
-      // Only count revenue/fees for non-cancelled bookings AND exclude reschedule fees
-      const isEligible =
-        item.bookingStatus !== "cancelled" &&
-        item.bookingStatus !== "rejected" &&
-        item.bookingStatus !== "refunded" &&
-        item.isRefunded === false &&
-        amount !== 10000; // Exclude reschedule fees (₹100 = 10000 paise)
+      category.totalRevenue += amount;
 
-      if (isEligible) {
-        category.totalRevenue += amount;
-
-        // Use stored platform fee or calculate
-        if (item.platformFee) {
-          category.platformFees += Number(item.platformFee);
-        } else {
-          category.platformFees += (amount * platformFeePercentage) / 100;
-        }
+      // Use stored platform fee or calculate
+      if (item.platformFee !== null && item.platformFee !== undefined) {
+        category.platformFees += Number(item.platformFee);
+      } else {
+        category.platformFees += (amount * platformFeePercentage) / 100;
       }
 
       // Always count the booking if it had a paid payment (like reschedule)
@@ -486,7 +470,8 @@ const getCategoryAnalytics = async (req, res) => {
     // Sort by platform fees (admin's earnings)
     categoriesList.sort((a, b) => b.platformFees - a.platformFees);
 
-    const totalBookings = allPayments.length;
+    const uniqueBookingIds = new Set(allPayments.map((p) => p.bookingId));
+    const totalBookings = uniqueBookingIds.size;
     const totalRevenue =
       allPayments.reduce((sum, item) => sum + (Number(item.amount) || 0), 0) /
       100;
@@ -551,10 +536,35 @@ const getStatusAnalytics = async (req, res) => {
     let effectiveEndDate = endDate;
 
     // Only extend end date if needed (for future bookings)
+    const [lastBooking] = await db
+      .select({ bookingDate: bookings.bookingDate })
+      .from(bookings)
+      .innerJoin(payments, eq(payments.bookingId, bookings.id))
+      .where(inArray(payments.status, ["paid", "refunded"]))
+      .orderBy(desc(bookings.bookingDate))
+      .limit(1);
+
     const today = new Date();
-    if (today > effectiveEndDate) {
-      effectiveEndDate = today;
+    today.setHours(23, 59, 59, 999);
+
+    let endDateCandidate = endDate;
+    if (today > endDateCandidate) {
+      endDateCandidate = today;
     }
+
+    if (lastBooking && lastBooking.bookingDate) {
+      const lastBookingStr =
+        lastBooking.bookingDate instanceof Date
+          ? lastBooking.bookingDate.toISOString().split("T")[0]
+          : String(lastBooking.bookingDate).split("T")[0];
+
+      const bookingDate = new Date(lastBookingStr + "T23:59:59.999Z");
+      if (bookingDate > endDateCandidate) {
+        endDateCandidate = bookingDate;
+      }
+    }
+
+    effectiveEndDate = endDateCandidate;
 
     // Use proper date comparison with gte/lte
     const startOfDay = new Date(effectiveStartDate);
@@ -565,6 +575,7 @@ const getStatusAnalytics = async (req, res) => {
     // Get all bookings with status within date range (based on booking date)
     const allBookings = await db
       .select({
+        id: bookings.id,
         status: bookings.status,
         isRefunded: bookings.isRefunded,
         totalPrice: bookings.totalPrice,
@@ -576,7 +587,7 @@ const getStatusAnalytics = async (req, res) => {
       .innerJoin(payments, eq(payments.bookingId, bookings.id))
       .where(
         and(
-          eq(payments.status, "paid"),
+          inArray(payments.status, ["paid", "refunded"]),
           gte(bookings.bookingDate, startOfDay),
           lte(bookings.bookingDate, endOfDay),
         ),
@@ -597,11 +608,6 @@ const getStatusAnalytics = async (req, res) => {
 
     allBookings.forEach((item) => {
       const status = item.status || "unknown";
-      const isRefunded = item.isRefunded || false;
-
-      // Skip refunded bookings from the status breakdown as requested
-      if (isRefunded || status === "refunded") return;
-
       const effectiveStatus = status;
       const bookingId = item.id;
 
@@ -624,24 +630,13 @@ const getStatusAnalytics = async (req, res) => {
       }
 
       const amount = Number(item.amount) || 0;
-      // Skip reschedule fees from revenue calculation
-      if (amount !== 10000) {
-        s.revenue += amount;
-      }
+      // Add revenue and platform fees for all statuses
+      s.revenue += amount;
 
-      // Only add platform fees for bookings that are NOT cancelled/rejected/refunded AND not reschedule fees
-      if (
-        status !== "cancelled" &&
-        status !== "rejected" &&
-        status !== "refunded" &&
-        !isRefunded &&
-        amount !== 10000
-      ) {
-        if (item.platformFee) {
-          s.platformFees += Number(item.platformFee);
-        } else {
-          s.platformFees += (amount * platformFeePercentage) / 100;
-        }
+      if (item.platformFee !== null && item.platformFee !== undefined) {
+        s.platformFees += Number(item.platformFee);
+      } else {
+        s.platformFees += (amount * platformFeePercentage) / 100;
       }
     });
 
@@ -656,7 +651,12 @@ const getStatusAnalytics = async (req, res) => {
       unknown: "hsl(0, 0%, 50%)", // Gray
     };
 
-    const totalBookings = allBookings.length;
+    // Use the sum of status counts as the total for percentage (to reflect unique bookings)
+    const totalUniqueBookings = Array.from(statusMap.values()).reduce(
+      (sum, data) => sum + data.count,
+      0,
+    );
+
     const statusBreakdown = Array.from(statusMap.entries()).map(
       ([status, data]) => ({
         status,
@@ -664,8 +664,8 @@ const getStatusAnalytics = async (req, res) => {
         revenue: data.revenue / 100, // Convert to rupees
         platformFees: data.platformFees / 100, // Convert to rupees
         percentage:
-          totalBookings > 0
-            ? ((data.count / totalBookings) * 100).toFixed(1)
+          totalUniqueBookings > 0
+            ? ((data.count / totalUniqueBookings) * 100).toFixed(1)
             : "0",
         fill: statusColors[status] || statusColors.unknown,
       }),
@@ -687,7 +687,7 @@ const getStatusAnalytics = async (req, res) => {
       ) / 100;
     res.json({
       period,
-      totalBookings,
+      totalBookings: totalUniqueBookings,
       statusBreakdown,
       totalRevenue,
       totalPlatformFees,
@@ -735,10 +735,35 @@ const getTopProvidersAnalytics = async (req, res) => {
     let effectiveEndDate = endDate;
 
     // Only extend end date if needed (for future bookings)
+    const [lastBooking] = await db
+      .select({ bookingDate: bookings.bookingDate })
+      .from(bookings)
+      .innerJoin(payments, eq(payments.bookingId, bookings.id))
+      .where(inArray(payments.status, ["paid", "refunded"]))
+      .orderBy(desc(bookings.bookingDate))
+      .limit(1);
+
     const today = new Date();
-    if (today > effectiveEndDate) {
-      effectiveEndDate = today;
+    today.setHours(23, 59, 59, 999);
+
+    let endDateCandidate = endDate;
+    if (today > endDateCandidate) {
+      endDateCandidate = today;
     }
+
+    if (lastBooking && lastBooking.bookingDate) {
+      const lastBookingStr =
+        lastBooking.bookingDate instanceof Date
+          ? lastBooking.bookingDate.toISOString().split("T")[0]
+          : String(lastBooking.bookingDate).split("T")[0];
+
+      const bookingDate = new Date(lastBookingStr + "T23:59:59.999Z");
+      if (bookingDate > endDateCandidate) {
+        endDateCandidate = bookingDate;
+      }
+    }
+
+    effectiveEndDate = endDateCandidate;
 
     // Use proper date comparison with gte/lte
     const startOfDay = new Date(effectiveStartDate);
@@ -764,11 +789,9 @@ const getTopProvidersAnalytics = async (req, res) => {
       .innerJoin(users, eq(businessProfiles.providerId, users.id))
       .where(
         and(
-          eq(payments.status, "paid"),
+          inArray(payments.status, ["paid", "refunded"]),
           gte(payments.createdAt, startOfDay),
           lte(payments.createdAt, endOfDay),
-          // Exclude refunded/cancelled/rejected bookings
-          sql`(${bookings.status} NOT IN ('cancelled', 'rejected', 'refunded') AND ${bookings.isRefunded} = false)`,
         ),
       );
 
@@ -787,9 +810,7 @@ const getTopProvidersAnalytics = async (req, res) => {
     allPayments.forEach((item) => {
       if (!item.providerId) return;
 
-      // Skip reschedule fees (amount = 10000 paise = ₹100)
       const amount = Number(item.amount) || 0;
-      if (amount === 10000) return;
 
       if (!providerMap.has(item.providerId)) {
         providerMap.set(item.providerId, {
@@ -807,7 +828,7 @@ const getTopProvidersAnalytics = async (req, res) => {
       provider.totalRevenue += amount;
 
       // Use stored platform fee or calculate
-      if (item.platformFee) {
+      if (item.platformFee !== null && item.platformFee !== undefined) {
         provider.platformFees += Number(item.platformFee);
       } else {
         provider.platformFees += (amount * platformFeePercentage) / 100;
@@ -883,10 +904,35 @@ const getPaymentStatusAnalytics = async (req, res) => {
     let effectiveEndDate = endDate;
 
     // Only extend end date if needed (for future bookings)
+    const [lastBooking] = await db
+      .select({ bookingDate: bookings.bookingDate })
+      .from(bookings)
+      .innerJoin(payments, eq(payments.bookingId, bookings.id))
+      .where(inArray(payments.status, ["paid", "refunded"]))
+      .orderBy(desc(bookings.bookingDate))
+      .limit(1);
+
     const today = new Date();
-    if (today > effectiveEndDate) {
-      effectiveEndDate = today;
+    today.setHours(23, 59, 59, 999);
+
+    let endDateCandidate = endDate;
+    if (today > endDateCandidate) {
+      endDateCandidate = today;
     }
+
+    if (lastBooking && lastBooking.bookingDate) {
+      const lastBookingStr =
+        lastBooking.bookingDate instanceof Date
+          ? lastBooking.bookingDate.toISOString().split("T")[0]
+          : String(lastBooking.bookingDate).split("T")[0];
+
+      const bookingDate = new Date(lastBookingStr + "T23:59:59.999Z");
+      if (bookingDate > endDateCandidate) {
+        endDateCandidate = bookingDate;
+      }
+    }
+
+    effectiveEndDate = endDateCandidate;
 
     // Use proper date comparison with gte/lte
     const startOfDay = new Date(effectiveStartDate);
@@ -1057,10 +1103,35 @@ const getAverageOrderValueAnalytics = async (req, res) => {
     let effectiveEndDate = endDate;
 
     // Only extend end date if needed (for future bookings)
+    const [lastBooking] = await db
+      .select({ bookingDate: bookings.bookingDate })
+      .from(bookings)
+      .innerJoin(payments, eq(payments.bookingId, bookings.id))
+      .where(inArray(payments.status, ["paid", "refunded"]))
+      .orderBy(desc(bookings.bookingDate))
+      .limit(1);
+
     const today = new Date();
-    if (today > effectiveEndDate) {
-      effectiveEndDate = today;
+    today.setHours(23, 59, 59, 999);
+
+    let endDateCandidate = endDate;
+    if (today > endDateCandidate) {
+      endDateCandidate = today;
     }
+
+    if (lastBooking && lastBooking.bookingDate) {
+      const lastBookingStr =
+        lastBooking.bookingDate instanceof Date
+          ? lastBooking.bookingDate.toISOString().split("T")[0]
+          : String(lastBooking.bookingDate).split("T")[0];
+
+      const bookingDate = new Date(lastBookingStr + "T23:59:59.999Z");
+      if (bookingDate > endDateCandidate) {
+        endDateCandidate = bookingDate;
+      }
+    }
+
+    effectiveEndDate = endDateCandidate;
 
     // Use proper date comparison with gte/lte
     const startOfDay = new Date(effectiveStartDate);
@@ -1078,11 +1149,9 @@ const getAverageOrderValueAnalytics = async (req, res) => {
       .innerJoin(bookings, eq(payments.bookingId, bookings.id))
       .where(
         and(
-          eq(payments.status, "paid"),
+          inArray(payments.status, ["paid", "refunded"]),
           gte(bookings.bookingDate, startOfDay),
           lte(bookings.bookingDate, endOfDay),
-          // Exclude refunded/cancelled/rejected bookings
-          sql`(${bookings.status} NOT IN ('cancelled', 'rejected', 'refunded') AND ${bookings.isRefunded} = false)`,
         ),
       )
       .orderBy(bookings.bookingDate);
@@ -1116,9 +1185,7 @@ const getAverageOrderValueAnalytics = async (req, res) => {
     allPayments.forEach((item) => {
       if (!item.bookingDate) return;
 
-      // Skip reschedule fees (amount = 10000 paise = ₹100)
       const amount = Number(item.amount) || 0;
-      if (amount === 10000) return;
 
       try {
         const bookingDate = new Date(item.bookingDate);

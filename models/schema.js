@@ -138,6 +138,7 @@ const services = pgTable("services", {
   deactivatedBy: integer("deactivated_by").references(() => users.id), // Admin who deactivated
   rating: decimal("rating", { precision: 3, scale: 2 }).default(0),
   totalReviews: integer("total_reviews").default(0),
+  maxAllowBooking: integer("max_allow_booking").default(1).notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 }, (table) => ({
   businessProfileIdIdx: index("services_business_profile_id_idx").on(table.businessProfileId),
@@ -307,16 +308,7 @@ const paymentIntents = pgTable(
     // Reschedule fields
     isReschedule: boolean("is_reschedule").default(false),
     rescheduleBookingId: integer("reschedule_booking_id"), // References bookings.id for reschedule
-  },
-  (table) => ({
-    // Partial unique index: Only one pending intent per slot per date per service
-    // This allows different services to be booked simultaneously at the same time slot
-    slotDateServicePendingUnique: uniqueIndex(
-      "payment_intents_slot_date_service_pending_unique",
-    )
-      .on(table.slotId, table.bookingDate, table.serviceId)
-      .where(sql`${table.status} = 'pending'`),
-  }),
+  }
 );
 // Payment Details - Stores UPI/Bank details for admin and providers
 const paymentDetails = pgTable("payment_details", {

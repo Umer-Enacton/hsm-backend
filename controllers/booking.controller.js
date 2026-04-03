@@ -20,6 +20,7 @@ const {
   sql,
   ne,
   inArray,
+  ilike,
 } = require("drizzle-orm");
 const { logBookingHistory } = require("../utils/historyHelper");
 const {
@@ -154,17 +155,54 @@ const getBookingById = async (req, res) => {
 
 // Get all bookings for logged-in customer
 // OPTIMIZED: Uses batch queries instead of N+1 pattern
+// PAGINATION: Supports page, limit, and status query parameters with server-side filtering
 const getCustomerBookings = async (req, res) => {
   try {
     const userId = req.token.id;
+
+    // Pagination and filter parameters
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const offset = (page - 1) * limit;
+    const status = req.query.status; // Status filter: confirmed, completed, cancelled
+
+    // Build WHERE conditions for server-side filtering
+    const conditions = [eq(bookings.customerId, userId)];
+
+    // Add status filter if provided
+    if (status && status !== "all") {
+      conditions.push(eq(bookings.status, status));
+    }
+
+    const whereClause = and(...conditions);
+
+    // Get total count for pagination (filtered)
+    const countQuery = db
+      .select({ count: sql`count(*)` })
+      .from(bookings)
+      .where(whereClause);
+
+    const [{ count }] = await countQuery;
+
+    // Fetch paginated bookings with filters
     const customerBookings = await db
       .select()
       .from(bookings)
-      .where(eq(bookings.customerId, userId))
-      .orderBy(desc(bookings.bookingDate));
+      .where(whereClause)
+      .orderBy(desc(bookings.bookingDate))
+      .limit(limit)
+      .offset(offset);
 
     if (customerBookings.length === 0) {
-      return res.status(200).json({ bookings: [] });
+      return res.status(200).json({
+        bookings: [],
+        pagination: {
+          page,
+          limit,
+          total: count,
+          totalPages: Math.ceil(count / limit),
+        },
+      });
     }
 
     // Collect all IDs for batch queries (same pattern as getProviderBookings)
@@ -256,7 +294,15 @@ const getCustomerBookings = async (req, res) => {
       };
     });
 
-    res.status(200).json({ bookings: bookingsWithDetails, total: customerBookings.length });
+    res.status(200).json({
+      bookings: bookingsWithDetails,
+      pagination: {
+        page,
+        limit,
+        total: count,
+        totalPages: Math.ceil(count / limit),
+      },
+    });
   } catch (error) {
     console.error("Error fetching customer bookings:", error);
     res.status(500).json({ message: "Server error", error: error.message });
@@ -264,6 +310,7 @@ const getCustomerBookings = async (req, res) => {
 };
 
 // Get all bookings for logged-in provider
+// PAGINATION: Supports page, limit, and status query parameters with server-side filtering
 const getProviderBookings = async (req, res) => {
   try {
     console.log("════════════════════════════════════════════════════════════");
@@ -271,6 +318,12 @@ const getProviderBookings = async (req, res) => {
     console.log("════════════════════════════════════════════════════════════");
     const userId = req.token.id;
     console.log("[getProviderBookings] Fetching bookings for userId:", userId);
+
+    // Pagination and filter parameters
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const offset = (page - 1) * limit;
+    const status = req.query.status; // Status filter: confirmed, completed, cancelled
 
     // First get the business profile for this provider
     const business = await db
@@ -305,20 +358,54 @@ const getProviderBookings = async (req, res) => {
       business[0].businessName,
     );
 
-    // Get all bookings for this provider
+    // Build WHERE conditions for server-side filtering
+    const conditions = [eq(bookings.businessProfileId, business[0].id)];
+
+    // Add status filter if provided
+    if (status && status !== "all") {
+      conditions.push(eq(bookings.status, status));
+    }
+
+    const whereClause = and(...conditions);
+
+    // Get total count for pagination (filtered)
+    const countQuery = db
+      .select({ count: sql`count(*)` })
+      .from(bookings)
+      .where(whereClause);
+
+    const [{ count }] = await countQuery;
+
+    // Get paginated bookings for this provider with filters
     const providerBookings = await db
       .select()
       .from(bookings)
-      .where(eq(bookings.businessProfileId, business[0].id))
-      .orderBy(desc(bookings.bookingDate));
+      .where(whereClause)
+      .orderBy(desc(bookings.bookingDate))
+      .limit(limit)
+      .offset(offset);
 
     console.log(
-      "[getProviderBookings] Found bookings:",
+      "[getProviderBookings] Found bookings (page",
+      page,
+      "):",
       providerBookings.length,
+      "of",
+      count,
+      "total",
+      status ? `(filtered by status: ${status})` : "",
     );
 
     if (providerBookings.length === 0) {
-      return res.status(200).json({ bookings: [] });
+      return res.status(200).json({
+        bookings: [],
+        pagination: {
+          page,
+          limit,
+          total: count,
+          totalPages: Math.ceil(count / limit),
+        },
+      });
     }
 
     // Collect all IDs for batch queries
@@ -419,6 +506,10 @@ const getProviderBookings = async (req, res) => {
         // Provider payout tracking
         providerPayoutAmount: booking.providerPayoutAmount,
         providerPayoutStatus: booking.providerPayoutStatus,
+        // Cancellation tracking
+        cancelledAt: booking.cancelledAt,
+        cancelledBy: booking.cancelledBy,
+        cancellationReason: booking.cancellationReason,
         // Completion verification photos
         beforePhotoUrl: booking.beforePhotoUrl || null,
         afterPhotoUrl: booking.afterPhotoUrl || null,
@@ -455,7 +546,15 @@ const getProviderBookings = async (req, res) => {
       );
     }
 
-    res.status(200).json({ bookings: bookingsWithCustomers });
+    res.status(200).json({
+      bookings: bookingsWithCustomers,
+      pagination: {
+        page,
+        limit,
+        total: count,
+        totalPages: Math.ceil(count / limit),
+      },
+    });
   } catch (error) {
     console.error("Error fetching provider bookings:", error);
     res.status(500).json({ message: "Server error", error: error.message });
@@ -945,11 +1044,11 @@ const rejectBooking = async (req, res) => {
       }
     }
 
-    // 6. Update booking status - provider rejection always sets status to "rejected"
+    // 6. Update booking status - provider rejection now sets status to "cancelled" (simplified model)
     const [updatedBooking] = await db
       .update(bookings)
       .set({
-        status: "rejected",
+        status: "cancelled",
         isRefunded: !!refundDetails,
         cancelledAt: new Date(),
         cancellationReason: "Rejected by provider",
@@ -964,10 +1063,8 @@ const rejectBooking = async (req, res) => {
     // 8. Log history
     await logBookingHistory(
       bookingId,
-      "rejected",
-      refundDetails 
-        ? `Booking was rejected by provider. Refund of ₹${refundDetails.refundAmount} initiated.`
-        : "Booking was rejected by provider.",
+      "cancelled",
+      "Booking Cancelled by Provider",
       "provider",
       userId
     );
@@ -1021,47 +1118,43 @@ function calculateRescheduleFee(rescheduleCount, bookingAmount, settings) {
 }
 
 /**
- * Calculate cancellation refund based on booking status
- * NEW RULES:
- * - Pending/Reschedule_Pending: 100% refund to customer
- * - Confirmed: 85% refund to customer, 10% payout to provider, 5% platform fee
- * @param {string} bookingStatus - Current booking status
+ * Calculate cancellation refund based on time remaining
  * @param {number} servicePrice - Service price in paise
- * @returns {object} - { customerRefundAmount, customerRefundPercentage, providerPayoutAmount, providerPayoutPercentage, platformFeeAmount, platformFeePercentage }
+ * @param {number} hoursRemaining - Hours remaining before slot starts
+ * @param {boolean} isProvider - True if provider cancelled
+ * @returns {object}
  */
-function calculateCancellationRefund(bookingStatus, servicePrice) {
-  // Fixed refund percentages
-  const PENDING_REFUND = 100; // 100% refund for pending
-  const CONFIRMED_CUSTOMER_REFUND = 85; // 85% refund to customer for confirmed
-  const CONFIRMED_PROVIDER_PAYOUT = 10; // 10% payout to provider for confirmed
-  const CONFIRMED_PLATFORM_FEE = 5; // 5% platform fee for confirmed
-
-  let customerRefundAmount = 0;
+function calculateCancellationRefund(servicePrice, hoursRemaining, isProvider = false) {
   let customerRefundPercentage = 0;
-  let providerPayoutAmount = 0;
   let providerPayoutPercentage = 0;
-  let platformFeeAmount = 0;
   let platformFeePercentage = 0;
 
-  if (bookingStatus === "pending" || bookingStatus === "reschedule_pending") {
-    // Full refund for pending bookings
-    customerRefundPercentage = PENDING_REFUND;
-    customerRefundAmount = servicePrice; // 100%
-  } else if (bookingStatus === "confirmed") {
-    // 85% refund to customer, 10% to provider, 5% platform fee for confirmed bookings
-    customerRefundPercentage = CONFIRMED_CUSTOMER_REFUND;
-    customerRefundAmount = Math.round(
-      (servicePrice * CONFIRMED_CUSTOMER_REFUND) / 100,
-    );
-    providerPayoutPercentage = CONFIRMED_PROVIDER_PAYOUT;
-    providerPayoutAmount = Math.round(
-      (servicePrice * CONFIRMED_PROVIDER_PAYOUT) / 100,
-    );
-    platformFeePercentage = CONFIRMED_PLATFORM_FEE;
-    platformFeeAmount = Math.round(
-      (servicePrice * CONFIRMED_PLATFORM_FEE) / 100,
-    );
+  if (isProvider) {
+    customerRefundPercentage = 100;
+  } else {
+    if (hoursRemaining > 24) {
+      customerRefundPercentage = 100;
+      providerPayoutPercentage = 0;
+      platformFeePercentage = 0;
+    } else if (hoursRemaining > 12) {
+      customerRefundPercentage = 75;
+      providerPayoutPercentage = 20;
+      platformFeePercentage = 5;
+    } else if (hoursRemaining > 4) {
+      customerRefundPercentage = 50;
+      providerPayoutPercentage = 45;
+      platformFeePercentage = 5;
+    } else {
+      // 30 mins to 4 hours
+      customerRefundPercentage = 25;
+      providerPayoutPercentage = 70;
+      platformFeePercentage = 5;
+    }
   }
+
+  const customerRefundAmount = Math.round((servicePrice * customerRefundPercentage) / 100);
+  const providerPayoutAmount = Math.round((servicePrice * providerPayoutPercentage) / 100);
+  const platformFeeAmount = Math.round((servicePrice * platformFeePercentage) / 100);
 
   return {
     customerRefundAmount,
@@ -1259,12 +1352,12 @@ const requestReschedule = async (req, res) => {
       .set({
         slotId: slotId,
         bookingDate: bookingDateObj,
-        status: "reschedule_pending",
-        rescheduleOutcome: "pending", // Track reschedule state for display
-        // Store original values in case of decline
+        status: "confirmed", // Auto-confirmed for customer reschedule
+        rescheduleOutcome: "accepted", // Auto-accepted
+        // Store original values for history display
         previousSlotId: booking.slotId,
         previousBookingDate: booking.bookingDate,
-        previousSlotTime: currentSlot?.startTime || null, // Store slot time for display
+        previousSlotTime: currentSlot?.startTime || null,
         rescheduleReason: reason,
         rescheduledBy: "customer",
         rescheduledAt: new Date(),
@@ -1275,21 +1368,26 @@ const requestReschedule = async (req, res) => {
       .where(eq(bookings.id, bookingId))
       .returning();
 
-    // Send notification to provider about reschedule request
+    // Send notification to provider about reschedule
     await notificationTemplates.rescheduleRequested(bookingId);
 
-    // Log history
+    // Log history - single consolidated event
     await logBookingHistory(
       bookingId,
-      "reschedule_pending",
-      `Reschedule requested by customer. Reason: ${reason || "No reason provided"}.`,
+      "rescheduled",
+      "Booking rescheduled by customer",
       "customer",
-      userId
+      userId,
+      {
+        previousDate: booking.bookingDate,
+        previousTime: currentSlot?.startTime || "N/A",
+        newDate: bookingDateObj,
+        newTime: slot.startTime || "N/A"
+      }
     );
 
     return res.status(200).json({
-      message:
-        "Reschedule request submitted. Provider will review your request.",
+      message: "Booking rescheduled successfully.",
       booking: updatedBooking,
       rescheduleFee: {
         amount: paiseToRupees(feeAmount), // Flat ₹100
@@ -1510,6 +1608,29 @@ const cancelBooking = async (req, res) => {
       return res.status(404).json({ message: "Business profile not found" });
     }
 
+    // Get current slot details to calculate hours remaining
+    const [currentSlot] = await db
+      .select({ startTime: slots.startTime })
+      .from(slots)
+      .where(eq(slots.id, booking.slotId))
+      .limit(1);
+
+    let hoursRemaining = 999;
+    if (currentSlot && booking.bookingDate) {
+      const slotDate = new Date(booking.bookingDate);
+      const timeParts = currentSlot.startTime.split(":");
+      slotDate.setHours(parseInt(timeParts[0], 10), parseInt(timeParts[1], 10), 0, 0);
+
+      const now = new Date();
+      hoursRemaining = (slotDate.getTime() - now.getTime()) / (1000 * 60 * 60);
+
+      if (hoursRemaining < 0.5) {
+        return res.status(400).json({
+          message: "Cannot cancel a booking less than 30 minutes before the start time.",
+        });
+      }
+    }
+
     // Calculate refund and provider payout based on new rules
     const {
       customerRefundAmount,
@@ -1518,26 +1639,28 @@ const cancelBooking = async (req, res) => {
       providerPayoutPercentage,
       platformFeeAmount,
       platformFeePercentage,
-    } = calculateCancellationRefund(booking.status, booking.totalPrice);
+    } = calculateCancellationRefund(booking.totalPrice, hoursRemaining, false);
 
     // Check if payment exists and process refund
     let refundDetails = null;
     let providerPayoutDetails = null;
     let platformFeeDetails = null;
-    const [payment] = await db
+    const allPaidPayments = await db
       .select()
       .from(payments)
       .where(
         and(eq(payments.bookingId, bookingId), eq(payments.status, "paid")),
       )
-      .limit(1);
+      .orderBy(desc(payments.amount));
+
+    const payment = allPaidPayments[0];
 
     if (payment && payment.razorpayPaymentId && customerRefundAmount > 0) {
       try {
         // Refund customer portion
         const refund = await initiateRefund(
           payment.razorpayPaymentId,
-          customerRefundAmount,
+          rupeesToPaise(customerRefundAmount),
           `Booking cancelled by customer - ${customerRefundPercentage}% refund`,
         );
 
@@ -1562,7 +1685,12 @@ const cancelBooking = async (req, res) => {
         return res.status(500).json({
           message:
             "Failed to process refund. Please try again or contact support.",
-          error: refundError.message,
+          error: refundError.message || "Unknown refund error",
+          debug: {
+            paymentId: payment?.razorpayPaymentId,
+            amount: customerRefundAmount,
+            bookingId
+          }
         });
       }
     }
@@ -1614,7 +1742,7 @@ const cancelBooking = async (req, res) => {
     await logBookingHistory(
       bookingId,
       "cancelled",
-      `Booking was cancelled by customer. Reason: ${reason || "Cancelled by customer"}.`,
+      "Booking Cancelled by Customer",
       "customer",
       userId
     );
@@ -1702,14 +1830,8 @@ const approveReschedule = async (req, res) => {
     // Send notification to customer about approved reschedule
     await notificationTemplates.rescheduleApproved(bookingId);
 
-    // Log history
-    await logBookingHistory(
-      bookingId,
-      "confirmed",
-      "Provider approved the reschedule request.",
-      "provider",
-      userId
-    );
+    // Note: No history logging here - the reschedule event is already logged
+    // when customer initiates the reschedule with all from/to details
 
     return res.status(200).json({
       message:
@@ -1848,11 +1970,11 @@ const declineReschedule = async (req, res) => {
     // Send notification to customer about declined reschedule
     await notificationTemplates.rescheduleDeclined(bookingId);
 
-    // Log history
+    // Log history - single event for declined reschedule
     await logBookingHistory(
       bookingId,
-      "confirmed",
-      "Provider declined the reschedule request. Original time restored.",
+      "rescheduled",
+      "Reschedule declined by provider. Original booking restored.",
       "provider",
       userId
     );
@@ -2155,7 +2277,7 @@ const completeBooking = async (req, res) => {
     await logBookingHistory(
       bookingId,
       "completed",
-      "Booking was marked as completed by provider.",
+      "Booking Completed",
       "provider",
       userId
     );
@@ -2277,6 +2399,13 @@ const providerReschedule = async (req, res) => {
       });
     }
 
+    // Fetch current slot to get its startTime for previousSlotTime
+    const [currentSlot] = await db
+      .select({ startTime: slots.startTime })
+      .from(slots)
+      .where(eq(slots.id, booking.slotId))
+      .limit(1);
+
     // Update booking with new slot (provider reschedule is auto-approved)
     const [updatedBooking] = await db
       .update(bookings)
@@ -2284,12 +2413,31 @@ const providerReschedule = async (req, res) => {
         slotId: slotId,
         bookingDate: bookingDateObj,
         status: "confirmed", // Auto-confirmed for provider reschedule
+        // Preserve previous details for UI "From -> To" display
+        previousSlotId: booking.slotId,
+        previousSlotTime: currentSlot?.startTime || null,
+        previousBookingDate: booking.bookingDate,
         rescheduleReason: reason,
         rescheduledBy: "provider",
         rescheduledAt: new Date(),
       })
       .where(eq(bookings.id, bookingId))
       .returning();
+
+    // Log history for provider reschedule with detailed "From -> To" information
+    await logBookingHistory(
+      bookingId,
+      "rescheduled",
+      "Booking rescheduled by provider",
+      "provider",
+      userId,
+      {
+        previousDate: booking.bookingDate,
+        previousTime: currentSlot?.startTime || "N/A",
+        newDate: bookingDateObj,
+        newTime: slot.startTime || "N/A"
+      }
+    );
 
     // Send notification to customer about provider reschedule
     const { notificationTemplates } = require('../utils/notificationHelper');
@@ -2311,27 +2459,111 @@ const providerReschedule = async (req, res) => {
 /**
  * Get all bookings (admin only)
  * OPTIMIZED: Uses batch queries instead of N+1 pattern
+ * Server-side filtering by status and search
  * GET /admin/bookings/all
  */
 const getAllBookingsForAdmin = async (req, res) => {
   try {
-    const { status, limit = 50, offset = 0 } = req.query;
+    const { status, page = 1, limit = 10, search } = req.query;
 
-    // Fetch all bookings
-    let allBookings = await db
+    // Calculate offset from page and limit
+    const offset = (Number(page) - 1) * Number(limit);
+
+    // Build WHERE conditions for server-side filtering
+    const conditions = [];
+
+    // Status filter
+    if (status && status !== "all") {
+      conditions.push(eq(bookings.status, status));
+    }
+
+    // Search filter - search across customer name, business name, service name, and booking ID
+    if (search && search.trim()) {
+      const searchTerm = `%${search.trim()}%`;
+
+      // First, get matching customer IDs
+      const matchingCustomers = await db
+        .select({ id: users.id })
+        .from(users)
+        .where(ilike(users.name, searchTerm));
+
+      // Get matching business IDs
+      const matchingBusinesses = await db
+        .select({ id: businessProfiles.id })
+        .from(businessProfiles)
+        .where(ilike(businessProfiles.businessName, searchTerm));
+
+      // Get matching service IDs
+      const matchingServices = await db
+        .select({ id: services.id })
+        .from(services)
+        .where(ilike(services.name, searchTerm));
+
+      const customerIds = matchingCustomers.map((c) => c.id);
+      const businessIds = matchingBusinesses.map((b) => b.id);
+      const serviceIds = matchingServices.map((s) => s.id);
+
+      // Build search conditions with OR logic
+      const searchConditions = [];
+
+      // Search by booking ID (exact match or partial)
+      searchConditions.push(ilike(bookings.id.toString(), searchTerm));
+
+      // Search by customer name
+      if (customerIds.length > 0) {
+        searchConditions.push(inArray(bookings.customerId, customerIds));
+      }
+
+      // Search by business name
+      if (businessIds.length > 0) {
+        searchConditions.push(inArray(bookings.businessProfileId, businessIds));
+      }
+
+      // Search by service name
+      if (serviceIds.length > 0) {
+        searchConditions.push(inArray(bookings.serviceId, serviceIds));
+      }
+
+      if (searchConditions.length > 0) {
+        conditions.push(or(...searchConditions));
+      }
+    }
+
+    // Build the WHERE clause
+    const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
+
+    // Get total count for pagination (filtered)
+    let countQuery = db.select({ count: sql`count(*)` }).from(bookings);
+    if (whereClause) {
+      countQuery = countQuery.where(whereClause);
+    }
+    const [{ count }] = await countQuery;
+
+    const totalPages = Math.ceil(count / Number(limit));
+
+    // Fetch filtered bookings with pagination
+    let bookingsQuery = db
       .select()
       .from(bookings)
       .orderBy(desc(bookings.bookingDate))
       .limit(Number(limit))
-      .offset(Number(offset));
+      .offset(offset);
+
+    if (whereClause) {
+      bookingsQuery = bookingsQuery.where(whereClause);
+    }
+
+    const allBookings = await bookingsQuery;
 
     if (allBookings.length === 0) {
-      const [{ count }] = await db.select({ count: sql`count(*)` }).from(bookings);
       return res.status(200).json({
         bookings: [],
-        total: count,
-        limit: Number(limit),
-        offset: Number(offset),
+        pagination: {
+          page: Number(page),
+          limit: Number(limit),
+          total: count,
+          totalPages: totalPages,
+        },
       });
     }
 
@@ -2421,22 +2653,14 @@ const getAllBookingsForAdmin = async (req, res) => {
       };
     });
 
-    // Apply status filter if provided
-    let filteredBookings = enrichedBookings;
-    if (status && status !== "all") {
-      filteredBookings = enrichedBookings.filter((b) => b.status === status);
-    }
-
-    // Get total count
-    const [{ count }] = await db
-      .select({ count: sql`count(*)` })
-      .from(bookings);
-
     return res.status(200).json({
-      bookings: filteredBookings,
-      total: count,
-      limit: Number(limit),
-      offset: Number(offset),
+      bookings: enrichedBookings,
+      pagination: {
+        page: Number(page),
+        limit: Number(limit),
+        total: count,
+        totalPages: totalPages,
+      },
     });
   } catch (error) {
     console.error("Error fetching all bookings:", error);
@@ -2880,8 +3104,6 @@ const uploadCompletionPhotos = async (req, res) => {
         eq(bookings.businessProfileId, businessProfiles.id),
       )
       .where(eq(bookings.id, bookingId));
-    await logBookingHistory(bookingId, "reschedule_rejected", "Provider rejected the requested reschedule.", "provider", userId);
-    await logBookingHistory(bookingId, "reschedule_accepted", "Provider accepted the requested reschedule.", "provider", userId);
 
     if (!booking) {
       return res.status(404).json({ message: "Booking not found" });
@@ -2921,6 +3143,117 @@ const uploadCompletionPhotos = async (req, res) => {
 
 const { bookingHistory } = require("../models/schema");
 
+/**
+ * Provider cancels booking with 100% refund
+ * DELETE /provider/booking/:id/cancel
+ * Optional query param: ?reason=...
+ */
+const cancelByProvider = async (req, res) => {
+  try {
+    const bookingId = Number(req.params.id);
+    const userId = req.token.id; 
+    
+    const [businessProfile] = await db
+      .select({ id: businessProfiles.id })
+      .from(businessProfiles)
+      .where(eq(businessProfiles.providerId, userId))
+      .limit(1);
+
+    const businessProfileId = businessProfile ? businessProfile.id : (req.token.businessProfileId || req.token.providerId);
+    const reason = req.query.reason || req.body?.reason || "Cancelled by provider";
+
+    if (!bookingId) return res.status(400).json({ message: "Booking ID is required" });
+
+    const [booking] = await db.select().from(bookings).where(eq(bookings.id, bookingId));
+    if (!booking) return res.status(404).json({ message: "Booking not found" });
+
+    // Verify authorized provider or admin
+    if (booking.businessProfileId !== businessProfileId && req.token.role !== "admin") {
+      return res.status(403).json({ message: "You are not authorized to cancel this booking" });
+    }
+
+    if (!["pending", "confirmed", "reschedule_pending"].includes(booking.status)) {
+      return res.status(400).json({ message: `Cannot cancel ${booking.status} bookings.` });
+    }
+
+    // Provider cancellation always gives 100% refund
+    const { customerRefundAmount, customerRefundPercentage } = calculateCancellationRefund(booking.totalPrice, 999, true);
+
+    let refundDetails = null;
+    const allPaidPayments = await db
+      .select()
+      .from(payments)
+      .where(and(eq(payments.bookingId, bookingId), eq(payments.status, "paid")))
+      .orderBy(desc(payments.amount));
+
+    const payment = allPaidPayments[0];
+
+    if (payment && payment.razorpayPaymentId && customerRefundAmount > 0) {
+      try {
+        const refund = await initiateRefund(
+          payment.razorpayPaymentId,
+          rupeesToPaise(customerRefundAmount),
+          `Booking cancelled by provider - 100% refund`
+        );
+        await db.update(payments).set({
+          status: "refunded", 
+          refundId: refund.id, 
+          refundAmount: refund.amount,
+          refundReason: `Booking cancelled by provider - 100% refund`, 
+          refundedAt: new Date(),
+        }).where(eq(payments.id, payment.id));
+        
+        refundDetails = { 
+          refundId: refund.id, 
+          refundAmount: paiseToRupees(refund.amount), 
+          refundPercentage: customerRefundPercentage 
+        };
+      } catch (e) {
+        console.error("Refund failed:", e);
+        return res.status(500).json({ 
+          message: "Failed to process refund. " + e.message,
+          error: e.message || "Unknown refund error",
+          debug: {
+            paymentId: payment?.razorpayPaymentId,
+            amount: customerRefundAmount,
+            bookingId
+          }
+        });
+      }
+    }
+
+    const [updatedBooking] = await db.update(bookings).set({
+      status: "cancelled",
+      isRefunded: customerRefundAmount > 0,
+      refundAmount: customerRefundAmount, // Store refund amount in bookings table
+      providerPayoutAmount: null,
+      providerPayoutStatus: null,
+      platformFeeAmount: null,
+      cancelledAt: new Date(),
+      cancellationReason: reason,
+      cancelledBy: req.token.role === "admin" ? "admin" : "provider",
+    }).where(eq(bookings.id, bookingId)).returning();
+
+    await notificationTemplates.bookingCancelled(bookingId);
+    await logBookingHistory(
+      bookingId,
+      "cancelled",
+      "Booking Cancelled by Provider",
+      req.token.role === "admin" ? "admin" : "provider",
+      userId
+    );
+
+    return res.status(200).json({ 
+      message: "Booking cancelled successfully", 
+      booking: updatedBooking, 
+      refund: refundDetails 
+    });
+  } catch (error) {
+    console.error("Error cancelling booking by provider:", error);
+    return res.status(500).json({ message: "Server error", error: error.message });
+  }
+};
+
 const getBookingHistory = async (req, res) => {
   try {
     const bookingId = Number(req.params.id);
@@ -2949,6 +3282,7 @@ module.exports = {
   requestReschedule,
   cancelRescheduleRequest,
   cancelBooking,
+  cancelByProvider,
   // Existing reschedule management
   approveReschedule,
   declineReschedule,

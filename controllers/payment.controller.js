@@ -11,7 +11,7 @@ const {
   paymentDetails,
   adminSettings,
 } = require("../models/schema");
-const { eq, and, gte, lte, desc, or, sql, ne } = require("drizzle-orm");
+const { eq, and, gte, gt, lte, desc, or, sql, ne, count } = require("drizzle-orm");
 const { createRazorpayOrder, createSplitOrder, verifySignature, initiateRefund, rupeesToPaise, paiseToRupees } = require("../utils/razorpay");
 const { notificationTemplates } = require("../utils/notificationHelper");
 const { logBookingHistory } = require("../utils/historyHelper");
@@ -242,80 +242,30 @@ const createPaymentOrder = async (req, res) => {
     endOfDay.setHours(23, 59, 59, 999);
 
     // ============================================
-    // ADDITIONAL SAFEGUARD: Explicit check for existing pending payment intents
-    // This adds a pre-check layer before the optimistic insert
-    // IMPORTANT: Payment intents lock the slot for THE SAME SERVICE only
-    // Different services can be booked simultaneously at the same time slot
+    // ADDITIONAL SAFEGUARD: Explicit check for max booking limits
     // ============================================
-    console.log(`🔍 PRE-CHECK: Checking for existing pending payment intents...`);
+    console.log(`🔍 PRE-CHECK: Checking for booking limits...`);
 
-    const [existingPendingIntent] = await db
-      .select()
+    const maxBookingLimit = service.maxAllowBooking || 1;
+
+    // Get count of valid, non-expired pending payment intents
+    const pendingIntentsCountResult = await db
+      .select({ count: count() })
       .from(paymentIntents)
       .where(
         and(
           eq(paymentIntents.slotId, slotId),
           eq(paymentIntents.serviceId, serviceId), // ✅ Only lock same service
-          eq(paymentIntents.status, "pending")
+          eq(paymentIntents.status, "pending"),
+          gt(paymentIntents.expiresAt, now) // Must not be expired
         )
-      )
-      .limit(1);
+      );
 
-    if (existingPendingIntent) {
-      const existingDate = new Date(existingPendingIntent.bookingDate).toISOString().split('T')[0];
-      const requestDate = new Date(bookingDateObj).toISOString().split('T')[0];
+    const pendingIntentsCount = Number(pendingIntentsCountResult[0]?.count || 0);
 
-      console.log(`⚠️ Found existing pending intent:`, {
-        existingIntentId: existingPendingIntent.id,
-        existingDate: existingDate,
-        requestDate: requestDate,
-        slotId: slotId,
-        serviceId: existingPendingIntent.serviceId,
-        userId: existingPendingIntent.userId,
-        expiresAt: existingPendingIntent.expiresAt
-      });
-
-      // CRITICAL: Check if the existing intent has expired (even if status is still pending)
-      const now = new Date();
-      const expiresAt = new Date(existingPendingIntent.expiresAt);
-      const isExpired = now > expiresAt;
-
-      if (isExpired) {
-        console.log(`⏰ Existing pending intent ${existingPendingIntent.id} has expired! Marking as expired...`);
-
-        // Mark it as expired immediately
-        await db
-          .update(paymentIntents)
-          .set({ status: "expired" })
-          .where(eq(paymentIntents.id, existingPendingIntent.id));
-
-        console.log(`✅ Intent ${existingPendingIntent.id} marked as expired, slot is now available`);
-        // Don't return error - continue with booking
-      } else if (existingDate === requestDate) {
-        // Intent is still valid and for the same date - block the slot for THIS SERVICE ONLY
-        const timeRemaining = Math.max(0, Math.floor((expiresAt.getTime() - now.getTime()) / 1000));
-        console.log(`❌ Service ${serviceId} at slot ${slotId} already locked on ${bookingDate} by user ${existingPendingIntent.userId} (${timeRemaining}s remaining)`);
-        return res.status(409).json({
-          message: "Another customer is currently booking this service at this time. Please wait a moment and try again, or choose a different time.",
-          code: "SLOT_LOCKED",
-          retryable: true,
-          debug: {
-            existingIntentId: existingPendingIntent.id,
-            lockedBy: existingPendingIntent.userId,
-            lockedAt: existingPendingIntent.createdAt,
-            timeRemaining: timeRemaining
-          }
-        });
-      }
-    } else {
-      console.log(`✅ No existing pending payment intents found for service ${serviceId} at slot ${slotId}`);
-    }
-
-    // Check if slot is already booked (confirmed bookings block new payment attempts)
-    // IMPORTANT: Check both slotId AND serviceId to allow different services to share slots
-    // For reschedule: EXCLUDE the current booking being rescheduled
-    const [bookedSlot] = await db
-      .select()
+    // Get count of existing bookings
+    const bookingsCountResult = await db
+      .select({ count: count() })
       .from(bookings)
       .where(
         and(
@@ -331,14 +281,19 @@ const createPaymentOrder = async (req, res) => {
           // For reschedule: exclude the current booking (user is selecting a NEW slot)
           ...(isReschedule ? [ne(bookings.id, bookingId)] : [])
         )
-      )
-      .limit(1);
+      );
 
-    if (bookedSlot) {
-      console.log(`❌ Slot ${slotId} already booked for service ${serviceId} on ${bookingDate}`);
+    const bookedCount = Number(bookingsCountResult[0]?.count || 0);
+    const totalCurrentBookings = pendingIntentsCount + bookedCount;
+
+    console.log(`📊 Booking stats for service ${serviceId} on slot ${slotId}: active bookings=${bookedCount}, pending intents=${pendingIntentsCount}, total=${totalCurrentBookings}, maxAllowed=${maxBookingLimit}`);
+
+    if (totalCurrentBookings >= maxBookingLimit) {
+      console.log(`❌ Slot ${slotId} reached max capacity (${maxBookingLimit}) for service ${serviceId} on ${bookingDate}`);
       return res.status(409).json({
-        message: "This slot has already been booked for this service. Please select a different time.",
+        message: "This slot has already reached its maximum capacity for this service. Please select a different time.",
         code: "SLOT_ALREADY_BOOKED",
+        retryable: true
       });
     }
 
@@ -494,8 +449,8 @@ const createPaymentOrder = async (req, res) => {
     try {
       // For new bookings, use split payment; for reschedules, use regular order
       if (!isReschedule) {
-        // Get platform fee percentage
-        const platformFeePercentage = Number(await getAdminSetting("platform_fee_percentage", "5"));
+        // Platform fee is hardcoded at 5%
+        const platformFeePercentage = 5;
 
         razorpayOrder = await createSplitOrder(
           amountInPaise,
@@ -603,10 +558,11 @@ const createPaymentOrder = async (req, res) => {
  * NEW FLOW:
  * 1. Verify Razorpay signature
  * 2. Find payment_intent
- * 3. Create booking (status: PENDING - NOT confirmed)
- * 4. Create payment record (status: paid)
- * 5. Update payment_intent to completed
- * 6. All in a transaction for atomicity
+ * 3. Create booking (status: confirmed - auto-confirmed)
+ * 4. Log booking history
+ * 5. Create payment record (status: paid)
+ * 6. Update payment_intent to completed
+ * 7. All in a transaction for atomicity
  */
 const verifyPayment = async (req, res) => {
   console.log('🚀 ============================================ 🚀');
@@ -823,9 +779,17 @@ const verifyPayment = async (req, res) => {
       const endOfDay = new Date(bookingDate);
       endOfDay.setHours(23, 59, 59, 999);
 
+      // Get the service to check maxAllowBooking
+      const [serviceData] = await tx
+        .select({ maxAllowBooking: services.maxAllowBooking })
+        .from(services)
+        .where(eq(services.id, paymentIntent.serviceId));
+
+      const maxAllowBooking = serviceData?.maxAllowBooking || 1;
+
       // For reschedule, exclude the current booking from the "already booked" check
-      const [existingBooking] = await tx
-        .select()
+      const [{ count: existingBookingsCount }] = await tx
+        .select({ count: sql`cast(count(${bookings.id}) as int)` })
         .from(bookings)
         .where(
           and(
@@ -843,13 +807,12 @@ const verifyPayment = async (req, res) => {
             // For reschedule: exclude the current booking being rescheduled
             ...(isReschedule ? [ne(bookings.id, rescheduleBookingId)] : [])
           )
-        )
-        .limit(1);
+        );
 
-      if (existingBooking) {
-        console.log(`❌ Slot ${paymentIntent.slotId} already booked for service ${paymentIntent.serviceId} on ${paymentIntent.bookingDate}`);
+      if (existingBookingsCount >= maxAllowBooking) {
+        console.log(`❌ Slot ${paymentIntent.slotId} already booked (reached max ${maxAllowBooking}) for service ${paymentIntent.serviceId} on ${paymentIntent.bookingDate}`);
         // Slot is already booked - cancel this payment
-        throw new Error("This slot is no longer available. It was just booked by another customer.");
+        throw new Error("This slot is no longer available. It was just booked by another customer. Your payment will be refunded automatically.");
       }
 
       console.log(`✅ Slot ${paymentIntent.slotId} is available, proceeding with ${isReschedule ? 'reschedule' : 'booking'}`);
@@ -901,11 +864,11 @@ const verifyPayment = async (req, res) => {
         const updateData = {
           slotId: paymentIntent.slotId,
           bookingDate: paymentIntent.bookingDate,
-          status: "reschedule_pending", // Customer rescheduled, waiting provider approval
+          status: "confirmed", // Customer rescheduled, instantly confirmed
           paymentStatus: "paid", // Reschedule fee paid
           rescheduleCount: bookingToReschedule.rescheduleCount + 1, // INCREMENT reschedule count
           lastRescheduleFee: paymentIntent.amount, // Store the fee charged (₹100)
-          rescheduleOutcome: "pending", // Track that reschedule is pending
+          rescheduleOutcome: "accepted", // Track that reschedule is accepted
           // Store original values for revert if provider declines
           previousSlotId: bookingToReschedule.slotId,
           previousSlotTime: currentSlot?.startTime || null, // Store the current slot's time (e.g., "09:00:00")
@@ -925,18 +888,35 @@ const verifyPayment = async (req, res) => {
           .where(eq(bookings.id, rescheduleBookingId))
           .returning();
 
-        // Log history for reschedule
+        // Fetch the new slot's time for history logging 
+        const [newSlot] = await tx
+          .select({ startTime: slots.startTime })
+          .from(slots)
+          .where(eq(slots.id, paymentIntent.slotId))
+          .limit(1);
+
+        // Notify provider about the reschedule
+        const { notificationTemplates } = require("../utils/notificationHelper");
+        await notificationTemplates.rescheduleRequested(rescheduleBookingId);
+
+        // Log history for reschedule with detailed "From -> To" information
         await logBookingHistory(
           rescheduleBookingId,
-          "reschedule_pending",
-          "Reschedule requested following fee payment.",
+          "rescheduled",
+          "Booking Rescheduled by Customer",
           "customer",
-          userId
+          userId,
+          {
+            previousDate: bookingToReschedule.bookingDate,
+            previousTime: currentSlot?.startTime || "N/A",
+            newDate: paymentIntent.bookingDate,
+            newTime: newSlot?.startTime || "N/A"
+          }
         );
 
         bookingId = updatedBooking.id;
 
-        console.log(`✅ Booking ${rescheduleBookingId} rescheduled successfully, status: reschedule_pending, rescheduleCount: ${updatedBooking.rescheduleCount}`);
+        console.log(`✅ Booking ${rescheduleBookingId} rescheduled successfully, status: confirmed, rescheduleCount: ${updatedBooking.rescheduleCount}`);
 
         // Create payment record for the reschedule fee
         // Note: Reschedule fees are flat ₹100 and go entirely to platform (no split)
@@ -970,7 +950,7 @@ const verifyPayment = async (req, res) => {
           amount: paiseToRupees(paymentIntent.amount),
         });
 
-        // 1. Create booking record with status PENDING (NOT confirmed)
+        // 1. Create booking record with status confirmed (auto-confirmed)
         let newBooking;
         try {
           [newBooking] = await tx
@@ -983,7 +963,7 @@ const verifyPayment = async (req, res) => {
               addressId: paymentIntent.addressId,
               bookingDate: paymentIntent.bookingDate,
               totalPrice: paiseToRupees(paymentIntent.amount),
-              status: "pending", // PENDING - provider will confirm
+              status: "confirmed", // Auto-confirm
               paymentStatus: "paid",
             })
             .returning();
@@ -991,8 +971,8 @@ const verifyPayment = async (req, res) => {
           // Log history for new booking
           await logBookingHistory(
             newBooking.id,
-            "pending",
-            "Booking created following payment.",
+            "booked",
+            "Booking Created",
             "customer",
             userId
           );
@@ -1009,8 +989,8 @@ const verifyPayment = async (req, res) => {
 
         // 2. Create payment record with platform fee and provider share
         // Calculate platform fee (5%) and provider share (95%)
-        const platformFeePercentage = await getAdminSetting("platform_fee_percentage", "5");
-        const platformFee = Math.round(paymentIntent.amount * (Number(platformFeePercentage) / 100));
+        const platformFeePercentage = 5; // Hardcoded at 5%
+        const platformFee = Math.round(paymentIntent.amount * (platformFeePercentage / 100));
         const providerShare = paymentIntent.amount - platformFee;
 
         const paymentValues = {
@@ -1476,10 +1456,19 @@ const handlePaymentCaptured = async (paymentEntity) => {
           addressId: paymentIntent.addressId,
           bookingDate: paymentIntent.bookingDate,
           totalPrice: paiseToRupees(paymentIntent.amount),
-          status: "pending", // PENDING - provider will confirm
+          status: "confirmed", // Auto-confirmed bookings
           paymentStatus: "paid",
         })
         .returning();
+
+      // Log booking history
+      await logBookingHistory(
+        newBooking.id,
+        "booked",
+        "Booking Created",
+        "customer",
+        paymentIntent.userId
+      );
 
       // Create payment record with platform fee split
       // Default 5% platform fee, 95% provider share

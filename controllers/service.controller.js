@@ -12,8 +12,13 @@ const { eq, and, or, ilike, gte, lte, count, sql } = require("drizzle-orm");
 const getAllServices = async (req, res) => {
   try {
     // Extract query parameters for filtering
-    const { state, city, category_id, min_price, max_price, search } =
+    const { state, city, category_id, min_price, max_price, search, page, limit } =
       req.query;
+
+    // Pagination parameters
+    const currentPage = parseInt(page) || 1;
+    const pageSize = parseInt(limit) || 10;
+    const offset = (currentPage - 1) * pageSize;
 
     // Build dynamic WHERE conditions
     const conditions = [];
@@ -65,7 +70,19 @@ const getAllServices = async (req, res) => {
     // Combine all conditions with AND
     const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
 
-    // Build the query
+    // Get total count for pagination
+    const countQuery = db
+      .select({ count: sql`count(*)` })
+      .from(services)
+      .leftJoin(businessProfiles, eq(services.businessProfileId, businessProfiles.id));
+
+    if (whereClause) {
+      countQuery.where(whereClause);
+    }
+
+    const [{ count }] = await countQuery;
+
+    // Build the main query
     let query = db
       .select({
         // Service fields
@@ -79,13 +96,14 @@ const getAllServices = async (req, res) => {
         businessProfileId: services.businessProfileId,
         rating: services.rating,
         totalReviews: services.totalReviews,
+        maxAllowBooking: services.maxAllowBooking,
         createdAt: services.createdAt,
         // Business/Provider fields
         provider: {
           id: businessProfiles.id,
           businessName: businessProfiles.businessName,
           description: businessProfiles.description,
-          email: users.email, // ✅ Added email from users table
+          email: users.email,
           phone: businessProfiles.phone,
           state: businessProfiles.state,
           city: businessProfiles.city,
@@ -105,6 +123,9 @@ const getAllServices = async (req, res) => {
       query = query.where(whereClause);
     }
 
+    // Apply pagination
+    query = query.limit(pageSize).offset(offset);
+
     const allServices = await query;
 
     // Map EstimateDuration to estimateDuration and duration for frontend compatibility
@@ -114,9 +135,15 @@ const getAllServices = async (req, res) => {
       duration: service.EstimateDuration,
     }));
 
-    res
-      .status(200)
-      .json({ services: mappedServices, total: mappedServices.length });
+    res.status(200).json({
+      services: mappedServices,
+      pagination: {
+        page: currentPage,
+        limit: pageSize,
+        total: count,
+        totalPages: Math.ceil(count / pageSize),
+      },
+    });
   } catch (error) {
     console.error("Error fetching services:", error);
     res.status(500).json({ message: "Server error", error: error.message });
@@ -145,6 +172,7 @@ const getServiceById = async (req, res) => {
         businessProfileId: services.businessProfileId,
         rating: services.rating,
         totalReviews: services.totalReviews,
+        maxAllowBooking: services.maxAllowBooking,
         createdAt: services.createdAt,
         // Business/Provider fields
         provider: {
@@ -219,7 +247,7 @@ const addService = async (req, res) => {
   try {
     const { businessId } = req.params;
     const userId = req.token.id;
-    const { name, description, price, duration, image } = req.body;
+    const { name, description, price, duration, image, maxAllowBooking } = req.body;
     console.log(userId);
     if (!userId) {
       return res
@@ -257,6 +285,7 @@ const addService = async (req, res) => {
         description,
         EstimateDuration: duration,
         price,
+        maxAllowBooking: maxAllowBooking || 1,
         image: image || null,
       })
       .returning();
@@ -283,7 +312,7 @@ const updateService = async (req, res) => {
     const { serviceId } = req.params;
     //const userId = req.params.userId;
     const userId = req.token.id;
-    const { name, description, price, duration, image, isActive } = req.body;
+    const { name, description, price, duration, image, isActive, maxAllowBooking } = req.body;
     if (!userId) {
       return res.status(400).json({ message: "User ID is required" });
     }
@@ -296,6 +325,7 @@ const updateService = async (req, res) => {
     if (duration !== undefined) updateData.EstimateDuration = duration;
     if (image !== undefined) updateData.image = image;
     if (isActive !== undefined) updateData.isActive = isActive;
+    if (maxAllowBooking !== undefined) updateData.maxAllowBooking = maxAllowBooking;
 
     const service = await db
       .select()

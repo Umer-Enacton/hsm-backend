@@ -14,6 +14,7 @@ const {
   requestReschedule,
   cancelRescheduleRequest,
   cancelBooking,
+  cancelByProvider,
   // Existing reschedule management
   approveReschedule,
   declineReschedule,
@@ -57,8 +58,9 @@ router.put(
 );
 
 // Provider booking management
-router.put("/accept-booking/:id", authorizeRole(PROVIDER), acceptBooking);
-router.put("/reject-booking/:id", authorizeRole(PROVIDER), rejectBooking);
+router.delete("/provider/booking/:id/cancel", authorizeRole(PROVIDER), cancelByProvider);
+router.put("/accept-booking/:id", authorizeRole(PROVIDER), acceptBooking); // Will deprecate
+router.put("/reject-booking/:id", authorizeRole(PROVIDER), rejectBooking); // Will deprecate
 router.put("/complete-booking/:id", authorizeRole(PROVIDER), completeBooking);
 
 // Provider reschedule management

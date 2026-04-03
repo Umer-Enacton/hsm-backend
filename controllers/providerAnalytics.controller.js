@@ -179,6 +179,7 @@ const getRevenueAnalytics = async (req, res) => {
         date: bookings.bookingDate,
         totalPrice: bookings.totalPrice,
         status: bookings.status,
+        providerPayoutAmount: bookings.providerPayoutAmount,
       })
       .from(bookings)
       .where(
@@ -258,7 +259,8 @@ const getRevenueAnalytics = async (req, res) => {
         date: key,
         bookings: 0,
         grossTotal: 0,
-        rescheduleRevenue: 0, // Added for reschedule fees
+        providerPayout: 0, // Track actual payouts (including from cancellations)
+        rescheduleRevenue: 0, 
         completed: 0,
       });
 
@@ -285,13 +287,29 @@ const getRevenueAnalytics = async (req, res) => {
           const existing = groupedData.get(key);
           existing.bookings += 1;
 
-          // Regular service revenue
-          const isEligible =
+          // Calculate provider share for this booking
+          let bookingProviderPayout = 0;
+          
+          if (item.providerPayoutAmount) {
+            // Use the stored payout amount if available (covers cancellations, etc.)
+            bookingProviderPayout = Number(item.providerPayoutAmount);
+          } else if (
             item.status !== "cancelled" &&
             item.status !== "rejected" &&
-            item.status !== "refunded";
-          
-          if (isEligible) {
+            item.status !== "refunded"
+          ) {
+            // Fallback to 95% for confirmed/completed bookings without explicit payout set
+            bookingProviderPayout = Math.round(((item.totalPrice || 0) * providerSharePercentage) / 100);
+          }
+
+          existing.providerPayout += bookingProviderPayout;
+
+          // For backward compatibility and gross calculations
+          if (
+            item.status !== "cancelled" &&
+            item.status !== "rejected" &&
+            item.status !== "refunded"
+          ) {
             existing.grossTotal += (item.totalPrice || 0);
           }
 
@@ -319,7 +337,7 @@ const getRevenueAnalytics = async (req, res) => {
     // Convert to array and calculate cumulative values
     let cumulativeRevenue = 0;
     const chartData = Array.from(groupedData.values()).map((item) => {
-      const baseRevenue = Math.round(((item.grossTotal || 0) * providerSharePercentage) / 100);
+      const baseRevenue = item.providerPayout || 0;
       const totalPeriodRevenue = baseRevenue + (item.rescheduleRevenue || 0);
       cumulativeRevenue += totalPeriodRevenue;
       
@@ -336,18 +354,20 @@ const getRevenueAnalytics = async (req, res) => {
 
     // Calculate totals
     const totalBookings = allBookings.length;
-    const eligibleBookings = allBookings.filter(
-      (item) =>
+    const totalProviderPayout = allBookings.reduce((sum, item) => {
+      if (item.providerPayoutAmount) {
+        return sum + Number(item.providerPayoutAmount);
+      } else if (
         item.status !== "cancelled" &&
         item.status !== "rejected" &&
-        item.status !== "refunded",
-    );
+        item.status !== "refunded"
+      ) {
+        return sum + Math.round(((item.totalPrice || 0) * providerSharePercentage) / 100);
+      }
+      return sum;
+    }, 0);
     
-    const totalGross = eligibleBookings.reduce(
-      (sum, item) => sum + (item.totalPrice || 0),
-      0,
-    );
-    const baseTotalRevenue = Math.round((totalGross * providerSharePercentage) / 100);
+    const baseTotalRevenue = totalProviderPayout;
     
     // Add ALL reschedule fees from paidPayments to total revenue
     const totalRescheduleRevenue = paidPayments.reduce((sum, p) => {

@@ -552,10 +552,7 @@ const updatePlatformSettings = async (req, res) => {
 
     res.json({
       message: "Settings updated successfully",
-      platformFeePercentage:
-        platformFeePercentage !== undefined
-          ? Number(platformFeePercentage)
-          : Number(await getAdminSetting("platform_fee_percentage", "5")),
+      platformFeePercentage: 5, // Hardcoded at 5%
       minimumPayoutAmount:
         minimumPayoutAmount !== undefined
           ? Number(minimumPayoutAmount)
@@ -692,16 +689,33 @@ const getProviderRevenueStats = async (req, res) => {
         )
       );
 
-    // Calculate base earnings from eligible bookings
-    const totalGross = earningsBookings.reduce(
-      (sum, booking) => sum + (booking.totalPrice || 0),
-      0,
-    );
-    const baseEarnings = Math.round((totalGross * providerSharePercentage) / 100);
+    // Calculate base earnings and reschedule revenue from both bookings and payments
+    let baseEarnings = 0;
+    let totalRescheduleRevenue = 0;
 
-    // Calculate reschedule fees (100rs each)
-    const reschedulePayments = allPaidPayments.filter(p => p.payments.amount === 10000);
-    const totalRescheduleRevenue = reschedulePayments.length * 100;
+    // 1. Get earnings from all bookings that have a payout amount set (handles completed and cancelled)
+    allBookings.forEach(booking => {
+      if (booking.providerPayoutAmount) {
+        baseEarnings += Number(booking.providerPayoutAmount);
+      } else if (booking.status !== "cancelled" && booking.status !== "rejected" && booking.status !== "refunded" && !booking.isRefunded) {
+        // Fallback for older non-cancelled bookings that might not have providerPayoutAmount set
+        baseEarnings += Math.round(((booking.totalPrice || 0) * providerSharePercentage) / 100);
+      }
+    });
+
+    // 2. Get reschedule revenue from payments (amount = 10000 paise = ₹100)
+    allPaidPayments.forEach(p => {
+      // payment info is in p.payments due to innerJoin
+      if (p.payments.amount === 10000) {
+        // For reschedule fees, the provider gets the full share or partial based on split
+        // But usually it's ₹100. Let's use the providerShare from payment if available
+        if (p.payments.providerShare) {
+          totalRescheduleRevenue += Math.round(p.payments.providerShare / 100);
+        } else {
+          totalRescheduleRevenue += 100;
+        }
+      }
+    });
 
     const totalEarnings = baseEarnings + totalRescheduleRevenue;
 

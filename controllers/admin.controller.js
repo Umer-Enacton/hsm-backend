@@ -8,7 +8,7 @@ const {
   services,
   paymentDetails,
 } = require("../models/schema");
-const { eq, and, sql, desc, inArray } = require("drizzle-orm");
+const { eq, and, or, sql, desc, ilike, inArray } = require("drizzle-orm");
 const { notificationTemplates } = require("../utils/notificationHelper");
 
 // ============================================
@@ -84,14 +84,15 @@ const getPlatformSettings = async (req, res) => {
       });
     }
 
-    const platformFee = await getAdminSetting("platform_fee_percentage", "5");
+    // Platform fee is hardcoded at 5%
+    const platformFeePercentage = 5;
     const minimumPayout = await getAdminSetting(
       "minimum_payout_amount",
       "30000",
     ); // Default ₹300
 
     res.json({
-      platformFeePercentage: Number(platformFee),
+      platformFeePercentage,
       minimumPayoutAmount: Number(minimumPayout),
     });
   } catch (error) {
@@ -101,7 +102,7 @@ const getPlatformSettings = async (req, res) => {
 };
 
 /**
- * Update platform fee percentage
+ * Update platform settings
  * PUT /admin/settings
  */
 const updatePlatformSettings = async (req, res) => {
@@ -113,21 +114,10 @@ const updatePlatformSettings = async (req, res) => {
       });
     }
 
-    const { platformFeePercentage, minimumPayoutAmount } = req.body;
+    const { minimumPayoutAmount } = req.body;
 
-    // Validate platform fee percentage (1-10%)
-    if (platformFeePercentage !== undefined) {
-      if (platformFeePercentage < 1 || platformFeePercentage > 10) {
-        return res.status(400).json({
-          message: "Platform fee percentage must be between 1% and 10%",
-        });
-      }
-      await setAdminSetting(
-        "platform_fee_percentage",
-        platformFeePercentage.toString(),
-        "Platform commission percentage charged on each booking (1-10%)",
-      );
-    }
+    // Platform fee is hardcoded at 5% and cannot be changed
+    const platformFeePercentage = 5;
 
     // Validate minimum payout amount (₹300 - ₹1000 in paise)
     if (minimumPayoutAmount !== undefined) {
@@ -145,10 +135,6 @@ const updatePlatformSettings = async (req, res) => {
     }
 
     // Return updated values
-    const updatedPlatformFee =
-      platformFeePercentage !== undefined
-        ? platformFeePercentage
-        : Number(await getAdminSetting("platform_fee_percentage", "5"));
     const updatedMinPayout =
       minimumPayoutAmount !== undefined
         ? minimumPayoutAmount
@@ -156,7 +142,7 @@ const updatePlatformSettings = async (req, res) => {
 
     res.json({
       message: "Platform settings updated successfully",
-      platformFeePercentage: updatedPlatformFee,
+      platformFeePercentage,
       minimumPayoutAmount: updatedMinPayout,
     });
   } catch (error) {
@@ -180,10 +166,8 @@ const getRevenueStats = async (req, res) => {
 
     const { startDate, endDate, groupBy } = req.query;
 
-    // Get platform fee percentage
-    const platformFeePercentage = Number(
-      await getAdminSetting("platform_fee_percentage", "5"),
-    );
+    // Platform fee is hardcoded at 5%
+    const platformFeePercentage = 5;
 
     // Build date filter
     let dateFilter = sql`TRUE`;
@@ -194,7 +178,7 @@ const getRevenueStats = async (req, res) => {
       dateFilter = sql`${dateFilter} AND ${payments.createdAt} <= ${new Date(endDate)}`;
     }
 
-    // Get completed payments for revenue calculation - exclude cancelled/rejected/refunded bookings
+    // Get ALL payments for revenue calculation - include paid and refunded
     const completedPayments = await db
       .select({
         id: payments.id,
@@ -210,9 +194,7 @@ const getRevenueStats = async (req, res) => {
       .innerJoin(bookings, eq(payments.bookingId, bookings.id))
       .where(
         and(
-          eq(payments.status, "paid"),
-          sql`(${bookings.status} NOT IN ('cancelled', 'rejected', 'refunded'))`,
-          sql`(${bookings.isRefunded} = false OR ${bookings.isRefunded} IS NULL)`,
+          inArray(payments.status, ["paid", "refunded"]),
           dateFilter,
         ),
       );
@@ -221,16 +203,16 @@ const getRevenueStats = async (req, res) => {
     let totalRevenue = 0;
     let totalPlatformFee = 0;
     let totalProviderShare = 0;
-    let totalPayments = completedPayments.length;
+    let totalPayments = 0;
 
     completedPayments.forEach((payment) => {
-      // Skip reschedule fees (amount = 10000 paise = ₹100)
-      if (payment.amount === 10000) return;
-
+      // For general "Total Revenue" display, we should strictly speaking include everything
+      // But the original code was skipping reschedule fees (₹100).
+      // If we want to show EXACT revenue the platform handled:
       totalRevenue += payment.amount;
 
       // Use stored split values if available, otherwise calculate
-      if (payment.platformFee) {
+      if (payment.platformFee !== null && payment.platformFee !== undefined) {
         totalPlatformFee += payment.platformFee;
         totalProviderShare += payment.providerShare || 0;
       } else {
@@ -239,25 +221,25 @@ const getRevenueStats = async (req, res) => {
         totalPlatformFee += fee;
         totalProviderShare += payment.amount - fee;
       }
+      
+      // Increment booking count if it's not a reschedule fee
+      if (payment.amount !== 10000) {
+        totalPayments++;
+      }
     });
 
-    // Recalculate totalPayments excluding reschedule fees
-    totalPayments = completedPayments.filter(p => p.amount !== 10000).length;
-
-    // Get monthly breakdown - exclude cancelled/rejected/refunded bookings AND reschedule fees
+    // Get monthly breakdown - include all paid and refunded payments
     const monthlyData = await db
       .select({
         month: sql`DATE_TRUNC('month', ${payments.createdAt})::DATE`,
-        total: sql`SUM(CASE WHEN ${payments.amount} != 10000 THEN ${payments.amount} ELSE 0 END)`,
-        count: sql`COUNT(*)`,
+        total: sql`SUM(${payments.amount})`,
+        count: sql`COUNT(DISTINCT ${payments.bookingId}) FILTER (WHERE ${payments.amount} != 10000)`,
       })
       .from(payments)
       .innerJoin(bookings, eq(payments.bookingId, bookings.id))
       .where(
         and(
-          eq(payments.status, "paid"),
-          sql`(${bookings.status} NOT IN ('cancelled', 'rejected', 'refunded'))`,
-          sql`(${bookings.isRefunded} = false OR ${bookings.isRefunded} IS NULL)`,
+          inArray(payments.status, ["paid", "refunded"]),
           dateFilter,
         ),
       )
@@ -273,13 +255,13 @@ const getRevenueStats = async (req, res) => {
       ),
     }));
 
-    // Get top providers by revenue - exclude cancelled/rejected/refunded bookings AND reschedule fees
+    // Get top providers by revenue - include all transactions
     const topProviders = await db
       .select({
         providerId: businessProfiles.providerId,
         businessName: businessProfiles.businessName,
-        totalBookings: sql`COUNT(*)`,
-        totalRevenue: sql`SUM(CASE WHEN ${payments.amount} != 10000 THEN ${payments.amount} ELSE 0 END)`,
+        totalBookings: sql`COUNT(DISTINCT ${bookings.id}) FILTER (WHERE ${payments.amount} != 10000)`,
+        totalRevenue: sql`SUM(${payments.amount})`,
       })
       .from(bookings)
       .innerJoin(payments, eq(payments.bookingId, bookings.id))
@@ -289,9 +271,7 @@ const getRevenueStats = async (req, res) => {
       )
       .where(
         and(
-          eq(payments.status, "paid"),
-          sql`(${bookings.status} NOT IN ('cancelled', 'rejected', 'refunded'))`,
-          sql`(${bookings.isRefunded} = false OR ${bookings.isRefunded} IS NULL)`,
+          inArray(payments.status, ["paid", "refunded"]),
           dateFilter,
         ),
       )
@@ -1002,21 +982,18 @@ const getDashboardStats = async (req, res) => {
       bookingStats.find((b) => b.status === "pending")?.count || 0,
     );
 
-    // Get platform revenue from paid payments
-    // EXCLUDE: reschedule fees (amount = 10000 paise) AND cancelled/rejected/refunded bookings
+    // Get platform revenue from paid and refunded payments
     const [revenueData] = await db
       .select({
         totalRevenue: sql`COALESCE(SUM(${payments.amount}), 0)`,
-        totalPlatformFee: sql`COALESCE(SUM(CASE WHEN ${payments.amount} != 10000 THEN ${payments.platformFee} ELSE 0 END), 0)`,
+        totalPlatformFee: sql`COALESCE(SUM(COALESCE(${payments.platformFee}, ROUND(${payments.amount} * 0.05))), 0)`,
         paymentCount: sql`COUNT(*)`,
       })
       .from(payments)
       .innerJoin(bookings, eq(payments.bookingId, bookings.id))
       .where(
         and(
-          eq(payments.status, "paid"),
-          sql`(${bookings.status} NOT IN ('cancelled', 'rejected', 'refunded'))`,
-          sql`(${bookings.isRefunded} = false OR ${bookings.isRefunded} IS NULL)`,
+          inArray(payments.status, ["paid", "refunded"]),
         ),
       );
 
@@ -1034,8 +1011,6 @@ const getDashboardStats = async (req, res) => {
       .where(
         and(
           sql`${payments.providerPayoutStatus} IS NOT NULL`,
-          sql`(${bookings.status} NOT IN ('cancelled', 'rejected', 'refunded'))`,
-          sql`(${bookings.isRefunded} = false OR ${bookings.isRefunded} IS NULL)`,
         ),
       );
 
@@ -1371,7 +1346,56 @@ const getAllServicesForAdmin = async (req, res) => {
       return res.status(403).json({ message: "Access denied: Admin only" });
     }
 
-    const allServices = await db
+    // Pagination parameters
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const offset = (page - 1) * limit;
+
+    // Filter parameters
+    const status = req.query.status; // 'active', 'inactive', or undefined for all
+    const search = req.query.search?.trim(); // search in service name, description, business name
+
+    // Build where conditions
+    const conditions = [];
+
+    // Status filter (active/inactive)
+    if (status === "active") {
+      conditions.push(eq(services.isActive, true));
+    } else if (status === "inactive") {
+      conditions.push(eq(services.isActive, false));
+    }
+
+    // Search filter - search in service name, description, business name
+    if (search) {
+      const searchTerm = `%${search}%`;
+      conditions.push(
+        or(
+          ilike(services.name, searchTerm),
+          ilike(services.description, searchTerm),
+          ilike(businessProfiles.businessName, searchTerm)
+        )
+      );
+    }
+
+    // Combine conditions
+    const whereClause = conditions.length > 0
+      ? conditions.length === 1 ? conditions[0] : and(...conditions)
+      : undefined;
+
+    // Get total count for pagination (with filters applied)
+    let countQuery = db
+      .select({ count: sql`count(*)` })
+      .from(services)
+      .leftJoin(businessProfiles, eq(services.businessProfileId, businessProfiles.id));
+
+    if (whereClause) {
+      countQuery = countQuery.where(whereClause);
+    }
+
+    const [{ count }] = await countQuery;
+
+    // Build main query with filters
+    let servicesQuery = db
       .select({
         id: services.id,
         name: services.name,
@@ -1400,8 +1424,17 @@ const getAllServicesForAdmin = async (req, res) => {
       .leftJoin(
         businessProfiles,
         eq(services.businessProfileId, businessProfiles.id),
-      )
-      .orderBy(desc(services.createdAt));
+      );
+
+    // Apply filters to the main query
+    if (whereClause) {
+      servicesQuery = servicesQuery.where(whereClause);
+    }
+
+    const allServices = await servicesQuery
+      .orderBy(desc(services.createdAt))
+      .limit(limit)
+      .offset(offset);
 
     // Map EstimateDuration to duration for frontend compatibility
     const servicesWithDuration = allServices.map((service) => ({
@@ -1410,7 +1443,15 @@ const getAllServicesForAdmin = async (req, res) => {
       estimateDuration: service.EstimateDuration,
     }));
 
-    res.json({ services: servicesWithDuration });
+    res.json({
+      services: servicesWithDuration,
+      pagination: {
+        page,
+        limit,
+        total: count,
+        totalPages: Math.ceil(count / limit),
+      },
+    });
   } catch (error) {
     console.error("Error fetching services for admin:", error);
     res.status(500).json({ message: "Server error", error: error.message });

@@ -150,11 +150,35 @@ const getSlotsPublic = async (req, res) => {
       .innerJoin(slots, eq(paymentIntents.slotId, slots.id))
       .where(and(...paymentIntentConditions));
 
-    // Combine booked and locked slot IDs
-    const unavailableSlotIds = new Set([
-      ...bookedSlotsResult.map((b) => b.slotId),
-      ...lockedSlotsResult.map((l) => l.slotId),
-    ]);
+    // Fetch service's maxAllowBooking
+    let maxBookingLimit = 1;
+    if (serviceId) {
+      const { services } = require("../models/schema");
+      const serviceData = await db
+        .select()
+        .from(services)
+        .where(eq(services.id, parseInt(serviceId)));
+      if (serviceData.length > 0) {
+        maxBookingLimit = serviceData[0].maxAllowBooking || 1;
+      }
+    }
+
+    // Combine booked and locked slot IDs and count them
+    const slotCounts = {};
+    bookedSlotsResult.forEach((b) => {
+      slotCounts[b.slotId] = (slotCounts[b.slotId] || 0) + 1;
+    });
+    lockedSlotsResult.forEach((l) => {
+      slotCounts[l.slotId] = (slotCounts[l.slotId] || 0) + 1;
+    });
+
+    const unavailableSlotIds = new Set();
+    Object.keys(slotCounts).forEach((slotIdStr) => {
+      const sid = parseInt(slotIdStr);
+      if (slotCounts[sid] >= maxBookingLimit) {
+        unavailableSlotIds.add(sid);
+      }
+    });
 
     console.log(
       `📊 Service ${serviceId || "ALL"} - Booked slots:`,

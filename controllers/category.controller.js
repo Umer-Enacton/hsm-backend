@@ -1,11 +1,35 @@
 const db = require("../config/db");
 const { Category } = require("../models/schema");
-const { eq } = require("drizzle-orm");
+const { eq, sql } = require("drizzle-orm");
 
 const getAllCategories = async (req, res) => {
   try {
-    const categories = await db.select().from(Category);
-    res.status(200).json({ categories });
+    // Pagination parameters
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const offset = (page - 1) * limit;
+
+    // Get total count for pagination
+    const [{ count }] = await db
+      .select({ count: sql`count(*)` })
+      .from(Category);
+
+    // Get paginated categories
+    const categories = await db
+      .select()
+      .from(Category)
+      .limit(limit)
+      .offset(offset);
+
+    res.status(200).json({
+      categories,
+      pagination: {
+        page,
+        limit,
+        total: count,
+        totalPages: Math.ceil(count / limit),
+      },
+    });
   } catch (error) {
     res.status(500).json({ message: "Server error", error: error.message });
   }

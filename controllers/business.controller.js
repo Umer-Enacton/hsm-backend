@@ -5,13 +5,70 @@ const {
   Category,
   services,
 } = require("../models/schema");
-const { eq, and, or, sql, inArray } = require("drizzle-orm");
+const { eq, and, or, sql, ilike, inArray } = require("drizzle-orm");
 const { feedback: feedbackTable } = require("../models/schema");
 
 const getAllBusinesses = async (req, res) => {
   try {
+    // Pagination parameters
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const offset = (page - 1) * limit;
+
+    // Filter parameters
+    const status = req.query.status; // 'all', 'verified', 'pending', 'blocked'
+    const search = req.query.search?.trim(); // search in name, category, city, provider name
+
+    // Build where conditions
+    const conditions = [];
+
+    // Status filter
+    if (status === "verified") {
+      conditions.push(eq(businessProfiles.isVerified, true));
+    } else if (status === "pending") {
+      conditions.push(
+        and(
+          eq(businessProfiles.isVerified, false),
+          eq(businessProfiles.isBlocked, false)
+        )
+      );
+    } else if (status === "blocked") {
+      conditions.push(eq(businessProfiles.isBlocked, true));
+    }
+
+    // Search filter - search in business name, category, city, provider name
+    if (search) {
+      const searchTerm = `%${search}%`;
+      conditions.push(
+        or(
+          ilike(businessProfiles.businessName, searchTerm),
+          ilike(Category.name, searchTerm),
+          ilike(businessProfiles.city, searchTerm),
+          ilike(users.name, searchTerm)
+        )
+      );
+    }
+
+    // Combine conditions
+    const whereClause = conditions.length > 0
+      ? conditions.length === 1 ? conditions[0] : and(...conditions)
+      : undefined;
+
+    // Get total count for pagination (with filters applied)
+    let countQuery = db
+      .select({ count: sql`count(*)` })
+      .from(businessProfiles)
+      .leftJoin(users, eq(businessProfiles.providerId, users.id))
+      .leftJoin(Category, eq(businessProfiles.categoryId, Category.id));
+
+    if (whereClause) {
+      countQuery = countQuery.where(whereClause);
+    }
+
+    const [{ count }] = await countQuery;
+
     // Join with users and categories to get complete business data
-    const businesses = await db
+    let businessesQuery = db
       .select({
         // Business fields
         id: businessProfiles.id,
@@ -43,43 +100,110 @@ const getAllBusinesses = async (req, res) => {
       .leftJoin(users, eq(businessProfiles.providerId, users.id))
       .leftJoin(Category, eq(businessProfiles.categoryId, Category.id));
 
-    // Fetch ratings and total reviews for all businesses in parallel
-    const businessesWithStats = await Promise.all(
-      businesses.map(async (business) => {
-        const serviceData = await db
-          .select({ id: services.id })
-          .from(services)
-          .where(eq(services.businessProfileId, business.id));
+    // Apply filters to the main query
+    if (whereClause) {
+      businessesQuery = businessesQuery.where(whereClause);
+    }
 
-        const serviceIds = serviceData.map((s) => s.id);
+    const businesses = await businessesQuery
+      .limit(limit)
+      .offset(offset);
 
-        let rating = 0;
-        let totalReviews = 0;
+    if (businesses.length === 0) {
+      return res.status(200).json({
+        businesses: [],
+        pagination: {
+          page,
+          limit,
+          total: count,
+          totalPages: Math.ceil(count / limit),
+        },
+      });
+    }
 
-        if (serviceIds.length > 0) {
-          const [stats] = await db
-            .select({
-              avgRating: sql`avg(${feedbackTable.rating})`,
-              count: sql`count(*)`,
-            })
-            .from(feedbackTable)
-            .where(inArray(feedbackTable.serviceId, serviceIds));
+    // OPTIMIZED: Fetch all services for these businesses in one query
+    const businessIds = businesses.map((b) => b.id);
+    const allServices = await db
+      .select({ id: services.id, businessProfileId: services.businessProfileId })
+      .from(services)
+      .where(inArray(services.businessProfileId, businessIds));
 
-          rating = Number(stats?.avgRating) || 0;
-          totalReviews = Number(stats?.count) || 0;
+    // Group services by business ID
+    const servicesByBusiness = new Map();
+    for (const service of allServices) {
+      if (!servicesByBusiness.has(service.businessProfileId)) {
+        servicesByBusiness.set(service.businessProfileId, []);
+      }
+      const arr = servicesByBusiness.get(service.businessProfileId);
+      if (arr) arr.push(service.id);
+    }
+
+    // OPTIMIZED: Batch fetch ratings for all services at once
+    const allServiceIds = allServices.map((s) => s.id);
+    let ratingMap = new Map();
+
+    if (allServiceIds.length > 0) {
+      const ratingStats = await db
+        .select({
+          serviceId: feedbackTable.serviceId,
+          avgRating: sql`avg(${feedbackTable.rating})`,
+          count: sql`count(*)`,
+        })
+        .from(feedbackTable)
+        .where(inArray(feedbackTable.serviceId, allServiceIds))
+        .groupBy(feedbackTable.serviceId);
+
+      ratingMap = new Map(
+        ratingStats.map((r) => [
+          r.serviceId,
+          { avgRating: Number(r.avgRating) || 0, count: Number(r.count) || 0 },
+        ]),
+      );
+    }
+
+    // Combine ratings by business (aggregate all services' ratings)
+    const businessRatings = new Map();
+    for (const businessId of businessIds) {
+      const serviceIdsForBusiness = servicesByBusiness.get(businessId) || [];
+      let totalRating = 0;
+      let totalReviews = 0;
+
+      for (const serviceId of serviceIdsForBusiness) {
+        const stats = ratingMap.get(serviceId);
+        if (stats) {
+          totalRating += stats.avgRating * stats.count;
+          totalReviews += stats.count;
         }
+      }
 
-        return {
-          ...business,
-          status: business.isVerified ? "active" : "pending",
-          rating,
-          totalReviews,
-          email: business.providerEmail,
-        };
-      }),
-    );
+      const avgRating = totalReviews > 0 ? totalRating / totalReviews : 0;
+      businessRatings.set(businessId, {
+        rating: Math.round(avgRating * 10) / 10, // Round to 1 decimal
+        totalReviews,
+      });
+    }
 
-    res.status(200).json({ businesses: businessesWithStats });
+    // Map businesses with their stats
+    const businessesWithStats = businesses.map((business) => {
+      const stats = businessRatings.get(business.id) || { rating: 0, totalReviews: 0 };
+      return {
+        ...business,
+        status: business.isVerified ? "active" : "pending",
+        rating: stats.rating,
+        totalReviews: stats.totalReviews,
+        email: business.providerEmail,
+      };
+    });
+
+    res.status(200).json({
+      businesses: businessesWithStats,
+      pagination: {
+        page,
+        limit,
+        total: count,
+        totalPages: Math.ceil(count / limit),
+      },
+    });
   } catch (error) {
     console.error("Error in getAllBusinesses:", error);
     res.status(500).json({ message: "Server error", error: error.message });
