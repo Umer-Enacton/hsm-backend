@@ -4,6 +4,8 @@ const {
   users,
   Category,
   services,
+  subscriptionPlans,
+  providerSubscriptions,
 } = require("../models/schema");
 const { eq, and, or, sql, ilike, inArray } = require("drizzle-orm");
 const { feedback: feedbackTable } = require("../models/schema");
@@ -475,7 +477,10 @@ const addBusiness = async (req, res) => {
       })
       .returning();
 
-    console.log("Business created:", newBusiness);
+    res.status(201).json({
+      message: "Business profile added successfully",
+      business,
+    });
 
     // Fetch complete business data with joins
     const result = await db
@@ -513,6 +518,45 @@ const addBusiness = async (req, res) => {
     business.rating = 0;
     business.totalReviews = 0;
     business.email = business.providerEmail; // For contact purposes
+
+    // ============================================
+    // AUTO-ASSIGN FREE PLAN TO NEW PROVIDERS
+    // ============================================
+    try {
+      const [freePlan] = await db
+        .select()
+        .from(subscriptionPlans)
+        .where(eq(subscriptionPlans.name, "Free"))
+        .limit(1);
+
+      if (freePlan) {
+        // Check if provider already has a subscription
+        const [existingSubscription] = await db
+          .select()
+          .from(providerSubscriptions)
+          .where(eq(providerSubscriptions.providerId, userId))
+          .limit(1);
+
+        if (!existingSubscription) {
+          await db.insert(providerSubscriptions).values({
+            providerId: userId,
+            planId: freePlan.id,
+            status: "active",
+            razorpaySubscriptionId: `free_sub_${userId}_${Date.now()}`,
+            startDate: new Date(),
+            endDate: new Date("2099-12-31"), // Indefinite for Free plan
+            billingCycle: "monthly",
+            autoRenew: false,
+            amountPaid: 0,
+            platformFeeAtPurchase: freePlan.platformFeePercentage,
+          });
+          console.log("Free plan auto-assigned to provider:", userId);
+        }
+      }
+    } catch (subscriptionError) {
+      console.error("Error auto-assigning Free plan:", subscriptionError);
+      // Don't fail the request if subscription assignment fails
+    }
 
     res.status(201).json({
       message: "Business profile added successfully",

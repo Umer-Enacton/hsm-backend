@@ -10,11 +10,14 @@ const {
   users,
   paymentDetails,
   adminSettings,
+  providerSubscriptions,
+  subscriptionPlans,
 } = require("../models/schema");
 const { eq, and, gte, gt, lte, desc, or, sql, ne, count } = require("drizzle-orm");
-const { createRazorpayOrder, createSplitOrder, verifySignature, initiateRefund, rupeesToPaise, paiseToRupees } = require("../utils/razorpay");
+const { createRazorpayOrder, createSplitOrder, verifySignature, initiateRefund, rupeesToPaise, paiseToRupees, createRazorpayCustomer } = require("../utils/razorpay");
 const { notificationTemplates } = require("../utils/notificationHelper");
 const { logBookingHistory } = require("../utils/historyHelper");
+const { getProviderActiveSubscription } = require("../controllers/providerSubscription.controller");
 
 // STARTUP LOG: Confirm this file is loaded
 console.log('✅ payment.controller.js loaded - version 2026-03-16-v2');
@@ -375,6 +378,8 @@ const createPaymentOrder = async (req, res) => {
       userId: userId.toString(),
       slotId: slotId.toString(),
       bookingDate: bookingDate,
+      businessName: businessProfile.name,
+      serviceName: service.name,
       ...(isReschedule && reason ? { reason } : {}),
     };
 
@@ -446,11 +451,46 @@ const createPaymentOrder = async (req, res) => {
       providerPayment = providerPaymentResult[0];
     }
 
+    // ============================================
+    // CREATE RAZORPAY CUSTOMER FOR BOOKING TRACKING
+    // ============================================
+    let razorpayCustomerId = null;
+    try {
+      // Get customer user details from users table
+      const [customerUser] = await db
+        .select()
+        .from(users)
+        .where(eq(users.id, userId))
+        .limit(1);
+
+      if (customerUser) {
+        // Create or get Razorpay customer
+        const razorpayCustomer = await createRazorpayCustomer({
+          name: customerUser.name || "Customer",
+          email: customerUser.email,
+          contact: customerUser.phone,
+        });
+        razorpayCustomerId = razorpayCustomer.id;
+        console.log("✅ Razorpay customer created/fetched:", razorpayCustomerId);
+      }
+    } catch (customerError) {
+      console.error("⚠️ Failed to create Razorpay customer:", customerError);
+      // Continue without customer - order will still work
+    }
+
     try {
       // For new bookings, use split payment; for reschedules, use regular order
       if (!isReschedule) {
-        // Platform fee is hardcoded at 5%
-        const platformFeePercentage = 5;
+        // Get provider's subscription to determine platform fee percentage
+        let platformFeePercentage = 5; // Default
+        try {
+          const providerSubscription = await getProviderActiveSubscription(businessProfile.providerId);
+          if (providerSubscription && providerSubscription.planPlatformFeePercentage !== undefined) {
+            platformFeePercentage = providerSubscription.planPlatformFeePercentage;
+          }
+        } catch (error) {
+          console.error("Error fetching provider subscription for platform fee:", error);
+        }
 
         razorpayOrder = await createSplitOrder(
           amountInPaise,
@@ -458,12 +498,13 @@ const createPaymentOrder = async (req, res) => {
           providerPayment.razorpayFundAccountId,
           adminPayment.razorpayFundAccountId,
           platformFeePercentage,
-          notes
+          notes,
+          razorpayCustomerId // Pass customer ID for tracking
         );
         console.log(`✅ Razorpay split order created: ${razorpayOrder.id}`);
       } else {
         // Reschedule fees don't use split (they're flat fees to platform)
-        razorpayOrder = await createRazorpayOrder(amountInPaise, tempReceipt, notes);
+        razorpayOrder = await createRazorpayOrder(amountInPaise, tempReceipt, notes, razorpayCustomerId);
         console.log(`✅ Razorpay order created: ${razorpayOrder.id}`);
       }
     } catch (razorpayError) {
@@ -911,7 +952,8 @@ const verifyPayment = async (req, res) => {
             previousTime: currentSlot?.startTime || "N/A",
             newDate: paymentIntent.bookingDate,
             newTime: newSlot?.startTime || "N/A"
-          }
+          },
+          tx // Pass transaction to avoid foreign key constraint issue
         );
 
         bookingId = updatedBooking.id;
@@ -935,6 +977,15 @@ const verifyPayment = async (req, res) => {
         };
 
         await tx.insert(payments).values(paymentValues);
+
+        // Update booking's provider earning to include reschedule fee
+        await tx
+          .update(bookings)
+          .set({
+            providerEarning: sql`${bookings.providerEarning} + ${paymentIntent.amount}`, // Add reschedule fee to provider earning
+          })
+          .where(eq(bookings.id, rescheduleBookingId));
+
         console.log("✅ Payment record inserted successfully");
       } else {
         // ===========================
@@ -965,6 +1016,7 @@ const verifyPayment = async (req, res) => {
               totalPrice: paiseToRupees(paymentIntent.amount),
               status: "confirmed", // Auto-confirm
               paymentStatus: "paid",
+              // Provider earning will be updated after payment record is created
             })
             .returning();
           
@@ -974,7 +1026,9 @@ const verifyPayment = async (req, res) => {
             "booked",
             "Booking Created",
             "customer",
-            userId
+            userId,
+            null,
+            tx // Pass transaction to avoid foreign key constraint issue
           );
 
           console.log("✅ New booking created with ID:", newBooking?.id);
@@ -988,10 +1042,39 @@ const verifyPayment = async (req, res) => {
         bookingId = newBooking.id;
 
         // 2. Create payment record with platform fee and provider share
-        // Calculate platform fee (5%) and provider share (95%)
-        const platformFeePercentage = 5; // Hardcoded at 5%
+        // Get provider's subscription to determine platform fee percentage
+        let platformFeePercentage = 5; // Default
+        try {
+          console.log('🔍 [VERIFY] Fetching subscription for businessProfileId:', slot.businessProfileId);
+          // Get business profile to find provider's userId
+          const [businessProfile] = await tx
+            .select()
+            .from(businessProfiles)
+            .where(eq(businessProfiles.id, slot.businessProfileId))
+            .limit(1);
+
+          if (businessProfile) {
+            console.log('✅ [VERIFY] Found businessProfile, providerId:', businessProfile.providerId);
+            const providerSubscription = await getProviderActiveSubscription(businessProfile.providerId);
+            console.log('📊 [VERIFY] Subscription data:', providerSubscription ? {
+              planName: providerSubscription.planName,
+              platformFeePercentage: providerSubscription.planPlatformFeePercentage,
+              status: providerSubscription.status
+            } : 'NULL');
+            if (providerSubscription && providerSubscription.planPlatformFeePercentage !== undefined) {
+              platformFeePercentage = providerSubscription.planPlatformFeePercentage;
+            }
+          } else {
+            console.log('❌ [VERIFY] Business profile not found for ID:', slot.businessProfileId);
+          }
+        } catch (error) {
+          console.error("Error fetching provider subscription for platform fee:", error);
+        }
+
+        console.log(`💰 [VERIFY] Platform fee calculation: ${platformFeePercentage}% of ₹${paymentIntent.amount / 100}`);
         const platformFee = Math.round(paymentIntent.amount * (platformFeePercentage / 100));
         const providerShare = paymentIntent.amount - platformFee;
+        console.log(`💰 [VERIFY] Final amounts - Platform fee: ₹${platformFee / 100}, Provider share: ₹${providerShare / 100}`);
 
         const paymentValues = {
           bookingId: newBooking.id,
@@ -999,8 +1082,8 @@ const verifyPayment = async (req, res) => {
           razorpayOrderId: razorpayOrderId,
           razorpayPaymentId: razorpayPaymentId,
           amount: paymentIntent.amount,
-          platformFee: platformFee, // 5% platform commission
-          providerShare: providerShare, // 95% to provider
+          platformFee: platformFee, // Platform commission based on provider's plan
+          providerShare: providerShare, // Remaining to provider
           currency: "INR",
           status: "paid",
           paymentMethod: "razorpay",
@@ -1016,6 +1099,15 @@ const verifyPayment = async (req, res) => {
 
         await tx.insert(payments).values(paymentValues);
         console.log("✅ Payment record inserted successfully");
+
+        // Update booking with provider earning and platform fee
+        await tx
+          .update(bookings)
+          .set({
+            providerEarning: providerShare, // Amount provider earns
+            platformFee: platformFee, // Platform commission
+          })
+          .where(eq(bookings.id, newBooking.id));
       }
 
       // Update payment_intent to completed (common for both cases)
@@ -1467,14 +1559,45 @@ const handlePaymentCaptured = async (paymentEntity) => {
         "booked",
         "Booking Created",
         "customer",
-        paymentIntent.userId
+        paymentIntent.userId,
+        null,
+        tx // Pass transaction to avoid foreign key constraint issue
       );
 
       // Create payment record with platform fee split
-      // Default 5% platform fee, 95% provider share
-      const platformFeePercentage = 5;
+      // Get provider's subscription to determine platform fee percentage
+      let platformFeePercentage = 5; // Default
+      try {
+        console.log('🔍 [WEBHOOK] Fetching subscription for businessProfileId:', slot.businessProfileId);
+        // Get business profile to find provider's userId
+        const [businessProfile] = await tx
+          .select()
+          .from(businessProfiles)
+          .where(eq(businessProfiles.id, slot.businessProfileId))
+          .limit(1);
+
+        if (businessProfile) {
+          console.log('✅ [WEBHOOK] Found businessProfile, providerId:', businessProfile.providerId);
+          const providerSubscription = await getProviderActiveSubscription(businessProfile.providerId);
+          console.log('📊 [WEBHOOK] Subscription data:', providerSubscription ? {
+            planName: providerSubscription.planName,
+            platformFeePercentage: providerSubscription.planPlatformFeePercentage,
+            status: providerSubscription.status
+          } : 'NULL');
+          if (providerSubscription && providerSubscription.planPlatformFeePercentage !== undefined) {
+            platformFeePercentage = providerSubscription.planPlatformFeePercentage;
+          }
+        } else {
+          console.log('❌ [WEBHOOK] Business profile not found for ID:', slot.businessProfileId);
+        }
+      } catch (error) {
+        console.error("Error fetching provider subscription for platform fee:", error);
+      }
+
+      console.log(`💰 [WEBHOOK] Platform fee calculation: ${platformFeePercentage}% of ₹${paymentIntent.amount / 100}`);
       const platformFee = Math.round(paymentIntent.amount * (platformFeePercentage / 100));
       const providerShare = paymentIntent.amount - platformFee;
+      console.log(`💰 [WEBHOOK] Final amounts - Platform fee: ₹${platformFee / 100}, Provider share: ₹${providerShare / 100}`);
 
       await tx
         .insert(payments)
@@ -1484,13 +1607,22 @@ const handlePaymentCaptured = async (paymentEntity) => {
           razorpayOrderId: order_id,
           razorpayPaymentId: id,
           amount: paymentIntent.amount,
-          platformFee: platformFee, // 5% platform commission
-          providerShare: providerShare, // 95% to provider
+          platformFee: platformFee, // Platform commission based on provider's plan
+          providerShare: providerShare, // Remaining to provider
           currency: "INR",
           status: "paid",
           paymentMethod: "razorpay",
           completedAt: new Date(),
         });
+
+      // Update booking with provider earning and platform fee
+      await tx
+        .update(bookings)
+        .set({
+          providerEarning: providerShare, // Amount provider earns
+          platformFee: platformFee, // Platform commission
+        })
+        .where(eq(bookings.id, newBooking.id));
 
       // Update payment intent
       await tx

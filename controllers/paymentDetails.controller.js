@@ -663,9 +663,22 @@ const getProviderRevenueStats = async (req, res) => {
       .from(bookings)
       .where(eq(bookings.businessProfileId, business.id));
 
-    // Platform fee: 5%, Provider share: 95%
-    const platformFeePercentage = 5;
-    const providerSharePercentage = 95;
+    // Get provider's subscription to determine platform fee percentage (for fallback calculation only)
+    let providerSharePercentage = 95; // Default fallback
+    try {
+      const { getProviderActiveSubscription } = require("./providerSubscription.controller");
+      const providerSubscription = await getProviderActiveSubscription(providerId);
+      if (providerSubscription && providerSubscription.planPlatformFeePercentage !== undefined) {
+        providerSharePercentage = 100 - providerSubscription.planPlatformFeePercentage;
+      }
+      console.log('📊 Provider subscription for revenue:', {
+        planName: providerSubscription?.planName,
+        platformFeePercentage: providerSubscription?.planPlatformFeePercentage,
+        providerSharePercentage
+      });
+    } catch (error) {
+      console.error("Error fetching provider subscription for revenue stats:", error);
+    }
 
     // Filter out cancelled, rejected, and refunded bookings for base earnings
     const earningsBookings = allBookings.filter(
@@ -676,8 +689,7 @@ const getProviderRevenueStats = async (req, res) => {
         !b.isRefunded,
     );
 
-    // Fetch all successful payments for this business up front
-    // Use a unique name to avoid any TDZ/shadowing issues
+    // Fetch all successful payments for this business up front (for reschedule fee calculation)
     const allPaidPayments = await db
       .select()
       .from(payments)
@@ -689,26 +701,30 @@ const getProviderRevenueStats = async (req, res) => {
         )
       );
 
-    // Calculate base earnings and reschedule revenue from both bookings and payments
-    let baseEarnings = 0;
-    let totalRescheduleRevenue = 0;
+    // Calculate total earnings from bookings (providerEarning already includes reschedule fees)
+    let totalEarnings = 0;
 
-    // 1. Get earnings from all bookings that have a payout amount set (handles completed and cancelled)
     allBookings.forEach(booking => {
-      if (booking.providerPayoutAmount) {
-        baseEarnings += Number(booking.providerPayoutAmount);
-      } else if (booking.status !== "cancelled" && booking.status !== "rejected" && booking.status !== "refunded" && !booking.isRefunded) {
-        // Fallback for older non-cancelled bookings that might not have providerPayoutAmount set
-        baseEarnings += Math.round(((booking.totalPrice || 0) * providerSharePercentage) / 100);
+      // Use providerEarning if available (already includes service earnings + reschedule fees)
+      if (booking.providerEarning !== null && booking.providerEarning !== undefined) {
+        totalEarnings += Number(booking.providerEarning) / 100;
+      }
+      // Fallback to providerPayoutAmount for cancelled bookings with payouts
+      else if (booking.providerPayoutAmount) {
+        totalEarnings += Number(booking.providerPayoutAmount);
+      }
+      // Final fallback for very old bookings without providerEarning
+      else if (booking.status !== "cancelled" && booking.status !== "rejected" && booking.status !== "refunded" && !booking.isRefunded) {
+        totalEarnings += Math.round(((booking.totalPrice || 0) * providerSharePercentage) / 100);
       }
     });
 
-    // 2. Get reschedule revenue from payments (amount = 10000 paise = ₹100)
+    // Calculate reschedule revenue separately (just for display breakdown)
+    let totalRescheduleRevenue = 0;
     allPaidPayments.forEach(p => {
       // payment info is in p.payments due to innerJoin
       if (p.payments.amount === 10000) {
         // For reschedule fees, the provider gets the full share or partial based on split
-        // But usually it's ₹100. Let's use the providerShare from payment if available
         if (p.payments.providerShare) {
           totalRescheduleRevenue += Math.round(p.payments.providerShare / 100);
         } else {
@@ -717,15 +733,16 @@ const getProviderRevenueStats = async (req, res) => {
       }
     });
 
-    const totalEarnings = baseEarnings + totalRescheduleRevenue;
+    // Calculate base earnings (total - reschedule fees) for display
+    const baseEarnings = totalEarnings - totalRescheduleRevenue;
 
     console.log(
-      "💰 Calculation: Base Earned = ₹" +
+      "💰 Calculation: Total Earnings = ₹" +
+        totalEarnings +
+        ", Base Earnings = ₹" +
         baseEarnings +
         ", Reschedule Fees = ₹" +
-        totalRescheduleRevenue +
-        ", Total = ₹" +
-        totalEarnings,
+        totalRescheduleRevenue,
     );
 
     // Count by status (from all bookings)

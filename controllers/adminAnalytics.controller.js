@@ -7,6 +7,8 @@ const {
   services,
   Category,
   users,
+  subscriptionPayments,
+  providerSubscriptions,
 } = require("../models/schema");
 const { eq, and, sql, desc, innerJoin, gte, lte, inArray } = require("drizzle-orm");
 
@@ -196,6 +198,28 @@ const getRevenueAnalytics = async (req, res) => {
     });
     console.log("[Admin Analytics] Found payments:", allPayments.length);
 
+    // ============================================
+    // FETCH SUBSCRIPTION PAYMENTS FOR ADMIN REVENUE
+    // ============================================
+    const allSubscriptionPayments = await db
+      .select({
+        id: subscriptionPayments.id,
+        amount: subscriptionPayments.amount,
+        paymentDate: subscriptionPayments.paymentDate,
+        status: subscriptionPayments.status,
+      })
+      .from(subscriptionPayments)
+      .where(
+        and(
+          eq(subscriptionPayments.status, "captured"),
+          gte(subscriptionPayments.paymentDate, startOfDay),
+          lte(subscriptionPayments.paymentDate, endOfDay),
+        ),
+      )
+      .orderBy(subscriptionPayments.paymentDate);
+
+    console.log("[Admin Analytics] Found subscription payments:", allSubscriptionPayments.length);
+
     // Group data by appropriate interval
     const groupedData = new Map();
     const currentDate = new Date(effectiveStartDate);
@@ -208,6 +232,7 @@ const getRevenueAnalytics = async (req, res) => {
         bookings: 0,
         revenue: 0,
         completed: 0,
+        subscriptionFees: 0,
       });
 
       if (period === "7d" || period === "30d") {
@@ -249,6 +274,22 @@ const getRevenueAnalytics = async (req, res) => {
       }
     });
 
+    // Process subscription payments - group by date and add to chart data
+    allSubscriptionPayments.forEach((item) => {
+      if (!item.paymentDate) return;
+      try {
+        const paymentDate = new Date(item.paymentDate);
+        const key = formatDateForGrouping(paymentDate, period);
+        if (groupedData.has(key)) {
+          const existing = groupedData.get(key);
+          // Subscription fee is the full amount paid by provider
+          existing.subscriptionFees += Number(item.amount) / 100; // Convert paise to rupees
+        }
+      } catch (e) {
+        console.warn("Invalid subscription payment date:", item.paymentDate);
+      }
+    });
+
     // Convert to array and calculate cumulative values
     let cumulativeRevenue = 0;
     const chartData = Array.from(groupedData.values()).map((item) => {
@@ -259,6 +300,7 @@ const getRevenueAnalytics = async (req, res) => {
         revenue: item.revenue,
         completed: item.bookings, // For admin, all paid payments count as "completed"
         cumulativeRevenue,
+        subscriptionFees: item.subscriptionFees || 0,
       };
     });
 
@@ -280,6 +322,15 @@ const getRevenueAnalytics = async (req, res) => {
       );
     }, 0);
 
+    // Calculate total subscription fees (full amount of subscription payments)
+    const totalSubscriptionFees = allSubscriptionPayments.reduce(
+      (sum, item) => sum + (Number(item.amount) || 0),
+      0,
+    );
+
+    // Total admin revenue = platform fees from bookings + subscription fees
+    const totalAdminRevenue = totalPlatformFees + totalSubscriptionFees;
+
     const totalProviderPayouts = allPayments.reduce((sum, item) => {
       const amount = Number(item.amount) || 0;
       if (item.platformFee !== null && item.platformFee !== undefined) {
@@ -296,8 +347,10 @@ const getRevenueAnalytics = async (req, res) => {
       summary: {
         totalBookings,
         totalRevenue, // Total bookings value in paise
-        platformFees: totalPlatformFees / 100, // Admin's 5% in rupees
-        providerPayouts: totalProviderPayouts / 100, // Provider's 95% in rupees
+        platformFees: totalPlatformFees / 100, // Admin's platform fees in rupees
+        subscriptionFees: totalSubscriptionFees / 100, // Subscription fees in rupees
+        adminRevenue: totalAdminRevenue / 100, // Total admin revenue (platform fees + subscriptions) in rupees
+        providerPayouts: totalProviderPayouts / 100, // Provider's share in rupees
         completionRate: "100", // All paid payments
       },
       chartData,

@@ -51,6 +51,18 @@ const addressEnum = pgEnum("address_type", [
   "shipping",
   "other",
 ]);
+
+const subscriptionStatusEnum = pgEnum("subscription_status", [
+  "active",
+  "trial",
+  "cancelled",
+  "expired",
+  "completed",
+  "pending_payment",
+]);
+
+const billingCycleEnum = pgEnum("billing_cycle", ["monthly", "yearly"]);
+
 // Tables
 const Roles = pgTable("roles", {
   id: serial("id").primaryKey(),
@@ -90,60 +102,75 @@ const users = pgTable("users", {
   password: varchar("password", { length: 255 }), // Made nullable for OAuth users
   avatar: varchar("avatar", { length: 500 }), // Cloudinary URL for profile picture
   googleId: varchar("google_id", { length: 255 }).unique(), // Google OAuth ID
+  //razorpayCustomerId: varchar("razorpay_customer_id", { length: 100 }), // Razorpay Customer ID for tracking
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
-const businessProfiles = pgTable("business_profiles", {
-  id: serial("id").primaryKey(),
-  providerId: integer("provider_id")
-    .references(() => users.id, { onDelete: "cascade" })
-    .notNull(),
-  categoryId: integer("category_id").references(() => Category.id, {
-    onDelete: "set null",
+const businessProfiles = pgTable(
+  "business_profiles",
+  {
+    id: serial("id").primaryKey(),
+    providerId: integer("provider_id")
+      .references(() => users.id, { onDelete: "cascade" })
+      .notNull(),
+    categoryId: integer("category_id").references(() => Category.id, {
+      onDelete: "set null",
+    }),
+    businessName: varchar("business_name", { length: 255 }).notNull(),
+    description: varchar("description", { length: 1000 }),
+    phone: varchar("phone", { length: 20 }).notNull(),
+    state: varchar("state", { length: 100 }).notNull(), // State/Province
+    city: varchar("city", { length: 100 }).notNull(), // City within state
+    website: varchar("website", { length: 255 }),
+    logo: varchar("logo", { length: 500 }), // Cloudinary URL for business logo
+    coverImage: varchar("cover_image", { length: 500 }), // Cloudinary URL for cover/banner image
+    isVerified: boolean("is_verified").default(false).notNull(),
+    hasPaymentDetails: boolean("has_payment_details").default(false).notNull(), // Provider has added payment details
+    isBlocked: boolean("is_blocked").default(false).notNull(), // Business blocked by admin
+    blockedReason: text("blocked_reason"), // Reason for blocking
+    blockedAt: timestamp("blocked_at"), // When business was blocked
+    blockedBy: integer("blocked_by").references(() => users.id), // Admin who blocked
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => ({
+    providerIdIdx: index("business_profiles_provider_id_idx").on(
+      table.providerId,
+    ),
+    isVerifiedIdx: index("business_profiles_is_verified_idx").on(
+      table.isVerified,
+    ),
+    cityIdx: index("business_profiles_city_idx").on(table.city),
   }),
-  businessName: varchar("business_name", { length: 255 }).notNull(),
-  description: varchar("description", { length: 1000 }),
-  phone: varchar("phone", { length: 20 }).notNull(),
-  state: varchar("state", { length: 100 }).notNull(), // State/Province
-  city: varchar("city", { length: 100 }).notNull(), // City within state
-  website: varchar("website", { length: 255 }),
-  logo: varchar("logo", { length: 500 }), // Cloudinary URL for business logo
-  coverImage: varchar("cover_image", { length: 500 }), // Cloudinary URL for cover/banner image
-  isVerified: boolean("is_verified").default(false).notNull(),
-  hasPaymentDetails: boolean("has_payment_details").default(false).notNull(), // Provider has added payment details
-  isBlocked: boolean("is_blocked").default(false).notNull(), // Business blocked by admin
-  blockedReason: text("blocked_reason"), // Reason for blocking
-  blockedAt: timestamp("blocked_at"), // When business was blocked
-  blockedBy: integer("blocked_by").references(() => users.id), // Admin who blocked
-  createdAt: timestamp("created_at").defaultNow().notNull(),
-}, (table) => ({
-  providerIdIdx: index("business_profiles_provider_id_idx").on(table.providerId),
-  isVerifiedIdx: index("business_profiles_is_verified_idx").on(table.isVerified),
-  cityIdx: index("business_profiles_city_idx").on(table.city),
-}));
+);
 
-const services = pgTable("services", {
-  id: serial("id").primaryKey(),
-  businessProfileId: integer("business_profile_id")
-    .notNull()
-    .references(() => businessProfiles.id, { onDelete: "cascade" }),
-  name: varchar("name", { length: 255 }).notNull(),
-  description: varchar("description", { length: 1000 }),
-  price: integer("price").notNull(),
-  EstimateDuration: integer("EstimateDuration").notNull(),
-  image: varchar("image", { length: 500 }), // Cloudinary URL for service image
-  isActive: boolean("is_active").default(true).notNull(), // Service can be deactivated by admin
-  deactivationReason: text("deactivation_reason"), // Reason for deactivation
-  deactivatedAt: timestamp("deactivated_at"), // When service was deactivated
-  deactivatedBy: integer("deactivated_by").references(() => users.id), // Admin who deactivated
-  rating: decimal("rating", { precision: 3, scale: 2 }).default(0),
-  totalReviews: integer("total_reviews").default(0),
-  maxAllowBooking: integer("max_allow_booking").default(1).notNull(),
-  createdAt: timestamp("created_at").defaultNow().notNull(),
-}, (table) => ({
-  businessProfileIdIdx: index("services_business_profile_id_idx").on(table.businessProfileId),
-  isActiveIdx: index("services_is_active_idx").on(table.isActive),
-}));
+const services = pgTable(
+  "services",
+  {
+    id: serial("id").primaryKey(),
+    businessProfileId: integer("business_profile_id")
+      .notNull()
+      .references(() => businessProfiles.id, { onDelete: "cascade" }),
+    name: varchar("name", { length: 255 }).notNull(),
+    description: varchar("description", { length: 1000 }),
+    price: integer("price").notNull(),
+    EstimateDuration: integer("EstimateDuration").notNull(),
+    image: varchar("image", { length: 500 }), // Cloudinary URL for service image
+    isActive: boolean("is_active").default(true).notNull(), // Service can be deactivated by admin
+    deactivationReason: text("deactivation_reason"), // Reason for deactivation
+    deactivatedAt: timestamp("deactivated_at"), // When service was deactivated
+    deactivatedBy: integer("deactivated_by").references(() => users.id), // Admin who deactivated
+    rating: decimal("rating", { precision: 3, scale: 2 }).default(0),
+    totalReviews: integer("total_reviews").default(0),
+    maxAllowBooking: integer("max_allow_booking").default(1).notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => ({
+    businessProfileIdIdx: index("services_business_profile_id_idx").on(
+      table.businessProfileId,
+    ),
+    isActiveIdx: index("services_is_active_idx").on(table.isActive),
+  }),
+);
 
 const slots = pgTable("slots", {
   id: serial("id").primaryKey(),
@@ -154,82 +181,94 @@ const slots = pgTable("slots", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
-const bookings = pgTable("bookings", {
-  id: serial("id").primaryKey(),
-  customerId: integer("customer_id")
-    .notNull()
-    .references(() => users.id, { onDelete: "cascade" }),
-  businessProfileId: integer("business_profile_id")
-    .notNull()
-    .references(() => businessProfiles.id, { onDelete: "cascade" }),
-  serviceId: integer("service_id")
-    .notNull()
-    .references(() => services.id, { onDelete: "cascade" }),
-  slotId: integer("slot_id")
-    .notNull()
-    .references(() => slots.id, { onDelete: "cascade" }),
-  addressId: integer("address_id")
-    .notNull()
-    .references(() => Address.id, { onDelete: "cascade" }),
-  bookingDate: timestamp("booking_date").defaultNow().notNull(),
-  status: bookingStatusEnum("status").default("pending").notNull(),
-  totalPrice: integer("total_price").notNull(),
-  paymentStatus: paymentStatusEnum("payment_status")
-    .default("pending")
-    .notNull(),
-  // Reschedule tracking fields
-  rescheduleCount: integer("reschedule_count").default(0).notNull(), // Number of times rescheduled
-  lastRescheduleFee: integer("last_reschedule_fee"), // Last reschedule fee charged (in paise)
-  rescheduleOutcome: varchar("reschedule_outcome", { length: 20 }), // "pending", "accepted", "rejected", "cancelled"
-  rescheduleFeeProviderPayout: integer("reschedule_fee_provider_payout"), // Reschedule fee amount going to provider (in paise)
-  rescheduleFeePayoutStatus: varchar("reschedule_fee_payout_status", {
-    length: 20,
-  }), // "pending", "paid"
-  previousSlotId: integer("previous_slot_id"), // Stores original slot before reschedule (for revert if declined)
-  previousSlotTime: varchar("previous_slot_time", { length: 20 }), // Stores original slot time (e.g., "09:00:00") before reschedule
-  previousBookingDate: timestamp("previous_booking_date"), // Stores original date before reschedule
-  rescheduleReason: varchar("reschedule_reason", { length: 500 }), // Reason for reschedule
-  rescheduledBy: varchar("rescheduled_by", { length: 20 }), // "customer" or "provider"
-  rescheduledAt: timestamp("rescheduled_at"), // When reschedule was initiated
-  // Refund tracking
-  isRefunded: boolean("is_refunded").default(false).notNull(), // Whether payment has been refunded
-  refundAmount: integer("refund_amount"), // Amount refunded to customer (in paise)
-  // Platform fee tracking (5% when customer cancels confirmed booking)
-  platformFeeAmount: integer("platform_fee_amount"), // Platform fee retained (in paise)
-  // Provider payout tracking (10% when customer cancels confirmed booking)
-  providerPayoutAmount: integer("provider_payout_amount"), // Amount paid to provider (in paise)
-  providerPayoutStatus: varchar("provider_payout_status", { length: 20 }), // "pending", "paid", "failed"
-  providerPayoutId: varchar("provider_payout_id", { length: 100 }), // Razorpay payout ID
-  providerPayoutAt: timestamp("provider_payout_at"), // When payout was processed
-  // Cancellation tracking
-  cancelledAt: timestamp("cancelled_at"), // When booking was cancelled
-  cancellationReason: varchar("cancellation_reason", { length: 500 }), // Reason for cancellation
-  cancelledBy: varchar("cancelled_by", { length: 20 }), // "customer", "provider", or "system"
-  // Reminder tracking
-  reminderSent: boolean("reminder_sent").default(false).notNull(), // Accept/Reject reminder sent
-  upcomingReminderSent: boolean("upcoming_reminder_sent")
-    .default(false)
-    .notNull(), // Upcoming service reminder sent
-  dayOfReminderSent: boolean("day_of_reminder_sent").default(false).notNull(), // Day-of service reminder sent
-  // Completion verification (OTP-based)
-  completionOtp: varchar("completion_otp", { length: 10 }), // OTP for service completion verification
-  completionOtpExpiry: timestamp("completion_otp_expiry"), // OTP expiry time (15 minutes)
-  completionOtpVerifiedAt: timestamp("completion_otp_verified_at"), // When OTP was verified
-  beforePhotoUrl: varchar("before_photo_url", { length: 500 }), // Before service photo URL (optional)
-  afterPhotoUrl: varchar("after_photo_url", { length: 500 }), // After service photo URL (optional)
-  completionNotes: varchar("completion_notes", { length: 1000 }), // Provider notes about completion
-  actualCompletionTime: timestamp("actual_completion_time"), // Actual time service was completed
-  lastPendingReminderAt: timestamp("last_pending_reminder_at"), // Used for repeated 'take action' reminders
-  createdAt: timestamp("created_at").defaultNow().notNull(),
-}, (table) => ({
-  customerIdIdx: index("bookings_customer_id_idx").on(table.customerId),
-  businessProfileIdIdx: index("bookings_business_profile_id_idx").on(table.businessProfileId),
-  serviceIdIdx: index("bookings_service_id_idx").on(table.serviceId),
-  statusIdx: index("bookings_status_idx").on(table.status),
-  bookingDateIdx: index("bookings_booking_date_idx").on(table.bookingDate),
-  // Composite index for provider bookings query (businessProfileId + bookingDate)
-  businessProfileIdDateIdx: index("bookings_business_profile_id_date_idx").on(table.businessProfileId, table.bookingDate),
-}));
+const bookings = pgTable(
+  "bookings",
+  {
+    id: serial("id").primaryKey(),
+    customerId: integer("customer_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    businessProfileId: integer("business_profile_id")
+      .notNull()
+      .references(() => businessProfiles.id, { onDelete: "cascade" }),
+    serviceId: integer("service_id")
+      .notNull()
+      .references(() => services.id, { onDelete: "cascade" }),
+    slotId: integer("slot_id")
+      .notNull()
+      .references(() => slots.id, { onDelete: "cascade" }),
+    addressId: integer("address_id")
+      .notNull()
+      .references(() => Address.id, { onDelete: "cascade" }),
+    bookingDate: timestamp("booking_date").defaultNow().notNull(),
+    status: bookingStatusEnum("status").default("pending").notNull(),
+    totalPrice: integer("total_price").notNull(),
+    // Provider earning tracking
+    providerEarning: integer("provider_earning"), // Amount provider earns after platform fee (in paise)
+    platformFee: integer("platform_fee"), // Platform commission amount (in paise)
+    paymentStatus: paymentStatusEnum("payment_status")
+      .default("pending")
+      .notNull(),
+    // Reschedule tracking fields
+    rescheduleCount: integer("reschedule_count").default(0).notNull(), // Number of times rescheduled
+    lastRescheduleFee: integer("last_reschedule_fee"), // Last reschedule fee charged (in paise)
+    rescheduleOutcome: varchar("reschedule_outcome", { length: 20 }), // "pending", "accepted", "rejected", "cancelled"
+    rescheduleFeeProviderPayout: integer("reschedule_fee_provider_payout"), // Reschedule fee amount going to provider (in paise)
+    rescheduleFeePayoutStatus: varchar("reschedule_fee_payout_status", {
+      length: 20,
+    }), // "pending", "paid"
+    previousSlotId: integer("previous_slot_id"), // Stores original slot before reschedule (for revert if declined)
+    previousSlotTime: varchar("previous_slot_time", { length: 20 }), // Stores original slot time (e.g., "09:00:00") before reschedule
+    previousBookingDate: timestamp("previous_booking_date"), // Stores original date before reschedule
+    rescheduleReason: varchar("reschedule_reason", { length: 500 }), // Reason for reschedule
+    rescheduledBy: varchar("rescheduled_by", { length: 20 }), // "customer" or "provider"
+    rescheduledAt: timestamp("rescheduled_at"), // When reschedule was initiated
+    // Refund tracking
+    isRefunded: boolean("is_refunded").default(false).notNull(), // Whether payment has been refunded
+    refundAmount: integer("refund_amount"), // Amount refunded to customer (in paise)
+    // Platform fee tracking (5% when customer cancels confirmed booking)
+    platformFeeAmount: integer("platform_fee_amount"), // Platform fee retained (in paise)
+    // Provider payout tracking (10% when customer cancels confirmed booking)
+    providerPayoutAmount: integer("provider_payout_amount"), // Amount paid to provider (in paise)
+    providerPayoutStatus: varchar("provider_payout_status", { length: 20 }), // "pending", "paid", "failed"
+    providerPayoutId: varchar("provider_payout_id", { length: 100 }), // Razorpay payout ID
+    providerPayoutAt: timestamp("provider_payout_at"), // When payout was processed
+    // Cancellation tracking
+    cancelledAt: timestamp("cancelled_at"), // When booking was cancelled
+    cancellationReason: varchar("cancellation_reason", { length: 500 }), // Reason for cancellation
+    cancelledBy: varchar("cancelled_by", { length: 20 }), // "customer", "provider", or "system"
+    // Reminder tracking
+    reminderSent: boolean("reminder_sent").default(false).notNull(), // Accept/Reject reminder sent
+    upcomingReminderSent: boolean("upcoming_reminder_sent")
+      .default(false)
+      .notNull(), // Upcoming service reminder sent
+    dayOfReminderSent: boolean("day_of_reminder_sent").default(false).notNull(), // Day-of service reminder sent
+    // Completion verification (OTP-based)
+    completionOtp: varchar("completion_otp", { length: 10 }), // OTP for service completion verification
+    completionOtpExpiry: timestamp("completion_otp_expiry"), // OTP expiry time (15 minutes)
+    completionOtpVerifiedAt: timestamp("completion_otp_verified_at"), // When OTP was verified
+    beforePhotoUrl: varchar("before_photo_url", { length: 500 }), // Before service photo URL (optional)
+    afterPhotoUrl: varchar("after_photo_url", { length: 500 }), // After service photo URL (optional)
+    completionNotes: varchar("completion_notes", { length: 1000 }), // Provider notes about completion
+    actualCompletionTime: timestamp("actual_completion_time"), // Actual time service was completed
+    lastPendingReminderAt: timestamp("last_pending_reminder_at"), // Used for repeated 'take action' reminders
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => ({
+    customerIdIdx: index("bookings_customer_id_idx").on(table.customerId),
+    businessProfileIdIdx: index("bookings_business_profile_id_idx").on(
+      table.businessProfileId,
+    ),
+    serviceIdIdx: index("bookings_service_id_idx").on(table.serviceId),
+    statusIdx: index("bookings_status_idx").on(table.status),
+    bookingDateIdx: index("bookings_booking_date_idx").on(table.bookingDate),
+    // Composite index for provider bookings query (businessProfileId + bookingDate)
+    businessProfileIdDateIdx: index("bookings_business_profile_id_date_idx").on(
+      table.businessProfileId,
+      table.bookingDate,
+    ),
+  }),
+);
 
 const bookingHistory = pgTable("booking_history", {
   id: serial("id").primaryKey(),
@@ -239,7 +278,9 @@ const bookingHistory = pgTable("booking_history", {
   action: varchar("action", { length: 100 }).notNull(),
   message: varchar("message", { length: 1000 }).notNull(),
   actor: varchar("actor", { length: 50 }), // 'customer', 'provider', 'system'
-  actorId: integer("actor_id").references(() => users.id, { onDelete: "set null" }),
+  actorId: integer("actor_id").references(() => users.id, {
+    onDelete: "set null",
+  }),
   historyData: text("history_data"), // JSON string for extra info
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
@@ -287,29 +328,26 @@ const payments = pgTable("payments", {
 });
 
 // Payment Intents - Temporarily locks slots during payment flow
-const paymentIntents = pgTable(
-  "payment_intents",
-  {
-    id: serial("id").primaryKey(),
-    userId: integer("user_id")
-      .notNull()
-      .references(() => users.id, { onDelete: "cascade" }),
-    serviceId: integer("service_id").notNull(),
-    slotId: integer("slot_id").notNull(),
-    addressId: integer("address_id").notNull(),
-    bookingDate: timestamp("booking_date").notNull(),
-    amount: integer("amount").notNull(), // Amount in paise
-    razorpayOrderId: varchar("razorpay_order_id", { length: 100 }),
-    status: paymentIntentStatusEnum("status").default("pending").notNull(),
-    expiresAt: timestamp("expires_at").notNull(), // Lock expires after 1 minute
-    createdAt: timestamp("created_at").defaultNow().notNull(),
-    completedAt: timestamp("completed_at"),
-    failureReason: varchar("failure_reason", { length: 500 }),
-    // Reschedule fields
-    isReschedule: boolean("is_reschedule").default(false),
-    rescheduleBookingId: integer("reschedule_booking_id"), // References bookings.id for reschedule
-  }
-);
+const paymentIntents = pgTable("payment_intents", {
+  id: serial("id").primaryKey(),
+  userId: integer("user_id")
+    .notNull()
+    .references(() => users.id, { onDelete: "cascade" }),
+  serviceId: integer("service_id").notNull(),
+  slotId: integer("slot_id").notNull(),
+  addressId: integer("address_id").notNull(),
+  bookingDate: timestamp("booking_date").notNull(),
+  amount: integer("amount").notNull(), // Amount in paise
+  razorpayOrderId: varchar("razorpay_order_id", { length: 100 }),
+  status: paymentIntentStatusEnum("status").default("pending").notNull(),
+  expiresAt: timestamp("expires_at").notNull(), // Lock expires after 1 minute
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  completedAt: timestamp("completed_at"),
+  failureReason: varchar("failure_reason", { length: 500 }),
+  // Reschedule fields
+  isReschedule: boolean("is_reschedule").default(false),
+  rescheduleBookingId: integer("reschedule_booking_id"), // References bookings.id for reschedule
+});
 // Payment Details - Stores UPI/Bank details for admin and providers
 const paymentDetails = pgTable("payment_details", {
   id: serial("id").primaryKey(),
@@ -337,56 +375,67 @@ const adminSettings = pgTable("admin_settings", {
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 
-const feedback = pgTable("feedback", {
-  id: serial("id").primaryKey(),
-  bookingId: integer("booking_id")
-    .references(() => bookings.id, { onDelete: "cascade" })
-    .notNull(),
-  serviceId: integer("service_id")
-    .references(() => services.id, { onDelete: "cascade" })
-    .notNull(),
-  customerId: integer("customer_id")
-    .references(() => users.id, { onDelete: "cascade" })
-    .notNull(),
-  rating: decimal("rating", { precision: 2, scale: 1 }).notNull(),
-  comments: varchar("comments", { length: 2000 }),
-  createdAt: timestamp("created_at").defaultNow().notNull(),
-  // Visibility control - provider can hide reviews from customers
-  isVisible: boolean("is_visible").default(true).notNull(),
-  // Provider reply to review
-  providerReply: varchar("provider_reply", { length: 1000 }),
-  repliedAt: timestamp("replied_at"),
-  // Track who hid the review (provider who hid it)
-  hiddenBy: integer("hidden_by").references(() => users.id, {
-    onDelete: "set null",
+const feedback = pgTable(
+  "feedback",
+  {
+    id: serial("id").primaryKey(),
+    bookingId: integer("booking_id")
+      .references(() => bookings.id, { onDelete: "cascade" })
+      .notNull(),
+    serviceId: integer("service_id")
+      .references(() => services.id, { onDelete: "cascade" })
+      .notNull(),
+    customerId: integer("customer_id")
+      .references(() => users.id, { onDelete: "cascade" })
+      .notNull(),
+    rating: decimal("rating", { precision: 2, scale: 1 }).notNull(),
+    comments: varchar("comments", { length: 2000 }),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    // Visibility control - provider can hide reviews from customers
+    isVisible: boolean("is_visible").default(true).notNull(),
+    // Provider reply to review
+    providerReply: varchar("provider_reply", { length: 1000 }),
+    repliedAt: timestamp("replied_at"),
+    // Track who hid the review (provider who hid it)
+    hiddenBy: integer("hidden_by").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    hiddenAt: timestamp("hidden_at"),
+  },
+  (table) => ({
+    bookingIdIdx: index("feedback_booking_id_idx").on(table.bookingId),
+    serviceIdIdx: index("feedback_service_id_idx").on(table.serviceId),
+    isVisibleIdx: index("feedback_is_visible_idx").on(table.isVisible),
   }),
-  hiddenAt: timestamp("hidden_at"),
-}, (table) => ({
-  bookingIdIdx: index("feedback_booking_id_idx").on(table.bookingId),
-  serviceIdIdx: index("feedback_service_id_idx").on(table.serviceId),
-  isVisibleIdx: index("feedback_is_visible_idx").on(table.isVisible),
-}));
+);
 
 // Notifications - Store user notifications for in-app display and push
-const notifications = pgTable("notifications", {
-  id: serial("id").primaryKey(),
-  userId: integer("user_id")
-    .notNull()
-    .references(() => users.id, { onDelete: "cascade" }),
-  type: varchar("type", { length: 50 }).notNull(), // 'booking_created', 'booking_confirmed', 'booking_cancelled', etc.
-  title: varchar("title", { length: 255 }).notNull(),
-  message: text("message").notNull(),
-  data: text("data"), // JSON string for additional data: { bookingId, actionUrl, etc. }
-  isRead: boolean("is_read").default(false).notNull(),
-  readAt: timestamp("read_at"),
-  createdAt: timestamp("created_at").defaultNow().notNull(),
-}, (table) => ({
-  userIdIdx: index("notifications_user_id_idx").on(table.userId),
-  isReadIdx: index("notifications_is_read_idx").on(table.isRead),
-  createdAtIdx: index("notifications_created_at_idx").on(table.createdAt),
-  // Composite index for user's unread notifications
-  userIdIsReadIdx: index("notifications_user_id_is_read_idx").on(table.userId, table.isRead),
-}));
+const notifications = pgTable(
+  "notifications",
+  {
+    id: serial("id").primaryKey(),
+    userId: integer("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    type: varchar("type", { length: 50 }).notNull(), // 'booking_created', 'booking_confirmed', 'booking_cancelled', etc.
+    title: varchar("title", { length: 255 }).notNull(),
+    message: text("message").notNull(),
+    data: text("data"), // JSON string for additional data: { bookingId, actionUrl, etc. }
+    isRead: boolean("is_read").default(false).notNull(),
+    readAt: timestamp("read_at"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => ({
+    userIdIdx: index("notifications_user_id_idx").on(table.userId),
+    isReadIdx: index("notifications_is_read_idx").on(table.isRead),
+    createdAtIdx: index("notifications_created_at_idx").on(table.createdAt),
+    // Composite index for user's unread notifications
+    userIdIsReadIdx: index("notifications_user_id_is_read_idx").on(
+      table.userId,
+      table.isRead,
+    ),
+  }),
+);
 
 // Device Tokens - Store FCM tokens for push notifications
 const deviceTokens = pgTable("device_tokens", {
@@ -400,6 +449,108 @@ const deviceTokens = pgTable("device_tokens", {
   lastUsedAt: timestamp("last_used_at").defaultNow().notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
+
+// Subscription Plans - Plan configurations for providers
+const subscriptionPlans = pgTable(
+  "subscription_plans",
+  {
+    id: serial("id").primaryKey(),
+    name: varchar("name", { length: 100 }).notNull().unique(),
+    description: text("description"),
+    monthlyPrice: integer("monthly_price").default(0).notNull(), // Price in paise (₹500 = 50000)
+    yearlyPrice: integer("yearly_price").default(0).notNull(), // Price in paise
+    trialDays: integer("trial_days").default(0).notNull(), // Trial period (0 for Free, 7 for paid)
+    platformFeePercentage: integer("platform_fee_percentage")
+      .default(5)
+      .notNull(), // Admin's commission %
+    maxServices: integer("max_services").default(4).notNull(), // Max services provider can list (-1 for unlimited)
+    maxBookingsPerMonth: integer("max_bookings_per_month"), // Max bookings per month (null = unlimited)
+    maxImagesPerService: integer("max_images_per_service").default(5).notNull(), // Images per service
+    prioritySupport: boolean("priority_support").default(false).notNull(), // Priority customer support
+    analyticsAccess: boolean("analytics_access").default(true).notNull(), // Analytics dashboard access
+    // Razorpay Integration
+    razorpayMonthlyPlanId: varchar("razorpay_monthly_plan_id", { length: 100 }), // Razorpay plan ID for monthly billing
+    razorpayYearlyPlanId: varchar("razorpay_yearly_plan_id", { length: 100 }), // Razorpay plan ID for yearly billing
+    // Access Control (features JSONB stores: { allowedRoutes: [...], allowedGraphs: [...] })
+    benefits: text("benefits").array(), // Displayed benefits ["Priority Support", "Basic Analytics"]
+    features: text("features"), // JSON string for access control
+    isActive: boolean("is_active").default(true).notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => ({
+    isActiveIdx: index("subscription_plans_is_active_idx").on(table.isActive),
+  }),
+);
+
+// Provider Subscriptions - Active subscriptions for providers
+const providerSubscriptions = pgTable(
+  "provider_subscriptions",
+  {
+    id: serial("id").primaryKey(),
+    providerId: integer("provider_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    planId: integer("plan_id")
+      .notNull()
+      .references(() => subscriptionPlans.id, { onDelete: "restrict" }),
+    razorpaySubscriptionId: varchar("razorpay_subscription_id", {
+      length: 100,
+    }), // Razorpay sub ID
+    razorpayPlanId: varchar("razorpay_plan_id", { length: 100 }), // Razorpay plan ID used
+    razorpayCustomerId: varchar("razorpay_customer_id", { length: 100 }), // Razorpay customer ID (linked after payment)
+    status: subscriptionStatusEnum("status").default("active").notNull(),
+    startDate: timestamp("start_date").defaultNow().notNull(),
+    endDate: timestamp("end_date"), // When subscription expires
+    trialEndDate: timestamp("trial_end_date"), // When trial period ends
+    billingCycle: billingCycleEnum("billing_cycle")
+      .default("monthly")
+      .notNull(),
+    autoRenew: boolean("auto_renew").default(false).notNull(), // Provider's choice
+    amountPaid: integer("amount_paid"), // Total amount paid (paise)
+    platformFeeAtPurchase: integer("platform_fee_at_purchase"), // Fee % when purchased (for history)
+    originalAmount: integer("original_amount"), // Yearly amount for proration calculation
+    cancelledAt: timestamp("cancelled_at"),
+    cancelAtPeriodEnd: boolean("cancel_at_period_end").default(false).notNull(), // Will cancel at period end
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => ({
+    providerIdIdx: index("provider_subscriptions_provider_id_idx").on(
+      table.providerId,
+    ),
+    planIdIdx: index("provider_subscriptions_plan_id_idx").on(table.planId),
+    statusIdx: index("provider_subscriptions_status_idx").on(table.status),
+    trialEndDateIdx: index("provider_subscriptions_trial_end_date_idx").on(
+      table.trialEndDate,
+    ),
+  }),
+);
+
+// Subscription Payments - Payment history for subscriptions
+const subscriptionPayments = pgTable(
+  "subscription_payments",
+  {
+    id: serial("id").primaryKey(),
+    providerSubscriptionId: integer("provider_subscription_id")
+      .notNull()
+      .references(() => providerSubscriptions.id, { onDelete: "cascade" }),
+    razorpayPaymentId: varchar("razorpay_payment_id", { length: 100 }),
+    amount: integer("amount").notNull(), // Amount paid (paise)
+    currency: varchar("currency", { length: 10 }).default("INR").notNull(),
+    status: varchar("status", { length: 20 }).default("captured").notNull(), // captured, failed, refunded
+    paymentDate: timestamp("payment_date").defaultNow().notNull(),
+    invoiceUrl: varchar("invoice_url", { length: 500 }), // Razorpay invoice URL
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => ({
+    providerSubscriptionIdIdx: index(
+      "subscription_payments_provider_subscription_id_idx",
+    ).on(table.providerSubscriptionId),
+    statusIdx: index("subscription_payments_status_idx").on(table.status),
+  }),
+);
+
 module.exports = {
   Roles,
   Address,
@@ -417,9 +568,14 @@ module.exports = {
   adminSettings,
   notifications,
   deviceTokens,
+  subscriptionPlans,
+  providerSubscriptions,
+  subscriptionPayments,
   roleEnum,
   bookingStatusEnum,
   paymentStatusEnum,
   paymentIntentStatusEnum,
   addressEnum,
+  subscriptionStatusEnum,
+  billingCycleEnum,
 };

@@ -16,6 +16,10 @@ const {
   deactivateService,
   activateService,
   getAllServicesForAdmin,
+  adminCancelProviderSubscription,
+  adminToggleSubscriptionAutoRenew,
+  adminExtendProviderSubscription,
+  adminRefundProviderSubscription,
 } = require("../controllers/admin.controller");
 const {
   getRevenueAnalytics,
@@ -234,5 +238,37 @@ router.put("/services/:id/deactivate", deactivateService);
  * @access  Private (Admin only)
  */
 router.put("/services/:id/activate", activateService);
+
+// ============================================
+// PROVIDER SUBSCRIPTION MANAGEMENT ROUTES
+// ============================================
+
+/**
+ * @route   DELETE /admin/provider-subscriptions/:id/cancel
+ * @desc    Cancel a provider's subscription
+ * @access  Private (Admin only)
+ */
+router.delete("/provider-subscriptions/:id/cancel", adminCancelProviderSubscription);
+
+/**
+ * @route   POST /admin/provider-subscriptions/:id/toggle-auto-renew
+ * @desc    Toggle auto-renew for a provider's subscription
+ * @access  Private (Admin only)
+ */
+router.post("/provider-subscriptions/:id/toggle-auto-renew", adminToggleSubscriptionAutoRenew);
+
+/**
+ * @route   POST /admin/provider-subscriptions/:id/extend
+ * @desc    Extend a provider's subscription by X days
+ * @access  Private (Admin only)
+ */
+router.post("/provider-subscriptions/:id/extend", adminExtendProviderSubscription);
+
+/**
+ * @route   POST /admin/provider-subscriptions/:id/refund
+ * @desc    Refund a provider's subscription
+ * @access  Private (Admin only)
+ */
+router.post("/provider-subscriptions/:id/refund", adminRefundProviderSubscription);
 
 module.exports = router;

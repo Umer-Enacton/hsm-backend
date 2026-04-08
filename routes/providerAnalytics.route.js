@@ -4,6 +4,7 @@ const {
   getRevenueAnalytics,
   getServiceAnalytics,
   getStatusAnalytics,
+  getTimePatternsAnalytics,
 } = require("../controllers/providerAnalytics.controller");
 
 // All routes require authentication (global auth middleware)
@@ -32,5 +33,13 @@ router.get("/services", getServiceAnalytics);
  * @access  Private (Provider only)
  */
 router.get("/status", getStatusAnalytics);
+
+/**
+ * @route   GET /provider/analytics/time-patterns
+ * @desc    Get hourly and daily booking distribution patterns
+ * @query   period - Time period: 7d, 30d, 6m, 12m, all (default: 30d)
+ * @access  Private (Provider only, Premium plan)
+ */
+router.get("/time-patterns", getTimePatternsAnalytics);
 
 module.exports = router;

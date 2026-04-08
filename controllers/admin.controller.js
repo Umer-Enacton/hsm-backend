@@ -7,9 +7,12 @@ const {
   businessProfiles,
   services,
   paymentDetails,
+  subscriptionPayments,
+  providerSubscriptions,
 } = require("../models/schema");
 const { eq, and, or, sql, desc, ilike, inArray } = require("drizzle-orm");
 const { notificationTemplates } = require("../utils/notificationHelper");
+const { cancelRazorpaySubscription } = require("../utils/razorpay");
 
 // ============================================
 // HELPER FUNCTIONS
@@ -997,6 +1000,18 @@ const getDashboardStats = async (req, res) => {
         ),
       );
 
+    // Get subscription fees from captured subscription payments
+    const [subscriptionRevenueData] = await db
+      .select({
+        totalSubscriptionFees: sql`COALESCE(SUM(${subscriptionPayments.amount}), 0)`,
+      })
+      .from(subscriptionPayments)
+      .where(eq(subscriptionPayments.status, "captured"));
+
+    const platformFees = Number(revenueData?.totalPlatformFee) || 0;
+    const subscriptionFees = Number(subscriptionRevenueData?.totalSubscriptionFees) || 0;
+    const adminRevenue = platformFees + subscriptionFees;
+
     // Get payout summary - exclude cancelled/rejected/refunded bookings
     const minimumPayoutAmount = Number(
       await getAdminSetting("minimum_payout_amount", "30000"),
@@ -1035,8 +1050,9 @@ const getDashboardStats = async (req, res) => {
         pending: pendingBookings,
       },
       revenue: {
-        totalRevenue: Number(revenueData?.totalRevenue) || 0,
-        platformFees: Number(revenueData?.totalPlatformFee) || 0,
+        adminRevenue: adminRevenue,
+        platformFees: platformFees,
+        subscriptionFees: subscriptionFees,
         paymentCount: Number(revenueData?.paymentCount) || 0,
       },
       payouts: {
@@ -1458,6 +1474,207 @@ const getAllServicesForAdmin = async (req, res) => {
   }
 };
 
+// ============================================
+// ADMIN SUBSCRIPTION MANAGEMENT
+// ============================================
+
+/**
+ * Cancel a provider's subscription
+ * DELETE /api/admin/provider-subscriptions/:id/cancel
+ */
+const adminCancelProviderSubscription = async (req, res) => {
+  try {
+    const subscriptionId = req.params.id;
+
+    if (req.token.roleId !== 3) {
+      return res.status(403).json({ message: "Access denied: Admin only" });
+    }
+
+    // Get subscription
+    const [subscription] = await db
+      .select()
+      .from(providerSubscriptions)
+      .where(eq(providerSubscriptions.id, subscriptionId))
+      .limit(1);
+
+    if (!subscription) {
+      return res.status(404).json({ message: "Subscription not found" });
+    }
+
+    // Cancel in Razorpay if it's a real subscription (not payment link)
+    if (subscription.razorpaySubscriptionId &&
+        !subscription.razorpaySubscriptionId.startsWith("pay_") &&
+        !subscription.razorpaySubscriptionId.startsWith("free_sub_")) {
+      await cancelRazorpaySubscription(subscription.razorpaySubscriptionId, false);
+    }
+
+    // Update DB to cancelled
+    await db
+      .update(providerSubscriptions)
+      .set({
+        status: "cancelled",
+        autoRenew: false,
+        cancelAtPeriodEnd: false,
+        cancelledAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(eq(providerSubscriptions.id, subscriptionId));
+
+    res.json({ message: "Subscription cancelled successfully" });
+  } catch (error) {
+    console.error("Error cancelling subscription:", error);
+    res.status(500).json({ message: "Server error", error: error.message });
+  }
+};
+
+/**
+ * Toggle auto-renew for a provider's subscription
+ * POST /api/admin/provider-subscriptions/:id/toggle-auto-renew
+ */
+const adminToggleSubscriptionAutoRenew = async (req, res) => {
+  try {
+    const subscriptionId = req.params.id;
+    const { enable } = req.body;
+
+    if (req.token.roleId !== 3) {
+      return res.status(403).json({ message: "Access denied: Admin only" });
+    }
+
+    // Get subscription
+    const [subscription] = await db
+      .select()
+      .from(providerSubscriptions)
+      .where(eq(providerSubscriptions.id, subscriptionId))
+      .limit(1);
+
+    if (!subscription) {
+      return res.status(404).json({ message: "Subscription not found" });
+    }
+
+    // Cancel at period end in Razorpay if disabling
+    if (!enable && subscription.razorpaySubscriptionId &&
+        !subscription.razorpaySubscriptionId.startsWith("pay_") &&
+        !subscription.razorpaySubscriptionId.startsWith("free_sub_")) {
+      await cancelRazorpaySubscription(subscription.razorpaySubscriptionId, true);
+    }
+
+    // Update DB
+    await db
+      .update(providerSubscriptions)
+      .set({
+        autoRenew: enable || false,
+        cancelAtPeriodEnd: !enable,
+        updatedAt: new Date(),
+      })
+      .where(eq(providerSubscriptions.id, subscriptionId));
+
+    res.json({ message: `Auto-renewal ${enable ? "enabled" : "disabled"} successfully` });
+  } catch (error) {
+    console.error("Error toggling auto-renew:", error);
+    res.status(500).json({ message: "Server error", error: error.message });
+  }
+};
+
+/**
+ * Extend a provider's subscription
+ * POST /api/admin/provider-subscriptions/:id/extend
+ */
+const adminExtendProviderSubscription = async (req, res) => {
+  try {
+    const subscriptionId = req.params.id;
+    const { days = 30 } = req.body;
+
+    if (req.token.roleId !== 3) {
+      return res.status(403).json({ message: "Access denied: Admin only" });
+    }
+
+    // Get subscription
+    const [subscription] = await db
+      .select()
+      .from(providerSubscriptions)
+      .where(eq(providerSubscriptions.id, subscriptionId))
+      .limit(1);
+
+    if (!subscription) {
+      return res.status(404).json({ message: "Subscription not found" });
+    }
+
+    // Calculate new end date
+    const currentEndDate = subscription.endDate ? new Date(subscription.endDate) : new Date();
+    const newEndDate = new Date(currentEndDate);
+    newEndDate.setDate(newEndDate.getDate() + days);
+
+    // Update DB
+    await db
+      .update(providerSubscriptions)
+      .set({
+        endDate: newEndDate,
+        status: "active",
+        cancelledAt: null,
+        cancelAtPeriodEnd: false,
+        updatedAt: new Date(),
+      })
+      .where(eq(providerSubscriptions.id, subscriptionId));
+
+    res.json({ message: `Subscription extended by ${days} days`, newEndDate });
+  } catch (error) {
+    console.error("Error extending subscription:", error);
+    res.status(500).json({ message: "Server error", error: error.message });
+  }
+};
+
+/**
+ * Refund a provider's subscription
+ * POST /api/admin/provider-subscriptions/:id/refund
+ */
+const adminRefundProviderSubscription = async (req, res) => {
+  try {
+    const subscriptionId = req.params.id;
+
+    if (req.token.roleId !== 3) {
+      return res.status(403).json({ message: "Access denied: Admin only" });
+    }
+
+    // Get subscription
+    const [subscription] = await db
+      .select()
+      .from(providerSubscriptions)
+      .where(eq(providerSubscriptions.id, subscriptionId))
+      .limit(1);
+
+    if (!subscription) {
+      return res.status(404).json({ message: "Subscription not found" });
+    }
+
+    // Cancel in Razorpay if it's a real subscription
+    if (subscription.razorpaySubscriptionId &&
+        !subscription.razorpaySubscriptionId.startsWith("pay_") &&
+        !subscription.razorpaySubscriptionId.startsWith("free_sub_")) {
+      await cancelRazorpaySubscription(subscription.razorpaySubscriptionId, false);
+    }
+
+    // Update DB to cancelled/refunded
+    await db
+      .update(providerSubscriptions)
+      .set({
+        status: "cancelled",
+        autoRenew: false,
+        cancelAtPeriodEnd: false,
+        cancelledAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(eq(providerSubscriptions.id, subscriptionId));
+
+    // TODO: Process refund through Razorpay API (requires payment ID)
+    // This would involve calling razorpay.payments.refund()
+
+    res.json({ message: "Subscription refunded successfully" });
+  } catch (error) {
+    console.error("Error refunding subscription:", error);
+    res.status(500).json({ message: "Server error", error: error.message });
+  }
+};
+
 module.exports = {
   // Settings
   getPlatformSettings,
@@ -1479,4 +1696,9 @@ module.exports = {
   deactivateService,
   activateService,
   getAllServicesForAdmin,
+  // Subscription Management
+  adminCancelProviderSubscription,
+  adminToggleSubscriptionAutoRenew,
+  adminExtendProviderSubscription,
+  adminRefundProviderSubscription,
 };

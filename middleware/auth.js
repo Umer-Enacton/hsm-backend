@@ -7,6 +7,12 @@ const auth = (req, res, next) => {
     return next();
   }
 
+  // Skip auth for provider subscription webhook (verified by Razorpay signature)
+  if (req.path === "/provider/subscription/webhook") {
+    console.log("🔓 Skipping auth for provider subscription webhook");
+    return next();
+  }
+
   console.log(
     "🔍 Auth middleware called for path:",
     req.path,

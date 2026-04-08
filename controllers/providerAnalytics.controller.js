@@ -4,8 +4,10 @@ const {
   payments,
   services,
   businessProfiles,
+  slots,
 } = require("../models/schema");
 const { eq, and, sql, desc, gte, lte, innerJoin } = require("drizzle-orm");
+const { getProviderActiveSubscription } = require("./providerSubscription.controller");
 
 /**
  * Get date range based on period
@@ -65,6 +67,24 @@ const getRevenueAnalytics = async (req, res) => {
     if (req.token.roleId !== 2) {
       return res.status(403).json({ message: "Access denied: Provider only" });
     }
+
+    // ============================================
+    // SUBSCRIPTION-BASED ANALYTICS ACCESS CONTROL
+    // ============================================
+    const subscription = await getProviderActiveSubscription(req.token.id);
+
+    // Check if provider has analytics access
+    if (!subscription || !subscription.planAnalyticsAccess) {
+      return res.status(403).json({
+        message: "Analytics not available on your plan. Upgrade to Pro or Premium.",
+        code: "ANALYTICS_ACCESS_DENIED",
+        currentPlan: subscription?.planName || "Free",
+      });
+    }
+
+    // Get allowed graphs from subscription features
+    const planFeatures = subscription.planFeatures || {};
+    const allowedGraphs = planFeatures.allowedGraphs || ["revenue_chart"];
 
     const { period = "30d" } = req.query;
     const { startDate, endDate } = getDateRange(period);
@@ -128,7 +148,7 @@ const getRevenueAnalytics = async (req, res) => {
       .select({ bookingDate: bookings.bookingDate })
       .from(bookings)
       .where(eq(bookings.businessProfileId, business.id))
-      .orderBy(desc(bookings.bookingDate))
+      .orderBy(sql`booking_date DESC`)
       .limit(1);
 
     console.log(
@@ -382,10 +402,28 @@ const getRevenueAnalytics = async (req, res) => {
       (item) => item.status === "completed",
     ).length;
 
+    // Define all available charts with their IDs
+    const availableCharts = {
+      revenue_chart: "Revenue Trends",
+      bookings_chart: "Bookings Overview",
+      status_chart: "Booking Status",
+      customer_ratings: "Customer Ratings",
+      category_performance: "Category Performance",
+      trends: "Service Trends",
+    };
+
+    // Build response with allowed charts
+    const responseCharts = allowedGraphs.map((g) => ({
+      id: g,
+      name: availableCharts[g] || g,
+    }));
+
     res.json({
       period,
       startDate: effectiveStartDate.toISOString().split("T")[0],
       endDate: effectiveEndDate.toISOString().split("T")[0],
+      allowedGraphs, // Include allowed graphs so frontend knows which charts to show
+      availableCharts: responseCharts,
       summary: {
         totalBookings,
         totalRevenue,
@@ -412,6 +450,20 @@ const getServiceAnalytics = async (req, res) => {
   try {
     if (req.token.roleId !== 2) {
       return res.status(403).json({ message: "Access denied: Provider only" });
+    }
+
+    // ============================================
+    // SUBSCRIPTION-BASED ANALYTICS ACCESS CONTROL
+    // ============================================
+    const subscription = await getProviderActiveSubscription(req.token.id);
+
+    // Check if provider has analytics access
+    if (!subscription || !subscription.planAnalyticsAccess) {
+      return res.status(403).json({
+        message: "Analytics not available on your plan. Upgrade to Pro or Premium.",
+        code: "ANALYTICS_ACCESS_DENIED",
+        currentPlan: subscription?.planName || "Free",
+      });
     }
 
     const { period = "30d" } = req.query;
@@ -444,7 +496,7 @@ const getServiceAnalytics = async (req, res) => {
       .select({ bookingDate: bookings.bookingDate })
       .from(bookings)
       .where(eq(bookings.businessProfileId, business.id))
-      .orderBy(desc(bookings.bookingDate))
+      .orderBy(sql`booking_date DESC`)
       .limit(1);
 
     console.log("[Service Analytics] Adjusted date range:", {
@@ -613,6 +665,20 @@ const getStatusAnalytics = async (req, res) => {
       return res.status(403).json({ message: "Access denied: Provider only" });
     }
 
+    // ============================================
+    // SUBSCRIPTION-BASED ANALYTICS ACCESS CONTROL
+    // ============================================
+    const subscription = await getProviderActiveSubscription(req.token.id);
+
+    // Check if provider has analytics access
+    if (!subscription || !subscription.planAnalyticsAccess) {
+      return res.status(403).json({
+        message: "Analytics not available on your plan. Upgrade to Pro or Premium.",
+        code: "ANALYTICS_ACCESS_DENIED",
+        currentPlan: subscription?.planName || "Free",
+      });
+    }
+
     const { period = "30d" } = req.query;
     const { startDate, endDate } = getDateRange(period);
 
@@ -643,7 +709,7 @@ const getStatusAnalytics = async (req, res) => {
       .select({ bookingDate: bookings.bookingDate })
       .from(bookings)
       .where(eq(bookings.businessProfileId, business.id))
-      .orderBy(desc(bookings.bookingDate))
+      .orderBy(sql`booking_date DESC`)
       .limit(1);
 
     console.log("[Status Analytics] Adjusted date range:", {
@@ -774,13 +840,229 @@ const getStatusAnalytics = async (req, res) => {
   }
 };
 
-module.exports = {
-  getRevenueAnalytics,
-  getServiceAnalytics,
-  getStatusAnalytics,
+/**
+ * Get time patterns analytics (hourly and daily distribution)
+ * GET /provider/analytics/time-patterns?period=7d|30d|6m|12m|all
+ */
+const getTimePatternsAnalytics = async (req, res) => {
+  try {
+    if (req.token.roleId !== 2) {
+      return res.status(403).json({ message: "Access denied: Provider only" });
+    }
+
+    // ============================================
+    // SUBSCRIPTION-BASED ANALYTICS ACCESS CONTROL
+    // ============================================
+    const subscription = await getProviderActiveSubscription(req.token.id);
+
+    // Check if provider has analytics access
+    if (!subscription || !subscription.planAnalyticsAccess) {
+      return res.status(403).json({
+        message: "Analytics not available on your plan. Upgrade to Pro or Premium.",
+        code: "ANALYTICS_ACCESS_DENIED",
+        currentPlan: subscription?.planName || "Free",
+      });
+    }
+
+    // Check if time_patterns is in allowed graphs
+    const planFeatures = subscription.planFeatures || {};
+    const allowedGraphs = planFeatures.allowedGraphs || [];
+    if (!allowedGraphs.includes("time_patterns")) {
+      return res.status(403).json({
+        message: "Time Patterns analytics is only available on Premium plan.",
+        code: "ANALYTICS_ACCESS_DENIED",
+        currentPlan: subscription?.planName || "Free",
+      });
+    }
+
+    const { period = "30d" } = req.query;
+    const { startDate, endDate } = getDateRange(period);
+
+    // Get provider's business profile
+    const [business] = await db
+      .select()
+      .from(businessProfiles)
+      .where(eq(businessProfiles.providerId, req.token.id))
+      .limit(1);
+
+    if (!business) {
+      return res.status(404).json({ message: "Business profile not found" });
+    }
+
+    // For ALL periods, use actual booking date range
+    let effectiveStartDate = startDate;
+    let effectiveEndDate = endDate;
+
+    const [lastBooking] = await db
+      .select({ bookingDate: bookings.bookingDate })
+      .from(bookings)
+      .where(eq(bookings.businessProfileId, business.id))
+      .orderBy(sql`booking_date DESC`)
+      .limit(1);
+
+    const today = new Date();
+    today.setHours(23, 59, 59, 999);
+
+    if (lastBooking && lastBooking.bookingDate) {
+      const lastBookingStr =
+        lastBooking.bookingDate instanceof Date
+          ? lastBooking.bookingDate.toISOString().split("T")[0]
+          : String(lastBooking.bookingDate).split("T")[0];
+      const todayStr = today.toISOString().split("T")[0];
+
+      effectiveEndDate =
+        lastBookingStr > todayStr
+          ? new Date(lastBookingStr + "T23:59:59.999Z")
+          : today;
+    } else {
+      effectiveEndDate = today;
+    }
+
+    // Get all bookings within EFFECTIVE date range with slot info
+    const rawBookings = await db
+      .select()
+      .from(bookings)
+      .innerJoin(slots, eq(bookings.slotId, slots.id))
+      .where(
+        and(
+          eq(bookings.businessProfileId, business.id),
+          sql`${bookings.bookingDate} >= ${effectiveStartDate.toISOString().split("T")[0]}`,
+          sql`${bookings.bookingDate} <= ${effectiveEndDate.toISOString().split("T")[0]}`,
+        ),
+      );
+
+    const allBookings = rawBookings.map(row => ({
+      bookingDate: row.bookings.bookingDate,
+      startTime: row.slots.startTime
+    }));
+
+    const totalBookings = allBookings.length;
+
+    // Initialize hourly data (0-23)
+    const hourlyData = [];
+    const hourColors = [
+      "hsl(240, 5%, 26%)",  // 12-5 AM (Night) - Dark
+      "hsl(240, 5%, 26%)",
+      "hsl(240, 5%, 26%)",
+      "hsl(240, 5%, 26%)",
+      "hsl(240, 5%, 26%)",
+      "hsl(240, 5%, 26%)",
+      "hsl(45, 93%, 47%)",  // 6-11 AM (Morning) - Amber
+      "hsl(45, 93%, 47%)",
+      "hsl(45, 93%, 47%)",
+      "hsl(45, 93%, 47%)",
+      "hsl(45, 93%, 47%)",
+      "hsl(45, 93%, 47%)",
+      "hsl(263, 70%, 50%)", // 12-5 PM (Afternoon) - Purple
+      "hsl(263, 70%, 50%)",
+      "hsl(263, 70%, 50%)",
+      "hsl(263, 70%, 50%)",
+      "hsl(263, 70%, 50%)",
+      "hsl(263, 70%, 50%)",
+      "hsl(217, 91%, 60%)", // 6-11 PM (Evening) - Blue
+      "hsl(217, 91%, 60%)",
+      "hsl(217, 91%, 60%)",
+      "hsl(217, 91%, 60%)",
+      "hsl(217, 91%, 60%)",
+      "hsl(217, 91%, 60%)",
+    ];
+
+    for (let i = 0; i < 24; i++) {
+      const hourStr = i.toString().padStart(2, "0");
+      let hourLabel;
+      if (i === 0) hourLabel = "12AM";
+      else if (i < 12) hourLabel = `${i}AM`;
+      else if (i === 12) hourLabel = "12PM";
+      else hourLabel = `${i - 12}PM`;
+
+      hourlyData.push({
+        hour: hourStr,
+        hourLabel,
+        bookingCount: 0,
+        fill: hourColors[i],
+      });
+    }
+
+    // Initialize daily data (Mon-Sun)
+    const dayOrder = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+    const dayColors = {
+      Mon: "hsl(263, 70%, 50%)",   // Monday - Purple
+      Tue: "hsl(217, 91%, 60%)",   // Tuesday - Blue
+      Wed: "hsl(142, 76%, 36%)",   // Wednesday - Green
+      Thu: "hsl(45, 93%, 47%)",    // Thursday - Amber
+      Fri: "hsl(38, 92%, 50%)",    // Friday - Orange
+      Sat: "hsl(0, 84%, 60%)",     // Saturday - Red
+      Sun: "hsl(280, 60%, 45%)",   // Sunday - Pink
+    };
+
+    const dailyData = dayOrder.map((day) => ({
+      day,
+      dayLabel: day.substring(0, 3),
+      bookingCount: 0,
+      fill: dayColors[day],
+    }));
+
+    // Process bookings to extract hour and day of week
+    allBookings.forEach((booking) => {
+      if (booking.startTime) {
+        // Parse time slot (e.g., "09:00-10:00") to get hour
+        const timeMatch = booking.startTime.match(/(\d{2}):(\d{2})/);
+        if (timeMatch) {
+          const hour = parseInt(timeMatch[1]);
+          if (hour >= 0 && hour < 24) {
+            hourlyData[hour].bookingCount += 1;
+          }
+        }
+      }
+
+      // Get day of week from booking date
+      if (booking.bookingDate) {
+        const bookingDate =
+          booking.bookingDate instanceof Date
+            ? booking.bookingDate
+            : new Date(booking.bookingDate);
+        const dayIndex = bookingDate.getDay();
+        // Convert JS day (0=Sun, 1=Mon) to our order (Mon=0, Sun=6)
+        const dayKey = dayOrder[dayIndex === 0 ? 6 : dayIndex - 1];
+        const dayData = dailyData.find((d) => d.day === dayKey);
+        if (dayData) {
+          dayData.bookingCount += 1;
+        }
+      }
+    });
+
+    // Find peak hour and day
+    let peakHour = { hour: "N/A", count: 0 };
+    hourlyData.forEach((h) => {
+      if (h.bookingCount > peakHour.count) {
+        peakHour = { hour: h.hourLabel, count: h.bookingCount };
+      }
+    });
+
+    let peakDay = { day: "N/A", count: 0 };
+    dailyData.forEach((d) => {
+      if (d.bookingCount > peakDay.count) {
+        peakDay = { day: d.day, count: d.bookingCount };
+      }
+    });
+
+    res.json({
+      period,
+      totalBookings,
+      hourlyData,
+      dailyData,
+      peakHour,
+      peakDay,
+    });
+  } catch (error) {
+    console.error("Error fetching time patterns analytics:", error);
+    res.status(500).json({ message: "Server error", error: error.message });
+  }
 };
+
 module.exports = {
   getRevenueAnalytics,
   getServiceAnalytics,
   getStatusAnalytics,
+  getTimePatternsAnalytics,
 };

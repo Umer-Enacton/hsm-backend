@@ -7,13 +7,103 @@ const {
   bookings,
   payments,
 } = require("../models/schema");
-const { eq, and, or, ilike, gte, lte, count, sql } = require("drizzle-orm");
+const {
+  eq,
+  and,
+  or,
+  ilike,
+  gte,
+  lte,
+  count,
+  sql,
+  inArray,
+} = require("drizzle-orm");
+const {
+  getProviderActiveSubscription,
+  getMonthlyBookingCount,
+} = require("./providerSubscription.controller");
+
+// Cache for providers at booking limit (refresh every 5 minutes)
+let providersAtLimitCache = new Map();
+let cacheExpiry = null;
+
+/**
+ * Get providers who have reached their monthly booking limit
+ * Uses caching to avoid repeated database queries
+ */
+async function getProvidersAtBookingLimit() {
+  const now = Date.now();
+
+  // Return cached result if still valid
+  if (cacheExpiry && now < cacheExpiry && providersAtLimitCache.size > 0) {
+    return Array.from(providersAtLimitCache.keys());
+  }
+
+  // Clear cache and rebuild
+  providersAtLimitCache.clear();
+  const providersAtLimit = [];
+
+  try {
+    // Get all active subscriptions with booking limits
+    const db = require("../config/db");
+    const {
+      providerSubscriptions,
+      subscriptionPlans,
+    } = require("../models/schema");
+    const { desc } = require("drizzle-orm");
+
+    const subscriptions = await db
+      .select({
+        providerId: providerSubscriptions.providerId,
+        planId: providerSubscriptions.planId,
+        planMaxBookingsPerMonth: subscriptionPlans.maxBookingsPerMonth,
+        planName: subscriptionPlans.name,
+      })
+      .from(providerSubscriptions)
+      .innerJoin(
+        subscriptionPlans,
+        eq(providerSubscriptions.planId, subscriptionPlans.id),
+      )
+      .where(
+        and(
+          eq(providerSubscriptions.status, "active"),
+          sql`${subscriptionPlans.maxBookingsPerMonth} IS NOT NULL`,
+          sql`${subscriptionPlans.maxBookingsPerMonth} > 0`,
+        ),
+      );
+
+    // Check each provider's booking count
+    for (const sub of subscriptions) {
+      const currentCount = await getMonthlyBookingCount(sub.providerId);
+      if (currentCount >= sub.planMaxBookingsPerMonth) {
+        providersAtLimitCache.set(sub.providerId, true);
+        providersAtLimit.push(sub.providerId);
+      }
+    }
+
+    // Set cache expiry (5 minutes)
+    cacheExpiry = now + 5 * 60 * 1000;
+
+    return providersAtLimit;
+  } catch (error) {
+    console.error("Error getting providers at limit:", error);
+    return [];
+  }
+}
 
 const getAllServices = async (req, res) => {
   try {
     // Extract query parameters for filtering
-    const { state, city, category_id, min_price, max_price, search, page, limit } =
-      req.query;
+    const {
+      state,
+      city,
+      category_id,
+      min_price,
+      max_price,
+      search,
+      page,
+      limit,
+    } = req.query;
 
     // Pagination parameters
     const currentPage = parseInt(page) || 1;
@@ -74,7 +164,10 @@ const getAllServices = async (req, res) => {
     const countQuery = db
       .select({ count: sql`count(*)` })
       .from(services)
-      .leftJoin(businessProfiles, eq(services.businessProfileId, businessProfiles.id));
+      .leftJoin(
+        businessProfiles,
+        eq(services.businessProfileId, businessProfiles.id),
+      );
 
     if (whereClause) {
       countQuery.where(whereClause);
@@ -128,20 +221,55 @@ const getAllServices = async (req, res) => {
 
     const allServices = await query;
 
+    // ============================================
+    // FILTER: Hide services from providers at booking limit
+    // ============================================
+    const providersAtLimit = await getProvidersAtBookingLimit();
+    const providerIdsAtLimit = new Set(providersAtLimit);
+
+    // Get provider ID for each service (from business profile)
+    // Need to fetch provider IDs for all services
+    const businessIds = allServices.map((s) => s.businessProfileId);
+    let providerIdMap = new Map();
+
+    if (businessIds.length > 0) {
+      const businesses = await db
+        .select({
+          id: businessProfiles.id,
+          providerId: businessProfiles.providerId,
+        })
+        .from(businessProfiles)
+        .where(inArray(businessProfiles.id, businessIds));
+
+      providerIdMap = new Map(businesses.map((b) => [b.id, b.providerId]));
+    }
+
+    // Filter out services from providers at their booking limit
+    const filteredServices = allServices.filter((service) => {
+      const providerId = providerIdMap.get(service.businessProfileId);
+      // Keep service if provider not at limit
+      return !providerId || !providerIdsAtLimit.has(providerId);
+    });
+
     // Map EstimateDuration to estimateDuration and duration for frontend compatibility
-    const mappedServices = allServices.map((service) => ({
+    const mappedServices = filteredServices.map((service) => ({
       ...service,
       estimateDuration: service.EstimateDuration,
       duration: service.EstimateDuration,
     }));
+
+    // Update pagination count to reflect filtered results
+    // For simplicity, we use the filtered count which may not match total pages perfectly
+    // but ensures customers don't see services they can't book
+    const filteredCount = Math.max(0, count - providersAtLimit.length);
 
     res.status(200).json({
       services: mappedServices,
       pagination: {
         page: currentPage,
         limit: pageSize,
-        total: count,
-        totalPages: Math.ceil(count / pageSize),
+        total: filteredCount,
+        totalPages: Math.ceil(filteredCount / pageSize),
       },
     });
   } catch (error) {
@@ -247,7 +375,8 @@ const addService = async (req, res) => {
   try {
     const { businessId } = req.params;
     const userId = req.token.id;
-    const { name, description, price, duration, image, maxAllowBooking } = req.body;
+    const { name, description, price, duration, image, maxAllowBooking } =
+      req.body;
     console.log(userId);
     if (!userId) {
       return res
@@ -277,6 +406,29 @@ const addService = async (req, res) => {
         .status(403)
         .json({ message: "Business profile is not verified" });
     }
+
+    // ============================================
+    // SERVICE LIMIT CHECK (Subscription-based)
+    // ============================================
+    const subscription = await getProviderActiveSubscription(userId);
+
+    if (subscription && subscription.planMaxServices >= 0) {
+      const [serviceCount] = await db
+        .select({ count: count() })
+        .from(services)
+        .where(eq(services.businessProfileId, businessId));
+
+      if (serviceCount.count >= subscription.planMaxServices) {
+        return res.status(403).json({
+          message: `Service limit reached (${subscription.planMaxServices}). Upgrade your plan to add more services.`,
+          code: "SERVICE_LIMIT_EXCEEDED",
+          currentServices: serviceCount.count,
+          maxServices: subscription.planMaxServices,
+          planName: subscription.planName,
+        });
+      }
+    }
+
     const [newService] = await db
       .insert(services)
       .values({
@@ -297,12 +449,10 @@ const addService = async (req, res) => {
       duration: newService.EstimateDuration,
     };
 
-    res
-      .status(201)
-      .json({
-        message: "Service added successfully",
-        service: serviceResponse,
-      });
+    res.status(201).json({
+      message: "Service added successfully",
+      service: serviceResponse,
+    });
   } catch (error) {
     res.status(500).json({ message: "Server error", error: error.message });
   }
@@ -312,7 +462,15 @@ const updateService = async (req, res) => {
     const { serviceId } = req.params;
     //const userId = req.params.userId;
     const userId = req.token.id;
-    const { name, description, price, duration, image, isActive, maxAllowBooking } = req.body;
+    const {
+      name,
+      description,
+      price,
+      duration,
+      image,
+      isActive,
+      maxAllowBooking,
+    } = req.body;
     if (!userId) {
       return res.status(400).json({ message: "User ID is required" });
     }
@@ -325,7 +483,8 @@ const updateService = async (req, res) => {
     if (duration !== undefined) updateData.EstimateDuration = duration;
     if (image !== undefined) updateData.image = image;
     if (isActive !== undefined) updateData.isActive = isActive;
-    if (maxAllowBooking !== undefined) updateData.maxAllowBooking = maxAllowBooking;
+    if (maxAllowBooking !== undefined)
+      updateData.maxAllowBooking = maxAllowBooking;
 
     const service = await db
       .select()

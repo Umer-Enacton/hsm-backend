@@ -37,6 +37,8 @@ const cronRoutes = require("./routes/cron.route");
 const providerAnalyticsRoutes = require("./routes/providerAnalytics.route");
 const notificationRoutes = require("./routes/notification.route");
 const deviceTokenRoutes = require("./routes/deviceToken.route");
+const subscriptionRoutes = require("./routes/subscription.route");
+const providerSubscriptionRoutes = require("./routes/providerSubscription.route");
 const auth = require("./middleware/auth");
 const { startPeriodicCleanup } = require("./utils/cleanupExpiredIntents");
 const app = express();
@@ -130,6 +132,9 @@ app.use("/", bookingRoutes);
 app.use("/", feedbackRoutes);
 app.use("/notifications", notificationRoutes);
 app.use("/device-tokens", deviceTokenRoutes);
+// Subscription routes
+app.use("/subscription", subscriptionRoutes);
+app.use("/provider/subscription", providerSubscriptionRoutes);
 
 // Start server (only for local development)
 if (require.main === module) {

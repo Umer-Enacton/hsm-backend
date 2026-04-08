@@ -8,6 +8,8 @@ const {
   users,
   feedback,
   payments,
+  subscriptionPlans,
+  providerSubscriptions,
 } = require("../models/schema");
 const {
   eq,
@@ -28,6 +30,7 @@ const {
   paiseToRupees,
   rupeesToPaise,
 } = require("../utils/razorpay");
+const { getProviderActiveSubscription, getMonthlyBookingCount } = require("../controllers/providerSubscription.controller");
 const { notificationTemplates } = require("../utils/notificationHelper");
 // Import email service
 const { sendCompletionOTPEmail } = require("../helper/emailService");
@@ -484,6 +487,9 @@ const getProviderBookings = async (req, res) => {
         totalPrice: booking.totalPrice,
         createdAt: booking.createdAt,
         updatedAt: booking.updatedAt,
+        // Provider earning tracking (based on subscription plan)
+        providerEarning: booking.providerEarning || null,
+        platformFee: booking.platformFee || null,
         // Legacy reschedule fields
         rescheduledFromSlotId: booking.rescheduledFromSlotId,
         rescheduledAt: booking.rescheduledAt,
@@ -713,6 +719,36 @@ const addBooking = async (req, res) => {
           "Service provider is not accepting bookings at this time. Please try again later.",
         code: "PROVIDER_NO_PAYMENT_DETAILS",
       });
+    }
+
+    // ============================================
+    // BOOKING LIMIT CHECK (Subscription-based)
+    // ============================================
+    const providerId = businessProfile[0].providerId;
+    const subscription = await getProviderActiveSubscription(providerId);
+
+    // Check booking limit: null, 0, or -1 means unlimited
+    if (subscription && subscription.planMaxBookingsPerMonth && subscription.planMaxBookingsPerMonth > 0) {
+      const currentMonthBookings = await getMonthlyBookingCount(providerId);
+
+      if (currentMonthBookings >= subscription.planMaxBookingsPerMonth) {
+        // Send notification to provider about limit reached
+        try {
+          await notificationTemplates.bookingLimitReached(
+            providerId,
+            subscription.planMaxBookingsPerMonth,
+            subscription.planName
+          );
+        } catch (notifError) {
+          console.error("Error sending limit notification:", notifError);
+          // Don't fail the request if notification fails
+        }
+
+        return res.status(403).json({
+          message: `Monthly booking limit reached. Please upgrade your plan.`,
+          code: "BOOKING_LIMIT_EXCEEDED"
+        });
+      }
     }
 
     // Check if slot is not already booked for the booking date (same service only)
@@ -1124,32 +1160,42 @@ function calculateRescheduleFee(rescheduleCount, bookingAmount, settings) {
  * @param {boolean} isProvider - True if provider cancelled
  * @returns {object}
  */
-function calculateCancellationRefund(servicePrice, hoursRemaining, isProvider = false) {
+function calculateCancellationRefund(
+  servicePrice,
+  hoursRemaining,
+  isProvider = false,
+  customPlatformFeePercentage = null
+) {
   let customerRefundPercentage = 0;
-  let providerPayoutPercentage = 0;
-  let platformFeePercentage = 0;
+  // Use custom platform fee if provided, otherwise use default 5%
+  let platformFeePercentage = customPlatformFeePercentage !== null ? customPlatformFeePercentage : 5;
 
   if (isProvider) {
     customerRefundPercentage = 100;
   } else {
     if (hoursRemaining > 24) {
       customerRefundPercentage = 100;
-      providerPayoutPercentage = 0;
       platformFeePercentage = 0;
     } else if (hoursRemaining > 12) {
       customerRefundPercentage = 75;
-      providerPayoutPercentage = 20;
-      platformFeePercentage = 5;
+      // platformFeePercentage is set from provider's subscription plan (passed in by caller)
     } else if (hoursRemaining > 4) {
       customerRefundPercentage = 50;
-      providerPayoutPercentage = 45;
-      platformFeePercentage = 5;
+      // platformFeePercentage is set from provider's subscription plan (passed in by caller)
     } else {
       // 30 mins to 4 hours
       customerRefundPercentage = 25;
-      providerPayoutPercentage = 70;
-      platformFeePercentage = 5;
+      // platformFeePercentage is set from provider's subscription plan (passed in by caller)
     }
+  }
+
+  // Calculate provider payout percentage based on remaining amount after customer refund and platform fee
+  // providerShare = 100% - (customerRefundPercentage + platformFeePercentage)
+  let providerPayoutPercentage = 0;
+  if (platformFeePercentage === 0 && customerRefundPercentage === 100) {
+    providerPayoutPercentage = 0;
+  } else {
+    providerPayoutPercentage = 100 - (customerRefundPercentage + platformFeePercentage);
   }
 
   const customerRefundAmount = Math.round((servicePrice * customerRefundPercentage) / 100);
@@ -1631,6 +1677,19 @@ const cancelBooking = async (req, res) => {
       }
     }
 
+    // Get provider's subscription to determine platform fee percentage
+    let platformFeePercentage = null;
+    try {
+      const providerSubscription = await getProviderActiveSubscription(business.providerId);
+      if (providerSubscription && providerSubscription.planPlatformFeePercentage !== undefined) {
+        platformFeePercentage = providerSubscription.planPlatformFeePercentage;
+      }
+    } catch (error) {
+      console.error("Error fetching provider subscription for platform fee:", error);
+      // Fall back to default 5%
+      platformFeePercentage = 5;
+    }
+
     // Calculate refund and provider payout based on new rules
     const {
       customerRefundAmount,
@@ -1638,8 +1697,7 @@ const cancelBooking = async (req, res) => {
       providerPayoutAmount,
       providerPayoutPercentage,
       platformFeeAmount,
-      platformFeePercentage,
-    } = calculateCancellationRefund(booking.totalPrice, hoursRemaining, false);
+    } = calculateCancellationRefund(booking.totalPrice, hoursRemaining, false, platformFeePercentage);
 
     // Check if payment exists and process refund
     let refundDetails = null;
@@ -1722,6 +1780,9 @@ const cancelBooking = async (req, res) => {
         status: "cancelled",
         isRefunded: customerRefundAmount > 0,
         refundAmount: customerRefundAmount, // Track customer refund amount
+        // Provider earning tracking
+        providerEarning: providerPayoutAmount || 0, // Amount provider earns after cancellation
+        platformFee: platformFeeAmount || 0, // Platform commission from cancellation
         // Provider payout tracking
         providerPayoutAmount: providerPayoutAmount || null,
         providerPayoutStatus: providerPayoutAmount > 0 ? "pending" : null,

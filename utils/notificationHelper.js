@@ -459,6 +459,89 @@ const notificationTemplates = {
       data: { type: 'reactivated', actionUrl: `/provider/services` },
     });
   },
+
+  /**
+   * Booking limit reached - Notify provider
+   */
+  async bookingLimitReached(providerId, maxBookings, planName) {
+    return createNotification({
+      userId: providerId,
+      type: 'booking_limit_reached',
+      title: 'Monthly Booking Limit Reached',
+      message: `You've reached your ${maxBookings} booking limit for this month on the ${planName} plan. Your services are now hidden from customers. Upgrade to continue receiving bookings.`,
+      data: {
+        maxBookings,
+        planName,
+        actionUrl: `/provider/subscription`,
+      },
+    });
+  },
+
+  /**
+   * Trial expired - Notify provider
+   */
+  async trialExpired(providerId, previousPlanName) {
+    return createNotification({
+      userId: providerId,
+      type: 'trial_expired',
+      title: 'Your Trial Has Ended',
+      message: `Your ${previousPlanName} trial has ended. You've been downgraded to the Free plan. Upgrade anytime to regain access to premium features.`,
+      data: {
+        previousPlanName,
+        newPlanName: 'Free',
+        actionUrl: `/provider/subscription`,
+      },
+    });
+  },
+
+  /**
+   * Trial expiring soon (3 days) - Notify provider
+   */
+  async trialExpiringSoon(providerId, planName, daysRemaining) {
+    return createNotification({
+      userId: providerId,
+      type: 'trial_expiring_soon',
+      title: 'Trial Expiring Soon',
+      message: `Your ${planName} trial ends in ${daysRemaining} days. Upgrade now to continue enjoying premium features.`,
+      data: {
+        planName,
+        daysRemaining,
+        actionUrl: `/provider/subscription`,
+      },
+    });
+  },
+
+  /**
+   * Trial expiring tomorrow - Notify provider
+   */
+  async trialExpiringTomorrow(providerId, planName) {
+    return createNotification({
+      userId: providerId,
+      type: 'trial_expiring_tomorrow',
+      title: 'Trial Ends Tomorrow!',
+      message: `Your ${planName} trial ends tomorrow. Don't lose access to premium features - upgrade today!`,
+      data: {
+        planName,
+        actionUrl: `/provider/subscription`,
+      },
+    });
+  },
+
+  /**
+   * Plan upgraded - Notify provider
+   */
+  async planUpgraded(providerId, newPlanName) {
+    return createNotification({
+      userId: providerId,
+      type: 'plan_upgraded',
+      title: 'Plan Upgraded Successfully!',
+      message: `You've been upgraded to the ${newPlanName} plan. Enjoy all the premium features!`,
+      data: {
+        newPlanName,
+        actionUrl: `/provider/subscription`,
+      },
+    });
+  },
 };
 
 module.exports = {
