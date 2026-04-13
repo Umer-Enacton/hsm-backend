@@ -22,6 +22,7 @@ const {
   getProviderActiveSubscription,
   getMonthlyBookingCount,
 } = require("./providerSubscription.controller");
+const { sanitizeString, sanitizeName } = require("../helper/sanitize");
 
 // Cache for providers at booking limit (refresh every 5 minutes)
 let providersAtLimitCache = new Map();

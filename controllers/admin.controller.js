@@ -1675,10 +1675,172 @@ const adminRefundProviderSubscription = async (req, res) => {
   }
 };
 
+/**
+ * Get cancellation policy settings
+ * GET /admin/settings/cancellation-policy
+ */
+const getCancellationPolicySettings = async (req, res) => {
+  try {
+    // Only admin can access settings
+    if (req.token.roleId !== 3) {
+      return res.status(403).json({
+        message: "Access denied: Only admin can access cancellation policy settings",
+      });
+    }
+
+    // Get refund policy settings (platform fee is based on provider subscription)
+    const [
+      refundAbove24h,
+      refundAbove12h,
+      refundAbove4h,
+      refundAbove30min,
+    ] = await Promise.all([
+      getAdminSetting("cancellation_refund_above_24h", "100"),
+      getAdminSetting("cancellation_refund_above_12h", "75"),
+      getAdminSetting("cancellation_refund_above_4h", "50"),
+      getAdminSetting("cancellation_refund_above_30min", "25"),
+    ]);
+
+    res.json({
+      refundPolicy: {
+        above24h: Number(refundAbove24h),
+        above12h: Number(refundAbove12h),
+        above4h: Number(refundAbove4h),
+        above30min: Number(refundAbove30min),
+      },
+    });
+  } catch (error) {
+    console.error("Error fetching cancellation policy settings:", error);
+    res.status(500).json({ message: "Server error", error: error.message });
+  }
+};
+
+/**
+ * Update cancellation policy settings
+ * PUT /admin/settings/cancellation-policy
+ */
+const updateCancellationPolicySettings = async (req, res) => {
+  try {
+    // Only admin can update settings
+    if (req.token.roleId !== 3) {
+      return res.status(403).json({
+        message: "Access denied: Only admin can update cancellation policy settings",
+      });
+    }
+
+    const { refundPolicy } = req.body;
+
+    // Validate refund percentages (0-100%)
+    const validRanges = {
+      above24h: { min: 0, max: 100 },
+      above12h: { min: 0, max: 100 },
+      above4h: { min: 0, max: 100 },
+      above30min: { min: 0, max: 100 },
+    };
+
+    if (refundPolicy) {
+      for (const [key, value] of Object.entries(refundPolicy)) {
+        if (value !== undefined) {
+          const range = validRanges[key];
+          if (!range) {
+            return res.status(400).json({
+              message: `Invalid refund policy key: ${key}`,
+            });
+          }
+          if (value < range.min || value > range.max) {
+            return res.status(400).json({
+              message: `${key} refund percentage must be between ${range.min}% and ${range.max}%`,
+            });
+          }
+
+          // Map to database keys
+          const dbKey = {
+            above24h: "cancellation_refund_above_24h",
+            above12h: "cancellation_refund_above_12h",
+            above4h: "cancellation_refund_above_4h",
+            above30min: "cancellation_refund_above_30min",
+          }[key];
+
+          await setAdminSetting(
+            dbKey,
+            value.toString(),
+            `Customer refund percentage for cancellations ${key.replace('above', 'more than ')}`
+          );
+        }
+      }
+    }
+
+    // Send notification to all customers and providers about policy update
+    await notifyPolicyUpdate();
+
+    res.json({
+      message: "Cancellation policy settings updated successfully",
+      refundPolicy: refundPolicy || {
+        above24h: Number(await getAdminSetting("cancellation_refund_above_24h", "100")),
+        above12h: Number(await getAdminSetting("cancellation_refund_above_12h", "75")),
+        above4h: Number(await getAdminSetting("cancellation_refund_above_4h", "50")),
+        above30min: Number(await getAdminSetting("cancellation_refund_above_30min", "25")),
+      },
+    });
+  } catch (error) {
+    console.error("Error updating cancellation policy settings:", error);
+    res.status(500).json({ message: "Server error", error: error.message });
+  }
+};
+
+/**
+ * Notify all customers and providers about policy update
+ */
+async function notifyPolicyUpdate() {
+  try {
+    const { createNotification } = require("../utils/notificationHelper");
+
+    // Get all customers and providers
+    const [allCustomers, allProviders] = await Promise.all([
+      db.select({ id: users.id, name: users.name }).from(users).where(eq(users.roleId, 1)),
+      db.select({ id: users.id, name: users.name }).from(users).where(eq(users.roleId, 2)),
+    ]);
+
+    // Notify customers
+    for (const customer of allCustomers) {
+      await createNotification({
+        userId: customer.id,
+        type: "policy_update",
+        title: "Cancellation Policy Updated",
+        message: "Our cancellation policy has been updated. Please check the new terms before cancelling any bookings.",
+        data: {
+          policyType: "cancellation",
+          actionUrl: "/terms"
+        },
+      });
+    }
+
+    // Notify providers
+    for (const provider of allProviders) {
+      await createNotification({
+        userId: provider.id,
+        type: "policy_update",
+        title: "Cancellation Policy Updated",
+        message: "The platform cancellation policy has been updated. This affects how cancellations and refunds are processed.",
+        data: {
+          policyType: "cancellation",
+          actionUrl: "/terms"
+        },
+      });
+    }
+
+    console.log(`✅ Policy update notifications sent to ${allCustomers.length} customers and ${allProviders.length} providers`);
+  } catch (error) {
+    console.error("Error sending policy update notifications:", error);
+  }
+}
+
 module.exports = {
   // Settings
   getPlatformSettings,
   updatePlatformSettings,
+  getCancellationPolicySettings,
+  updateCancellationPolicySettings,
   getRevenueStats,
   // Dashboard
   getDashboardStats,

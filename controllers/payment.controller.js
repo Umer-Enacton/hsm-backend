@@ -758,17 +758,25 @@ const verifyPayment = async (req, res) => {
 
     // Check if payment intent is already completed
     if (paymentIntent.status === "completed") {
-      // Fetch existing booking
-      const [existingBooking] = await db
-        .select()
-        .from(bookings)
-        .where(eq(bookings.id, paymentIntent.bookingId))
-        .limit(1);
+      // Only fetch existing booking if bookingId exists
+      // For new bookings, bookingId is NULL until booking is created
+      if (paymentIntent.bookingId) {
+        const [existingBooking] = await db
+          .select()
+          .from(bookings)
+          .where(eq(bookings.id, paymentIntent.bookingId))
+          .limit(1);
 
-      if (existingBooking) {
+        if (existingBooking) {
+          return res.status(200).json({
+            message: "Payment already verified",
+            bookingId: existingBooking.id,
+          });
+        }
+      } else {
+        // Payment completed but no booking ID (edge case - reschedule or special case)
         return res.status(200).json({
           message: "Payment already verified",
-          bookingId: existingBooking.id,
         });
       }
     }
@@ -1436,294 +1444,6 @@ const processRefund = async (req, res) => {
 };
 
 /**
- * Handle Razorpay webhook events
- * POST /payment/webhook
- *
- * Events handled:
- * - payment.captured: Payment successful
- * - payment.failed: Payment failed
- * - refund.processed: Refund completed
- */
-const handleWebhook = async (req, res) => {
-  try {
-    const webhookSignature = req.headers["x-razorpay-signature"];
-    const body = req.body;
-
-    // Verify webhook signature
-    if (!webhookSignature) {
-      return res.status(400).json({ message: "Webhook signature missing" });
-    }
-
-    // Note: We need raw body for signature verification
-    // For now, process without verification (TODO: Implement proper verification)
-
-    const event = body.event;
-    const payload = body.payload;
-
-    console.log("Webhook event received:", event);
-
-    // Handle different events
-    switch (event) {
-      case "payment.captured":
-        await handlePaymentCaptured(payload.payment.entity);
-        break;
-
-      case "payment.failed":
-        await handlePaymentFailed(payload.payment.entity);
-        break;
-
-      case "refund.processed":
-        await handleRefundProcessed(payload.refund.entity);
-        break;
-
-      default:
-        console.log("Unhandled webhook event:", event);
-    }
-
-    // Always return 200 OK to Razorpay
-    res.status(200).json({ message: "Webhook processed" });
-  } catch (error) {
-    console.error("Error handling webhook:", error);
-    res.status(200).json({ message: "Webhook received" });
-  }
-};
-
-/**
- * Handle payment.captured event
- * Creates booking if not already created (fallback for verification)
- */
-const handlePaymentCaptured = async (paymentEntity) => {
-  try {
-    const { order_id, id, amount } = paymentEntity;
-
-    // Find payment intent by Razorpay order ID
-    const [paymentIntent] = await db
-      .select()
-      .from(paymentIntents)
-      .where(eq(paymentIntents.razorpayOrderId, order_id));
-
-    if (!paymentIntent) {
-      console.log("Payment intent not found for order:", order_id);
-      return;
-    }
-
-    // If already completed, skip (idempotent)
-    if (paymentIntent.status === "completed") {
-      console.log("Payment already processed:", paymentIntent.id);
-      return;
-    }
-
-    // Check if booking already exists for this payment
-    const [existingPayment] = await db
-      .select()
-      .from(payments)
-      .where(eq(payments.razorpayOrderId, order_id))
-      .limit(1);
-
-    if (existingPayment) {
-      console.log("Payment already recorded:", existingPayment.id);
-      return;
-    }
-
-    // Use transaction to create booking and payment
-    await db.transaction(async (tx) => {
-      // Get business profile ID from slot
-      const [slot] = await tx
-        .select()
-        .from(slots)
-        .where(eq(slots.id, paymentIntent.slotId));
-
-      if (!slot) {
-        throw new Error("Slot not found");
-      }
-
-      // Create booking
-      const [newBooking] = await tx
-        .insert(bookings)
-        .values({
-          customerId: paymentIntent.userId,
-          businessProfileId: slot.businessProfileId,
-          serviceId: paymentIntent.serviceId,
-          slotId: paymentIntent.slotId,
-          addressId: paymentIntent.addressId,
-          bookingDate: paymentIntent.bookingDate,
-          totalPrice: paiseToRupees(paymentIntent.amount),
-          status: "confirmed", // Auto-confirmed bookings
-          paymentStatus: "paid",
-        })
-        .returning();
-
-      // Log booking history
-      await logBookingHistory(
-        newBooking.id,
-        "booked",
-        "Booking Created",
-        "customer",
-        paymentIntent.userId,
-        null,
-        tx // Pass transaction to avoid foreign key constraint issue
-      );
-
-      // Create payment record with platform fee split
-      // Get provider's subscription to determine platform fee percentage
-      let platformFeePercentage = 5; // Default
-      try {
-        console.log('🔍 [WEBHOOK] Fetching subscription for businessProfileId:', slot.businessProfileId);
-        // Get business profile to find provider's userId
-        const [businessProfile] = await tx
-          .select()
-          .from(businessProfiles)
-          .where(eq(businessProfiles.id, slot.businessProfileId))
-          .limit(1);
-
-        if (businessProfile) {
-          console.log('✅ [WEBHOOK] Found businessProfile, providerId:', businessProfile.providerId);
-          const providerSubscription = await getProviderActiveSubscription(businessProfile.providerId);
-          console.log('📊 [WEBHOOK] Subscription data:', providerSubscription ? {
-            planName: providerSubscription.planName,
-            platformFeePercentage: providerSubscription.planPlatformFeePercentage,
-            status: providerSubscription.status
-          } : 'NULL');
-          if (providerSubscription && providerSubscription.planPlatformFeePercentage !== undefined) {
-            platformFeePercentage = providerSubscription.planPlatformFeePercentage;
-          }
-        } else {
-          console.log('❌ [WEBHOOK] Business profile not found for ID:', slot.businessProfileId);
-        }
-      } catch (error) {
-        console.error("Error fetching provider subscription for platform fee:", error);
-      }
-
-      console.log(`💰 [WEBHOOK] Platform fee calculation: ${platformFeePercentage}% of ₹${paymentIntent.amount / 100}`);
-      const platformFee = Math.round(paymentIntent.amount * (platformFeePercentage / 100));
-      const providerShare = paymentIntent.amount - platformFee;
-      console.log(`💰 [WEBHOOK] Final amounts - Platform fee: ₹${platformFee / 100}, Provider share: ₹${providerShare / 100}`);
-
-      await tx
-        .insert(payments)
-        .values({
-          bookingId: newBooking.id,
-          userId: paymentIntent.userId,
-          razorpayOrderId: order_id,
-          razorpayPaymentId: id,
-          amount: paymentIntent.amount,
-          platformFee: platformFee, // Platform commission based on provider's plan
-          providerShare: providerShare, // Remaining to provider
-          currency: "INR",
-          status: "paid",
-          paymentMethod: "razorpay",
-          completedAt: new Date(),
-        });
-
-      // Update booking with provider earning and platform fee
-      await tx
-        .update(bookings)
-        .set({
-          providerEarning: providerShare, // Amount provider earns
-          platformFee: platformFee, // Platform commission
-        })
-        .where(eq(bookings.id, newBooking.id));
-
-      // Update payment intent
-      await tx
-        .update(paymentIntents)
-        .set({
-          status: "completed",
-          completedAt: new Date(),
-        })
-        .where(eq(paymentIntents.id, paymentIntent.id));
-    });
-
-    console.log("Payment captured successfully via webhook:", paymentIntent.id);
-
-    // Send notification to provider about new booking
-    console.log('🔔 Sending booking created notification for booking:', newBooking.id);
-    try {
-      await notificationTemplates.bookingCreated(newBooking.id);
-      console.log('✅ Notification sent');
-    } catch (notifError) {
-      console.error('❌ Failed to send notification:', notifError);
-    }
-  } catch (error) {
-    console.error("Error handling payment.captured:", error);
-  }
-};
-
-/**
- * Handle payment.failed event
- */
-const handlePaymentFailed = async (paymentEntity) => {
-  try {
-    const { order_id, error_description, error_code } = paymentEntity;
-
-    // Find payment intent by Razorpay order ID
-    const [paymentIntent] = await db
-      .select()
-      .from(paymentIntents)
-      .where(eq(paymentIntents.razorpayOrderId, order_id));
-
-    if (!paymentIntent) {
-      console.log("Payment intent not found for order:", order_id);
-      return;
-    }
-
-    // Update payment intent as failed
-    await db
-      .update(paymentIntents)
-      .set({
-        status: "failed",
-        failureReason: error_description || "Payment failed",
-      })
-      .where(eq(paymentIntents.id, paymentIntent.id));
-
-    console.log("Payment failed recorded:", paymentIntent.id, error_code);
-  } catch (error) {
-    console.error("Error handling payment.failed:", error);
-  }
-};
-
-/**
- * Handle refund.processed event
- */
-const handleRefundProcessed = async (refundEntity) => {
-  try {
-    const { payment_id, id, amount } = refundEntity;
-
-    // Find payment by Razorpay payment ID
-    const [payment] = await db
-      .select()
-      .from(payments)
-      .where(eq(payments.razorpayPaymentId, payment_id));
-
-    if (!payment) {
-      console.log("Payment not found for refund:", payment_id);
-      return;
-    }
-
-    // Update payment record
-    await db
-      .update(payments)
-      .set({
-        status: "refunded",
-        refundId: id,
-        refundAmount: amount,
-        refundedAt: new Date(),
-      })
-      .where(eq(payments.id, payment.id));
-
-    // Update booking record
-    await db
-      .update(bookings)
-      .set({ status: "refunded" })
-      .where(eq(bookings.id, payment.bookingId));
-
-    console.log("Refund processed:", payment.id);
-  } catch (error) {
-    console.error("Error handling refund.processed:", error);
-  }
-};
-
-/**
  * Cancel payment intent (releases slot lock)
  * POST /api/payment/cancel-intent
  *
@@ -2072,7 +1792,6 @@ module.exports = {
   getPaymentByBookingId,
   getPaymentById,
   processRefund,
-  handleWebhook,
   getSlotLockStatus, // DEBUG endpoint
   validatePaymentIntent, // CRITICAL for preventing duplicate Razorpay opens
 };

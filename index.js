@@ -39,6 +39,13 @@ const notificationRoutes = require("./routes/notification.route");
 const deviceTokenRoutes = require("./routes/deviceToken.route");
 const subscriptionRoutes = require("./routes/subscription.route");
 const providerSubscriptionRoutes = require("./routes/providerSubscription.route");
+const staffRoutes = require("./routes/staff.route");
+const staffLeaveRoutes = require("./routes/staffLeave.route");
+const staffPayoutRoutes = require("./routes/staffPayout.route");
+const webhookRoutes = require("./routes/webhook.route");
+const cronManagementRoutes = require("./routes/cronManagement.route");
+const privacyPolicyRoutes = require("./routes/privacyPolicy.route");
+const termsConditionRoutes = require("./routes/termsCondition.route");
 const auth = require("./middleware/auth");
 const { startPeriodicCleanup } = require("./utils/cleanupExpiredIntents");
 const app = express();
@@ -87,16 +94,22 @@ app.use(
 // Compression middleware - reduces response size by 60-80%
 app.use(compression());
 
-// Middleware
-app.use(express.json());
-app.use(cookieParser());
-app.use(express.urlencoded({ extended: true }));
-
 // GLOBAL REQUEST LOGGER - Log ALL incoming requests
 app.use((req, res, next) => {
   console.log(`🌐 ${new Date().toISOString()} ${req.method} ${req.path}`);
   next();
 });
+
+// IMPORTANT: Webhook routes MUST be registered BEFORE express.json()
+// The webhook handler needs to capture the raw request body for signature verification
+// express.json() consumes the stream, making raw body capture impossible
+app.use("/webhook", webhookRoutes);
+console.log("🔗 Webhook routes registered BEFORE body parser (for raw body capture)");
+
+// Middleware - body parsers (apply to all routes EXCEPT those registered above)
+app.use(express.json());
+app.use(cookieParser());
+app.use(express.urlencoded({ extended: true }));
 
 // Upload routes (must come before global auth middleware to avoid body-parser conflicts)
 app.use("/", uploadRoutes);
@@ -113,7 +126,7 @@ app.get("/", (req, res) => {
 app.use("/", authRoutes);
 app.use("/auth", googleAuthRoutes);
 app.use("/cron", cronRoutes);
-console.log("⏰ Cron routes registered BEFORE auth middleware");
+console.log("🔗 Webhook routes registered BEFORE auth middleware");
 app.use(auth);
 console.log("🔒 Global auth middleware registered");
 app.use("/provider/analytics", providerAnalyticsRoutes);
@@ -122,6 +135,9 @@ app.use("/payment-details", paymentDetailsRoutes);
 app.use("/admin", adminRoutes);
 app.use("/invoice", invoiceRoutes);
 app.use("/admin", adminBookingsRoutes);
+app.use("/admin/cron-jobs", cronManagementRoutes);
+app.use("/privacy-policies", privacyPolicyRoutes);
+app.use("/terms-conditions", termsConditionRoutes);
 app.use("/", addressRoutes);
 app.use("/", userRoutes);
 app.use("/", categoryRoutes);
@@ -135,6 +151,10 @@ app.use("/device-tokens", deviceTokenRoutes);
 // Subscription routes
 app.use("/subscription", subscriptionRoutes);
 app.use("/provider/subscription", providerSubscriptionRoutes);
+// Staff management routes
+app.use("/staff", staffRoutes);
+app.use("/staff-leave", staffLeaveRoutes);
+app.use("/staff-payouts", staffPayoutRoutes);
 
 // Start server (only for local development)
 if (require.main === module) {

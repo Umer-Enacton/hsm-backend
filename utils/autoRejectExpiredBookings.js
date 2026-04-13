@@ -16,6 +16,9 @@ async function autoRejectExpiredBookings() {
   try {
     console.log("Checking for expired pending bookings...");
 
+    // Combine booking date with slot time using PostgreSQL date arithmetic
+    const bookingDateTime = sql`CAST(${bookings.bookingDate} AS date) + ${slots.startTime}`;
+
     // Get pending bookings where the scheduled time has passed
     // We need to join with slots to get the time and with bookings to get the date
 
@@ -43,7 +46,7 @@ async function autoRejectExpiredBookings() {
         and(
           eq(bookings.status, "pending"),
           // Compare actual booking time (date + slot time) - reject exactly when slot starts
-          sql`${bookings.bookingDate} + ${slots.startTime} < NOW()`
+          sql`${bookingDateTime} < NOW()`
         )
       );
 

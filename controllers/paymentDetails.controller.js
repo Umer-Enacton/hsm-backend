@@ -6,6 +6,7 @@ const {
   adminSettings,
   payments,
   bookings,
+  staff,
 } = require("../models/schema");
 const { eq, and, desc, sql } = require("drizzle-orm");
 const {
@@ -85,11 +86,18 @@ const savePaymentDetails = async (req, res) => {
     const userId = req.token.id;
     const userRoleId = req.token.roleId;
 
-    // Only admin (roleId: 3) and providers (roleId: 2) can add payment details
-    if (userRoleId !== 3 && userRoleId !== 2) {
+    // Check if user is staff member
+    const [staffMember] = await db
+      .select()
+      .from(staff)
+      .where(eq(staff.userId, userId))
+      .limit(1);
+
+    // Only admin (roleId: 3), providers (roleId: 2), and staff can add payment details
+    if (userRoleId !== 3 && userRoleId !== 2 && !staffMember) {
       return res.status(403).json({
         message:
-          "Access denied: Only admin and providers can add payment details",
+          "Access denied: Only admin, providers, and staff can add payment details",
       });
     }
 
@@ -172,6 +180,7 @@ const savePaymentDetails = async (req, res) => {
         .set({ hasPaymentDetails: true })
         .where(eq(businessProfiles.providerId, userId));
     }
+    // Note: Staff don't have business profiles, so no update needed for them
 
     res.status(201).json({
       message: "Payment details saved successfully",
@@ -680,16 +689,7 @@ const getProviderRevenueStats = async (req, res) => {
       console.error("Error fetching provider subscription for revenue stats:", error);
     }
 
-    // Filter out cancelled, rejected, and refunded bookings for base earnings
-    const earningsBookings = allBookings.filter(
-      (b) =>
-        b.status !== "cancelled" &&
-        b.status !== "rejected" &&
-        b.status !== "refunded" &&
-        !b.isRefunded,
-    );
-
-    // Fetch all successful payments for this business up front (for reschedule fee calculation)
+    // Fetch all successful payments for this business (for reschedule fee calculation and payout tracking)
     const allPaidPayments = await db
       .select()
       .from(payments)
@@ -701,22 +701,38 @@ const getProviderRevenueStats = async (req, res) => {
         )
       );
 
-    // Calculate total earnings from bookings (providerEarning already includes reschedule fees)
+    // Calculate total earnings from bookings
+    // providerEarning already accounts for partial refunds (late cancellations)
+    // We subtract staffEarning to get net provider earnings
     let totalEarnings = 0;
+    let totalStaffDeductions = 0;
 
     allBookings.forEach(booking => {
-      // Use providerEarning if available (already includes service earnings + reschedule fees)
+      const staffEarning = booking.staffEarning || 0;
+      let bookingProviderEarning = 0;
+
+      // Use providerEarning if available (already accounts for refunds, reschedule fees, etc.)
       if (booking.providerEarning !== null && booking.providerEarning !== undefined) {
-        totalEarnings += Number(booking.providerEarning) / 100;
+        bookingProviderEarning = Number(booking.providerEarning) / 100;
       }
       // Fallback to providerPayoutAmount for cancelled bookings with payouts
       else if (booking.providerPayoutAmount) {
-        totalEarnings += Number(booking.providerPayoutAmount);
+        bookingProviderEarning = Number(booking.providerPayoutAmount);
       }
       // Final fallback for very old bookings without providerEarning
-      else if (booking.status !== "cancelled" && booking.status !== "rejected" && booking.status !== "refunded" && !booking.isRefunded) {
-        totalEarnings += Math.round(((booking.totalPrice || 0) * providerSharePercentage) / 100);
+      else if (
+        booking.status !== "rejected" &&
+        !(booking.status === "cancelled" && !booking.providerPayoutAmount) &&
+        !(booking.isRefunded && !booking.providerPayoutAmount)
+      ) {
+        // Calculate based on subscription plan percentage
+        bookingProviderEarning = Math.round(((booking.totalPrice || 0) * providerSharePercentage) / 100);
       }
+
+      // Subtract staff earning from provider's earnings
+      const netProviderEarning = Math.max(0, bookingProviderEarning - (staffEarning / 100));
+      totalEarnings += netProviderEarning;
+      totalStaffDeductions += staffEarning / 100;
     });
 
     // Calculate reschedule revenue separately (just for display breakdown)
@@ -733,16 +749,21 @@ const getProviderRevenueStats = async (req, res) => {
       }
     });
 
-    // Calculate base earnings (total - reschedule fees) for display
-    const baseEarnings = totalEarnings - totalRescheduleRevenue;
+    // totalEarnings from bookings doesn't include reschedule fees
+    // baseEarnings is the earnings from bookings without reschedule fees
+    const baseEarnings = totalEarnings;
+    // totalEarnings returned should include reschedule fees
+    const totalEarningsWithReschedule = totalEarnings + totalRescheduleRevenue;
 
     console.log(
       "💰 Calculation: Total Earnings = ₹" +
-        totalEarnings +
+        totalEarningsWithReschedule +
         ", Base Earnings = ₹" +
         baseEarnings +
         ", Reschedule Fees = ₹" +
-        totalRescheduleRevenue,
+        totalRescheduleRevenue +
+        ", Staff Deductions = ₹" +
+        totalStaffDeductions,
     );
 
     // Count by status (from all bookings)
@@ -770,9 +791,10 @@ const getProviderRevenueStats = async (req, res) => {
     }, 0) / 100;
 
     const response = {
-      totalEarnings: Number(totalEarnings) || 0,
+      totalEarnings: Number(totalEarningsWithReschedule) || 0,
       baseEarnings: Number(baseEarnings) || 0,
       rescheduleRevenue: Number(totalRescheduleRevenue) || 0,
+      staffDeductions: Number(totalStaffDeductions) || 0,
       pendingPayouts: Number(pendingPayouts) || 0,
       paidPayouts: Number(paidPayouts) || 0,
       ...stats,
@@ -780,30 +802,95 @@ const getProviderRevenueStats = async (req, res) => {
     };
 
     // Monthly breakdown current year
+    // Fetch actual bookings for this year to calculate earnings with staff deduction
     const currentYear = new Date().getFullYear();
-    const monthlyBreakdown = await db
-      .select({
-        period: sql`TO_CHAR(${bookings.bookingDate}, 'Mon')`,
-        totalRevenue: sql`COALESCE(SUM(${bookings.totalPrice}), 0)`,
-        bookings: sql`COUNT(*)`,
-      })
+    const yearBookings = await db
+      .select()
       .from(bookings)
       .where(
         and(
           eq(bookings.businessProfileId, business.id),
-          sql`EXTRACT(YEAR FROM ${bookings.bookingDate}) = ${currentYear}`,
-          sql`${bookings.status} NOT IN ('cancelled', 'rejected', 'refunded')`,
-          sql`${bookings.isRefunded} = false`
+          sql`EXTRACT(YEAR FROM ${bookings.bookingDate}) = ${currentYear}`
         )
-      )
-      .groupBy(sql`TO_CHAR(${bookings.bookingDate}, 'Mon')`)
-      .orderBy(sql`TO_CHAR(${bookings.bookingDate}, 'Mon')`);
+      );
 
-    response.breakdown = monthlyBreakdown.map((item) => ({
-      period: item.period,
-      earnings: Math.round(((Number(item.totalRevenue) || 0) * providerSharePercentage) / 100),
-      bookings: Number(item.bookings),
-    }));
+    // Fetch reschedule fee payments for the current year
+    const yearReschedulePayments = await db
+      .select({
+        amount: payments.amount,
+        providerShare: payments.providerShare,
+        createdAt: payments.createdAt,
+      })
+      .from(payments)
+      .innerJoin(bookings, eq(payments.bookingId, bookings.id))
+      .where(
+        and(
+          eq(bookings.businessProfileId, business.id),
+          eq(payments.status, "paid"),
+          eq(payments.amount, 10000), // Reschedule fee amount
+          sql`EXTRACT(YEAR FROM ${payments.createdAt}) = ${currentYear}`
+        )
+      );
+
+    // Group by month and calculate earnings
+    const monthlyData = {};
+    yearBookings.forEach(booking => {
+      const month = new Date(booking.bookingDate).toLocaleString('default', { month: 'short' });
+      if (!monthlyData[month]) {
+        monthlyData[month] = { earnings: 0, bookings: 0 };
+      }
+
+      const staffEarning = booking.staffEarning || 0;
+      let bookingProviderEarning = 0;
+
+      // Use providerEarning if available (already accounts for refunds)
+      if (booking.providerEarning !== null && booking.providerEarning !== undefined) {
+        bookingProviderEarning = Number(booking.providerEarning) / 100;
+      }
+      // Fallback to providerPayoutAmount for cancelled bookings with payouts
+      else if (booking.providerPayoutAmount) {
+        bookingProviderEarning = Number(booking.providerPayoutAmount);
+      }
+      // Final fallback for bookings without providerEarning
+      else if (
+        booking.status !== "rejected" &&
+        !(booking.status === "cancelled" && !booking.providerPayoutAmount) &&
+        !(booking.isRefunded && !booking.providerPayoutAmount)
+      ) {
+        bookingProviderEarning = Math.round(((booking.totalPrice || 0) * providerSharePercentage) / 100);
+      }
+
+      // Subtract staff earning
+      const netEarning = Math.max(0, bookingProviderEarning - (staffEarning / 100));
+      monthlyData[month].earnings += netEarning;
+      monthlyData[month].bookings += 1;
+    });
+
+    // Add reschedule fees to monthly earnings
+    yearReschedulePayments.forEach(payment => {
+      const month = new Date(payment.createdAt).toLocaleString('default', { month: 'short' });
+      if (!monthlyData[month]) {
+        monthlyData[month] = { earnings: 0, bookings: 0 };
+      }
+      // Add provider's share of reschedule fee (full 100 since no platform fee on reschedule)
+      const rescheduleRevenue = payment.providerShare
+        ? Math.round(payment.providerShare / 100)
+        : 100;
+      monthlyData[month].earnings += rescheduleRevenue;
+    });
+
+    // Convert to array format
+    response.breakdown = Object.entries(monthlyData)
+      .map(([period, data]) => ({
+        period,
+        earnings: Math.round(data.earnings),
+        bookings: data.bookings,
+      }))
+      .sort((a, b) => {
+        // Sort by month order
+        const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+        return months.indexOf(a.period) - months.indexOf(b.period);
+      });
 
     console.log("📊 Sending provider revenue response:", response);
     res.json(response);

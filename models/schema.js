@@ -11,21 +11,19 @@ const {
   uniqueIndex,
   index,
   text,
+  date,
 } = require("drizzle-orm/pg-core");
 const { sql } = require("drizzle-orm");
 
 // Define all enums first
-const roleEnum = pgEnum("role_type", ["customer", "provider", "admin"]);
+const roleEnum = pgEnum("role_type", ["customer", "provider", "admin", "staff"]);
 
 const bookingStatusEnum = pgEnum("booking_status", [
   "pending",
-  "payment_pending",
   "confirmed",
-  "reschedule_pending", // Customer rescheduled, waiting provider approval
   "completed",
   "cancelled",
-  "rejected", // Provider rejected the booking
-  "refunded",
+  "missed", // Booking time passed but not completed
 ]);
 
 const paymentStatusEnum = pgEnum("payment_status", [
@@ -55,6 +53,7 @@ const addressEnum = pgEnum("address_type", [
 const subscriptionStatusEnum = pgEnum("subscription_status", [
   "active",
   "trial",
+  "trial_ended",
   "cancelled",
   "expired",
   "completed",
@@ -62,6 +61,75 @@ const subscriptionStatusEnum = pgEnum("subscription_status", [
 ]);
 
 const billingCycleEnum = pgEnum("billing_cycle", ["monthly", "yearly"]);
+
+// Staff/Worker Management Enums
+const staffStatusEnum = pgEnum("staff_status", [
+  "active",
+  "inactive",
+  "on_leave",
+  "terminated",
+]);
+
+const salaryTypeEnum = pgEnum("salary_type", [
+  "commission",
+  "hourly",
+  "fixed",
+]);
+
+const leaveTypeEnum = pgEnum("leave_type", [
+  "full_day",
+  "half_day",
+  "hours",
+]);
+
+const leaveStatusEnum = pgEnum("leave_status", [
+  "pending",
+  "approved",
+  "rejected",
+  "cancelled",
+]);
+
+const payoutStatusEnum = pgEnum("payout_status", [
+  "pending",
+  "processing",
+  "paid",
+  "failed",
+]);
+
+// Cron Job Management Enums
+const cronJobStatusEnum = pgEnum("cron_job_status", [
+  "running",
+  "success",
+  "failed",
+  "partial_success",
+]);
+
+const cronJobCategoryEnum = pgEnum("cron_job_category", [
+  "booking",
+  "subscription",
+  "staff",
+  "payment",
+  "maintenance",
+]);
+
+const cronJobTriggeredByEnum = pgEnum("cron_job_triggered_by", [
+  "schedule",
+  "manual",
+  "webhook",
+]);
+
+const cronJobSyncStatusEnum = pgEnum("cron_job_sync_status", [
+  "not_synced",
+  "synced",
+  "sync_failed",
+  "sync_pending",
+]);
+
+const calculationTypeEnum = pgEnum("calculation_type", [
+  "commission",
+  "hourly",
+  "fixed",
+]);
 
 // Tables
 const Roles = pgTable("roles", {
@@ -251,7 +319,19 @@ const bookings = pgTable(
     afterPhotoUrl: varchar("after_photo_url", { length: 500 }), // After service photo URL (optional)
     completionNotes: varchar("completion_notes", { length: 1000 }), // Provider notes about completion
     actualCompletionTime: timestamp("actual_completion_time"), // Actual time service was completed
+    // Staff assignment fields
+    assignedStaffId: integer("assigned_staff_id").references(() => staff.id, {
+      onDelete: "set null",
+    }),
+    staffAssignedAt: timestamp("staff_assigned_at"), // When staff was assigned
+    staffCompletedAt: timestamp("staff_completed_at"), // When staff completed the booking
+    staffEarning: integer("staff_earning"), // Amount paid to staff for this booking (paise)
+    // Per-booking staff earning configuration
+    staffEarningType: varchar("staff_earning_type", { length: 20 }), // 'commission' or 'fixed' - NULL if no staff assigned
+    staffCommissionPercent: integer("staff_commission_percent"), // Commission % if earningType is 'commission'
+    staffFixedAmount: integer("staff_fixed_amount"), // Fixed amount in paise if earningType is 'fixed'
     lastPendingReminderAt: timestamp("last_pending_reminder_at"), // Used for repeated 'take action' reminders
+    missedAt: timestamp("missed_at"), // When booking was marked as missed (time passed without completion)
     createdAt: timestamp("created_at").defaultNow().notNull(),
   },
   (table) => ({
@@ -512,6 +592,7 @@ const providerSubscriptions = pgTable(
     originalAmount: integer("original_amount"), // Yearly amount for proration calculation
     cancelledAt: timestamp("cancelled_at"),
     cancelAtPeriodEnd: boolean("cancel_at_period_end").default(false).notNull(), // Will cancel at period end
+    isTrial: boolean("is_trial").default(false).notNull(), // Track if this was a trial subscription
     createdAt: timestamp("created_at").defaultNow().notNull(),
     updatedAt: timestamp("updated_at").defaultNow().notNull(),
   },
@@ -551,6 +632,237 @@ const subscriptionPayments = pgTable(
   }),
 );
 
+// Staff/Worker Management Tables
+
+// Staff - Employees working for providers
+const staff = pgTable(
+  "staff",
+  {
+    id: serial("id").primaryKey(),
+    userId: integer("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    businessProfileId: integer("business_profile_id")
+      .notNull()
+      .references(() => businessProfiles.id, { onDelete: "cascade" }),
+    employeeId: varchar("employee_id", { length: 20 }), // EMP001, EMP002, etc.
+    status: staffStatusEnum("status").default("active").notNull(),
+    joinDate: date("join_date").defaultNow(),
+    documents: text("documents"), // JSON: { aadhar: "", pan: "", etc }
+    isVerified: boolean("is_verified").default(false).notNull(),
+    verifiedBy: integer("verified_by").references(() => users.id),
+    bankAccount: text("bank_account"), // JSON: { accountNo, ifsc, bankName }
+    upiId: varchar("upi_id", { length: 100 }),
+    // Earnings tracking
+    totalEarnings: integer("total_earnings").default(0).notNull(),
+    pendingPayout: integer("pending_payout").default(0).notNull(),
+    totalPaid: integer("total_paid").default(0).notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => ({
+    userIdIdx: index("staff_user_id_idx").on(table.userId),
+    businessProfileIdIdx: index("staff_business_profile_id_idx").on(
+      table.businessProfileId,
+    ),
+    statusIdx: index("staff_status_idx").on(table.status),
+    employeeIdIdx: index("staff_employee_id_idx").on(table.employeeId),
+  }),
+);
+
+// Staff Leave - Leave requests from staff
+const staffLeave = pgTable(
+  "staff_leave",
+  {
+    id: serial("id").primaryKey(),
+    staffId: integer("staff_id")
+      .notNull()
+      .references(() => staff.id, { onDelete: "cascade" }),
+    businessProfileId: integer("business_profile_id")
+      .notNull()
+      .references(() => businessProfiles.id, { onDelete: "cascade" }),
+    leaveType: leaveTypeEnum("leave_type").default("full_day").notNull(),
+    startDate: date("start_date").notNull(),
+    endDate: date("end_date").notNull(),
+    startTime: time("start_time"), // For hourly leave
+    endTime: time("end_time"),
+    reason: text("reason"),
+    status: leaveStatusEnum("status").default("pending").notNull(),
+    approvedBy: integer("approved_by").references(() => users.id),
+    approvedAt: timestamp("approved_at"),
+    rejectionReason: text("rejection_reason"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => ({
+    staffIdIdx: index("staff_leave_staff_id_idx").on(table.staffId),
+    businessProfileIdIdx: index("staff_leave_business_profile_id_idx").on(
+      table.businessProfileId,
+    ),
+    statusIdx: index("staff_leave_status_idx").on(table.status),
+    startDateIdx: index("staff_leave_start_date_idx").on(table.startDate),
+  }),
+);
+
+// Staff Assignment Tracking - Round-robin tracking for auto-assign
+const staffAssignmentTracking = pgTable("staff_assignment_tracking", {
+  id: serial("id").primaryKey(),
+  businessProfileId: integer("business_profile_id")
+    .notNull()
+    .references(() => businessProfiles.id, { onDelete: "cascade" }),
+  lastAssignedStaffId: integer("last_assigned_staff_id").references(() => staff.id, {
+    onDelete: "set null",
+  }),
+  assignedAt: timestamp("assigned_at").defaultNow().notNull(),
+});
+
+// Staff Payouts - Earnings and payouts for staff
+const staffPayouts = pgTable(
+  "staff_payouts",
+  {
+    id: serial("id").primaryKey(),
+    staffId: integer("staff_id")
+      .notNull()
+      .references(() => staff.id, { onDelete: "cascade" }),
+    businessProfileId: integer("business_profile_id")
+      .notNull()
+      .references(() => businessProfiles.id, { onDelete: "cascade" }),
+    bookingId: integer("booking_id").references(() => bookings.id, {
+      onDelete: "set null",
+    }),
+    amount: integer("amount").notNull(), // Amount earned for this booking (paise)
+    commissionPercentage: integer("commission_percentage"),
+    payoutStatus: payoutStatusEnum("payout_status").default("pending").notNull(),
+    payoutId: varchar("payout_id", { length: 100 }), // Razorpay payout ID
+    payoutDate: timestamp("payout_date"),
+    calculationType: calculationTypeEnum("calculation_type")
+      .default("commission")
+      .notNull(),
+    hoursWorked: decimal("hours_worked", { precision: 5, scale: 2 }), // For hourly rate
+    notes: text("notes"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => ({
+    staffIdIdx: index("staff_payouts_staff_id_idx").on(table.staffId),
+    businessProfileIdIdx: index("staff_payouts_business_profile_id_idx").on(
+      table.businessProfileId,
+    ),
+    bookingIdIdx: index("staff_payouts_booking_id_idx").on(table.bookingId),
+    payoutStatusIdx: index("staff_payouts_payout_status_idx").on(
+      table.payoutStatus,
+    ),
+  }),
+);
+
+// Cron Job Management Tables
+
+// Cron Jobs - Scheduled job definitions
+const cronJobs = pgTable(
+  "cron_jobs",
+  {
+    id: serial("id").primaryKey(),
+    name: varchar("name", { length: 100 }).notNull().unique(),
+    displayName: varchar("display_name", { length: 200 }).notNull(),
+    description: text("description"),
+    endpoint: varchar("endpoint", { length: 255 }).notNull(),
+    method: varchar("method", { length: 10 }).default("POST").notNull(),
+    cronExpression: varchar("cron_expression", { length: 100 }), // e.g., "*/30 * * * *"
+    intervalMinutes: integer("interval_minutes"), // Alternative: 30, 60, 1440 (daily)
+    isEnabled: boolean("is_enabled").default(true).notNull(),
+    maxRetries: integer("max_retries").default(3).notNull(),
+    retryIntervalSeconds: integer("retry_interval_seconds").default(60).notNull(),
+    category: cronJobCategoryEnum("category").notNull(),
+    lastRunAt: timestamp("last_run_at"),
+    lastRunStatus: cronJobStatusEnum("last_run_status"),
+    nextRunAt: timestamp("next_run_at"),
+    // pg_cron sync tracking
+    syncStatus: cronJobSyncStatusEnum("sync_status").default("not_synced").notNull(),
+    syncError: text("sync_error"),
+    lastSyncedAt: timestamp("last_synced_at"),
+    pgCronJobname: varchar("pg_cron_jobname", { length: 100 }),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => ({
+    nameIdx: index("cron_jobs_name_idx").on(table.name),
+    isEnabledIdx: index("cron_jobs_is_enabled_idx").on(table.isEnabled),
+    categoryIdx: index("cron_jobs_category_idx").on(table.category),
+    syncStatusIdx: index("cron_jobs_sync_status_idx").on(table.syncStatus),
+  }),
+);
+
+// Cron Job Logs - Execution history for cron jobs
+const cronJobLogs = pgTable(
+  "cron_job_logs",
+  {
+    id: serial("id").primaryKey(),
+    jobId: integer("job_id")
+      .notNull()
+      .references(() => cronJobs.id, { onDelete: "cascade" }),
+    startedAt: timestamp("started_at").defaultNow().notNull(),
+    completedAt: timestamp("completed_at"),
+    status: cronJobStatusEnum("status").notNull(),
+    result: text("result"), // JSON string: { processed: 10, succeeded: 10, failed: 0, notificationsSent: 5 }
+    errorMessage: text("error_message"),
+    errorDetails: text("error_details"), // JSON string for detailed error info
+    triggeredBy: cronJobTriggeredByEnum("triggered_by").default("schedule").notNull(),
+    triggeredByUserId: integer("triggered_by_user_id").references(() => users.id),
+    durationMs: integer("duration_ms"), // Execution duration in milliseconds
+    retryCount: integer("retry_count").default(0).notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => ({
+    jobIdIdx: index("cron_job_logs_job_id_idx").on(table.jobId),
+    startedAtIdx: index("cron_job_logs_started_at_idx").on(table.startedAt),
+    statusIdx: index("cron_job_logs_status_idx").on(table.status),
+    triggeredByIdx: index("cron_job_logs_triggered_by_idx").on(table.triggeredBy),
+  }),
+);
+
+// Privacy Policy Management
+const privacyPolicies = pgTable("privacy_policies", {
+  id: serial("id").primaryKey(),
+  version: varchar("version", { length: 20 }).notNull(), // e.g., "1.0", "1.1"
+  content: text("content").notNull(), // HTML content from rich text editor
+  effectiveDate: timestamp("effective_date").defaultNow().notNull(),
+  createdBy: integer("created_by")
+    .notNull()
+    .references(() => users.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  isActive: boolean("is_active").default(true).notNull(), // Only one version active at a time
+});
+
+const privacyPolicyNotifications = pgTable("privacy_policy_notifications", {
+  id: serial("id").primaryKey(),
+  policyId: integer("policy_id")
+    .notNull()
+    .references(() => privacyPolicies.id, { onDelete: "cascade" }),
+  sentAt: timestamp("sent_at").defaultNow().notNull(),
+  recipientCount: integer("recipient_count").notNull(), // Count of users notified
+});
+
+// Terms & Conditions Management
+const termsConditions = pgTable("terms_conditions", {
+  id: serial("id").primaryKey(),
+  version: varchar("version", { length: 20 }).notNull(), // e.g., "1.0", "1.1"
+  content: text("content").notNull(), // HTML content from rich text editor
+  effectiveDate: timestamp("effective_date").defaultNow().notNull(),
+  createdBy: integer("created_by")
+    .notNull()
+    .references(() => users.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  isActive: boolean("is_active").default(true).notNull(), // Only one version active at a time
+});
+
+const termsConditionNotifications = pgTable("terms_condition_notifications", {
+  id: serial("id").primaryKey(),
+  termsId: integer("terms_id")
+    .notNull()
+    .references(() => termsConditions.id, { onDelete: "cascade" }),
+  sentAt: timestamp("sent_at").defaultNow().notNull(),
+  recipientCount: integer("recipient_count").notNull(), // Count of users notified
+});
+
 module.exports = {
   Roles,
   Address,
@@ -571,6 +883,21 @@ module.exports = {
   subscriptionPlans,
   providerSubscriptions,
   subscriptionPayments,
+  // Staff/Worker Management
+  staff,
+  staffLeave,
+  staffAssignmentTracking,
+  staffPayouts,
+  // Cron Job Management
+  cronJobs,
+  cronJobLogs,
+  // Privacy Policy Management
+  privacyPolicies,
+  privacyPolicyNotifications,
+  // Terms & Conditions Management
+  termsConditions,
+  termsConditionNotifications,
+  // Enums
   roleEnum,
   bookingStatusEnum,
   paymentStatusEnum,
@@ -578,4 +905,15 @@ module.exports = {
   addressEnum,
   subscriptionStatusEnum,
   billingCycleEnum,
+  staffStatusEnum,
+  salaryTypeEnum,
+  leaveTypeEnum,
+  leaveStatusEnum,
+  payoutStatusEnum,
+  calculationTypeEnum,
+  // Cron Job Enums
+  cronJobStatusEnum,
+  cronJobCategoryEnum,
+  cronJobTriggeredByEnum,
+  cronJobSyncStatusEnum,
 };

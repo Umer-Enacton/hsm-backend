@@ -6,9 +6,11 @@ const {
   services,
   subscriptionPlans,
   providerSubscriptions,
+  paymentDetails,
 } = require("../models/schema");
 const { eq, and, or, sql, ilike, inArray } = require("drizzle-orm");
 const { feedback: feedbackTable } = require("../models/schema");
+const { sanitizeString, sanitizeName } = require("../helper/sanitize");
 
 const getAllBusinesses = async (req, res) => {
   try {
@@ -434,6 +436,12 @@ const addBusiness = async (req, res) => {
         });
     }
 
+    // Sanitize inputs to prevent XSS
+    const sanitizedName = sanitizeName(name);
+    const sanitizedDescription = sanitizeString(description, { maxLength: 500 });
+    const sanitizedState = sanitizeString(state, { maxLength: 100 });
+    const sanitizedCity = sanitizeString(city, { maxLength: 100 });
+
     // Check if business already exists
     const businessExists = await db
       .select()
@@ -465,22 +473,17 @@ const addBusiness = async (req, res) => {
       .insert(businessProfiles)
       .values({
         providerId: userId,
-        businessName: name,
-        description,
+        businessName: sanitizedName,
+        description: sanitizedDescription,
         categoryId,
         phone: businessPhone, // Business phone (can be different from provider's personal phone)
-        state, // State/Province
-        city, // City within state
+        state: sanitizedState, // State/Province
+        city: sanitizedCity, // City within state
         logo: logo || null,
         coverImage: coverImage || null,
         website: website || null,
       })
       .returning();
-
-    res.status(201).json({
-      message: "Business profile added successfully",
-      business,
-    });
 
     // Fetch complete business data with joins
     const result = await db
@@ -518,6 +521,11 @@ const addBusiness = async (req, res) => {
     business.rating = 0;
     business.totalReviews = 0;
     business.email = business.providerEmail; // For contact purposes
+
+    res.status(201).json({
+      message: "Business profile added successfully",
+      business,
+    });
 
     // ============================================
     // AUTO-ASSIGN FREE PLAN TO NEW PROVIDERS
@@ -583,17 +591,17 @@ const updateBusiness = async (req, res) => {
       city,
     } = req.body;
 
-    // Build update object dynamically
+    // Build update object dynamically with sanitization
     const updateData = {};
-    if (name !== undefined) updateData.businessName = name;
-    if (description !== undefined) updateData.description = description;
+    if (name !== undefined) updateData.businessName = sanitizeName(name);
+    if (description !== undefined) updateData.description = sanitizeString(description, { maxLength: 500 });
     if (categoryId !== undefined) updateData.categoryId = categoryId;
     if (logo !== undefined) updateData.logo = logo;
     if (coverImage !== undefined) updateData.coverImage = coverImage;
     if (website !== undefined) updateData.website = website;
     if (phone !== undefined) updateData.phone = phone; // Business phone update
-    if (state !== undefined) updateData.state = state; // State update
-    if (city !== undefined) updateData.city = city; // City update
+    if (state !== undefined) updateData.state = sanitizeString(state, { maxLength: 100 }); // State update
+    if (city !== undefined) updateData.city = sanitizeString(city, { maxLength: 100 }); // City update
 
     // Verify business exists and belongs to user
     const existingBusiness = await db
@@ -780,6 +788,15 @@ const getProviderStatus = async (req, res) => {
         deactivatedAt: s.deactivatedAt,
       }));
 
+    // Check if provider has active payment details (direct check, not cached flag)
+    const [paymentDetail] = await db
+      .select()
+      .from(paymentDetails)
+      .where(eq(paymentDetails.userId, userId))
+      .limit(1);
+
+    const hasActivePaymentDetails = paymentDetail?.isActive || false;
+
     res.json({
       hasBusiness: true,
       business: {
@@ -787,6 +804,9 @@ const getProviderStatus = async (req, res) => {
         isBlocked: business.isBlocked || false,
         blockedReason: business.blockedReason,
         blockedAt: business.blockedAt,
+        isVerified: business.isVerified || false,
+        hasPaymentDetails: hasActivePaymentDetails,
+        businessName: business.businessName,
       },
       deactivatedServices,
     });

@@ -56,6 +56,126 @@ async function subscriptionPaymentExists(razorpayPaymentId) {
 }
 
 /**
+ * Cancel all old active subscriptions for a provider (except the one specified)
+ * This cancels them both in the database and on Razorpay
+ * @param {number} providerId - Provider user ID
+ * @param {number} excludeSubscriptionId - Subscription ID to exclude from cancellation
+ * @returns {Promise<void>}
+ */
+async function cancelOldSubscriptions(providerId, excludeSubscriptionId = null) {
+  try {
+    // Find all active/trial subscriptions for this provider
+    const oldSubscriptions = await db
+      .select()
+      .from(providerSubscriptions)
+      .where(
+        and(
+          eq(providerSubscriptions.providerId, providerId),
+          or(
+            eq(providerSubscriptions.status, "active"),
+            eq(providerSubscriptions.status, "trial"),
+          ),
+          excludeSubscriptionId
+            ? sql`${providerSubscriptions.id} != ${excludeSubscriptionId}`
+            : undefined,
+        ),
+      );
+
+    if (oldSubscriptions.length === 0) {
+      console.log("✅ No old subscriptions to cancel for provider:", providerId);
+      return;
+    }
+
+    console.log(
+      `🔄 Found ${oldSubscriptions.length} old subscription(s) to cancel for provider:`,
+      providerId,
+    );
+
+    for (const oldSub of oldSubscriptions) {
+      const razorpaySubId = oldSub.razorpaySubscriptionId;
+
+      // Skip cancellation for free/mock subscriptions
+      if (
+        !razorpaySubId ||
+        razorpaySubId.startsWith("free_sub_") ||
+        razorpaySubId.startsWith("mock_sub_")
+      ) {
+        console.log("⚠️ Skipping cancellation for free/mock subscription:", oldSub.id);
+        // Just update DB status
+        await db
+          .update(providerSubscriptions)
+          .set({
+            status: "cancelled",
+            cancelledAt: new Date(),
+            endDate: new Date(),
+            autoRenew: false,
+            cancelAtPeriodEnd: false,
+            updatedAt: new Date(),
+          })
+          .where(eq(providerSubscriptions.id, oldSub.id));
+        continue;
+      }
+
+      // Skip cancellation for payment link subscriptions (pay_ prefix)
+      // These are one-time payments and don't have recurring subscriptions to cancel
+      if (razorpaySubId.startsWith("pay_")) {
+        console.log(
+          "⚠️ Payment link subscription detected, only cancelling in DB:",
+          razorpaySubId,
+        );
+        await db
+          .update(providerSubscriptions)
+          .set({
+            status: "cancelled",
+            cancelledAt: new Date(),
+            endDate: new Date(),
+            autoRenew: false,
+            cancelAtPeriodEnd: false,
+            updatedAt: new Date(),
+          })
+          .where(eq(providerSubscriptions.id, oldSub.id));
+        continue;
+      }
+
+      // Cancel on Razorpay
+      try {
+        await cancelRazorpaySubscription(razorpaySubId, false); // false = immediate cancellation
+        console.log("✅ Cancelled old subscription on Razorpay:", razorpaySubId);
+      } catch (razorpayError) {
+        console.error(
+          "⚠️ Failed to cancel on Razorpay, cancelling in DB only:",
+          razorpaySubId,
+          razorpayError.message,
+        );
+      }
+
+      // Update DB status
+      await db
+        .update(providerSubscriptions)
+        .set({
+          status: "cancelled",
+          cancelledAt: new Date(),
+          endDate: new Date(),
+          autoRenew: false,
+          cancelAtPeriodEnd: false,
+          updatedAt: new Date(),
+        })
+        .where(eq(providerSubscriptions.id, oldSub.id));
+
+      console.log("✅ Cancelled old subscription in DB:", oldSub.id);
+    }
+
+    console.log(
+      `✅ Successfully cancelled ${oldSubscriptions.length} old subscription(s) for provider:`,
+      providerId,
+    );
+  } catch (error) {
+    console.error("Error cancelling old subscriptions:", error);
+    // Don't throw - allow the new subscription to proceed even if cancellation fails
+  }
+}
+
+/**
  * Get provider's active subscription with plan details
  * @param {number} providerId - Provider user ID
  * @returns {Promise<object|null>} Subscription with plan details
@@ -100,9 +220,9 @@ async function getProviderActiveSubscription(providerId) {
           // Only return active or trial subscriptions - NOT pending_payment, expired, cancelled
           or(
             eq(providerSubscriptions.status, "active"),
-            eq(providerSubscriptions.status, "trial")
-          )
-        )
+            eq(providerSubscriptions.status, "trial"),
+          ),
+        ),
       )
       .orderBy(desc(providerSubscriptions.createdAt))
       .limit(1);
@@ -135,15 +255,16 @@ async function getProviderActiveSubscription(providerId) {
         planBenefits: [
           "List up to 4 services",
           "Get up to 100 bookings per month",
-          "Email support"
+          "Email support",
         ],
-        planFeatures: { // Already parsed object (not JSON string)
+        planFeatures: {
+          // Already parsed object (not JSON string)
           allowedGraphs: [], // No analytics graphs
           maxServices: 4,
           maxBookingsPerMonth: 100,
           prioritySupport: false,
-          analyticsAccess: false
-        }
+          analyticsAccess: false,
+        },
       };
     }
 
@@ -172,8 +293,8 @@ async function getProviderActiveSubscription(providerId) {
         maxServices: 4,
         maxBookingsPerMonth: 100,
         prioritySupport: false,
-        analyticsAccess: false
-      }
+        analyticsAccess: false,
+      },
     };
   }
 }
@@ -213,11 +334,7 @@ async function getMonthlyBookingCount(providerId) {
           eq(bookings.businessProfileId, business.id),
           gte(bookings.bookingDate, startOfMonth),
           lte(bookings.bookingDate, endOfMonth),
-          inArray(bookings.status, [
-            "confirmed",
-            "completed",
-            "payment_pending",
-          ]),
+          inArray(bookings.status, ["confirmed", "completed"]),
         ),
       );
 
@@ -258,9 +375,10 @@ const getCurrentSubscription = async (req, res) => {
     const subscription = await getProviderActiveSubscription(providerId);
 
     // subscription is now always returned (Free plan if no active subscription)
-    const message = subscription.status === "free"
-      ? "Free plan active"
-      : "Subscription retrieved successfully";
+    const message =
+      subscription.status === "free"
+        ? "Free plan active"
+        : "Subscription retrieved successfully";
 
     // Calculate usage stats
     const currentMonthBookings = await getMonthlyBookingCount(providerId);
@@ -291,282 +409,6 @@ const getCurrentSubscription = async (req, res) => {
 };
 
 /**
- * Purchase/subscribe to a plan
- * POST /api/provider/subscription/purchase
- */
-const purchaseSubscription = async (req, res) => {
-  try {
-    const { planId, billingCycle = "monthly", startTrial } = req.body;
-    const providerId = req.token.id;
-
-    // Validate billing cycle
-    if (!["monthly", "yearly"].includes(billingCycle)) {
-      return res.status(400).json({ message: "Invalid billing cycle" });
-    }
-
-    // Get plan details
-    const [plan] = await db
-      .select()
-      .from(subscriptionPlans)
-      .where(eq(subscriptionPlans.id, planId))
-      .limit(1);
-
-    if (!plan) {
-      return res.status(404).json({ message: "Plan not found" });
-    }
-
-    if (!plan.isActive) {
-      return res.status(400).json({ message: "This plan is not active" });
-    }
-
-    // Check if provider has a business profile
-    const [business] = await db
-      .select()
-      .from(businessProfiles)
-      .where(eq(businessProfiles.providerId, providerId))
-      .limit(1);
-
-    if (!business) {
-      return res
-        .status(400)
-        .json({ message: "Please create a business profile first" });
-    }
-
-    // Get price based on billing cycle
-    const price =
-      billingCycle === "yearly" ? plan.yearlyPrice : plan.monthlyPrice;
-
-    // FREE PLAN: Bypass Razorpay entirely
-    if (price === 0) {
-      // Cancel existing subscription if any
-      const [existing] = await db
-        .select()
-        .from(providerSubscriptions)
-        .where(eq(providerSubscriptions.providerId, providerId))
-        .limit(1);
-
-      if (existing) {
-        // Update existing subscription
-        const [updated] = await db
-          .update(providerSubscriptions)
-          .set({
-            planId,
-            status: "active",
-            razorpaySubscriptionId: `free_sub_${providerId}_${Date.now()}`,
-            razorpayPlanId: "free_plan",
-            startDate: new Date(),
-            endDate: new Date("2099-12-31"), // Indefinite
-            trialEndDate: null,
-            billingCycle,
-            autoRenew: false,
-            amountPaid: 0,
-            platformFeeAtPurchase: plan.platformFeePercentage,
-            originalAmount: 0,
-            cancelAtPeriodEnd: false,
-            updatedAt: new Date(),
-          })
-          .where(eq(providerSubscriptions.id, existing.id))
-          .returning();
-      } else {
-        // Create new subscription
-        const [created] = await db
-          .insert(providerSubscriptions)
-          .values({
-            providerId,
-            planId,
-            status: "active",
-            razorpaySubscriptionId: `free_sub_${providerId}_${Date.now()}`,
-            razorpayPlanId: "free_plan",
-            startDate: new Date(),
-            endDate: new Date("2099-12-31"),
-            trialEndDate: null,
-            billingCycle,
-            autoRenew: false,
-            amountPaid: 0,
-            platformFeeAtPurchase: plan.platformFeePercentage,
-            originalAmount: 0,
-          })
-          .returning();
-      }
-
-      return res.json({
-        message: "Free plan activated successfully",
-        data: { redirectUrl: "/provider/subscription?success=free" },
-      });
-    }
-
-    // PAID PLAN: Check if user wants trial or direct purchase
-    // Default: startTrial=true for first-time users, false for direct "Buy Now"
-    const userWantsTrial = startTrial !== false; // Default to true unless explicitly false
-    const hasTrial = plan.trialDays > 0;
-
-    // Determine if this should be a trial or direct payment
-    const isInTrial = hasTrial && userWantsTrial;
-
-    let trialEndDate = null;
-    let subscriptionStatus = "active";
-
-    if (isInTrial) {
-      trialEndDate = new Date();
-      trialEndDate.setDate(trialEndDate.getDate() + plan.trialDays);
-      subscriptionStatus = "trial";
-    }
-
-    // Calculate end date
-    const endDate = calculateEndDate(billingCycle);
-
-    // If in trial, create trial subscription and return success
-    if (isInTrial) {
-      const [subscription] = await db
-        .insert(providerSubscriptions)
-        .values({
-          providerId,
-          planId,
-          status: subscriptionStatus,
-          razorpaySubscriptionId: null, // Will be set after trial/payment
-          razorpayPlanId:
-            billingCycle === "monthly"
-              ? plan.razorpayMonthlyPlanId
-              : plan.razorpayYearlyPlanId,
-          startDate: new Date(),
-          endDate,
-          trialEndDate,
-          billingCycle,
-          autoRenew: false,
-          amountPaid: 0,
-          platformFeeAtPurchase: plan.platformFeePercentage,
-          originalAmount: price,
-        })
-        .returning();
-
-      return res.json({
-        message: "Trial started successfully",
-        data: {
-          subscription,
-          redirectUrl: "/provider/subscription?success=trial",
-          trialEndDate,
-        },
-      });
-    }
-
-    // DIRECT PURCHASE (Buy Now): Create Razorpay payment link for immediate payment
-    // Payment links always have working checkout pages (unlike subscription short_urls)
-    // IMPORTANT: Subscription will ONLY be created AFTER webhook confirms payment success
-    // This prevents orphaned subscriptions when users abandon payment
-
-    // Fetch provider's business profile for customer details
-    const [businessProfile] = await db
-      .select()
-      .from(businessProfiles)
-      .where(eq(businessProfiles.providerId, providerId))
-      .limit(1);
-
-    // Fetch provider's email for customer creation
-    const [user] = await db
-      .select()
-      .from(users)
-      .where(eq(users.id, providerId))
-      .limit(1);
-
-    // Use business name as the customer name for display in checkout
-    // Priority: business name > user name > fallback
-    const displayName =
-      businessProfile?.businessName?.trim() || user?.name || "Service Provider";
-
-    // Log what we're using for debugging
-    console.log("📋 Customer display name details:");
-    console.log(
-      "   Business Profile:",
-      businessProfile ? "Found" : "Not found",
-    );
-    console.log("   Business Name:", businessProfile?.businessName || "N/A");
-    console.log("   User Name:", user?.name || "N/A");
-    console.log("   Using display name:", displayName);
-
-    // Create Razorpay customer with business details (this sets the display name in checkout)
-    const customer = await createRazorpayCustomer({
-      name: displayName,
-      email: user?.email || "provider@example.com",
-      contact: businessProfile?.phone || user?.phone || "",
-    });
-
-    // Build callback URL for redirect after payment
-    const frontendUrl = process.env.FRONTEND_URL || "http://localhost:3000";
-    const callbackUrl = `${frontendUrl}/provider/subscription?success=true&plan=${plan.name}`;
-
-    // Create a payment link for the first payment
-    // This ensures we get a working checkout page
-    // NOTES contain all metadata needed to create subscription after payment
-    const paymentLink = await createPaymentLink(price, {
-      description: `${plan.name} - ${billingCycle === "monthly" ? "Monthly" : "Yearly"} Subscription`,
-      customer_id: customer.id,
-      notes: {
-        provider_id: providerId.toString(),
-        plan_id: planId.toString(),
-        billing_cycle: billingCycle,
-        type: "subscription_first_payment",
-        platform_fee: plan.platformFeePercentage.toString(),
-      },
-      expire_by: Math.floor(Date.now() / 1000) + 1800, // 30 minutes
-      callback_url: callbackUrl,
-      callback_method: "get",
-    });
-
-    // Check if this is a mock payment link (Razorpay not configured)
-    const isMockLink =
-      paymentLink.id.startsWith("mock_plink_") ||
-      paymentLink.short_url?.includes("mock");
-
-    // Return payment link checkout URL (or success for mock)
-    if (isMockLink) {
-      // Local development - no real checkout, create subscription directly
-      const [subscription] = await db
-        .insert(providerSubscriptions)
-        .values({
-          providerId,
-          planId,
-          status: "active",
-          razorpaySubscriptionId: `mock_sub_${providerId}_${Date.now()}`,
-          razorpayPlanId:
-            billingCycle === "monthly"
-              ? plan.razorpayMonthlyPlanId
-              : plan.razorpayYearlyPlanId,
-          startDate: new Date(),
-          endDate,
-          trialEndDate: null,
-          billingCycle,
-          autoRenew: true,
-          amountPaid: price,
-          platformFeeAtPurchase: plan.platformFeePercentage,
-          originalAmount: price,
-        })
-        .returning();
-
-      return res.json({
-        message: "Subscription activated successfully (development mode)",
-        data: {
-          subscription: { ...subscription, status: "active" },
-          redirectUrl: "/provider/subscription?success=mock",
-        },
-      });
-    }
-
-    // Production - redirect to Razorpay checkout via payment link
-    // Webhook will create subscription after payment confirms
-    res.json({
-      message: "Payment link generated successfully",
-      data: {
-        redirectUrl: paymentLink.short_url,
-        paymentLinkId: paymentLink.id,
-      },
-    });
-  } catch (error) {
-    console.error("Error purchasing subscription:", error);
-    res.status(500).json({ message: "Server error", error: error.message });
-  }
-};
-
-/**
  * Cancel subscription
  * POST /api/provider/subscription/cancel
  */
@@ -585,7 +427,24 @@ const cancelSubscription = async (req, res) => {
       return res.status(404).json({ message: "No active subscription found" });
     }
 
-    // Check if already scheduled for cancellation
+    // Handle trial subscriptions differently - immediate cancellation
+    if (subscription.isTrial || subscription.status === "trial") {
+      await db
+        .update(providerSubscriptions)
+        .set({
+          status: "trial_ended",
+          cancelAtPeriodEnd: true,
+          autoRenew: false,
+          updatedAt: new Date(),
+        })
+        .where(eq(providerSubscriptions.id, subscription.id));
+
+      return res.json({
+        message: "Trial cancelled successfully",
+      });
+    }
+
+    // Check if already scheduled for cancellation (for non-trial subscriptions)
     if (subscription.cancelAtPeriodEnd) {
       return res.status(400).json({
         message: "Subscription is already scheduled for cancellation",
@@ -843,7 +702,7 @@ const getAllProviderSubscriptions = async (req, res) => {
 };
 
 // ============================================
-// PLAN UPGRADE (with Prorated Calculation)
+// PLAN UPGRADE (using Razorpay Native Proration)
 // PUT /api/subscription/upgrade
 // ============================================
 
@@ -856,11 +715,16 @@ const upgradeSubscription = async (req, res) => {
       return res.status(400).json({ message: "New plan ID is required" });
     }
 
-    // Get current subscription
+    // Get current ACTIVE subscription
     const [currentSub] = await db
       .select()
       .from(providerSubscriptions)
-      .where(eq(providerSubscriptions.providerId, providerId))
+      .where(
+        and(
+          eq(providerSubscriptions.providerId, providerId),
+          eq(providerSubscriptions.status, "active"),
+        ),
+      )
       .orderBy(desc(providerSubscriptions.createdAt))
       .limit(1);
 
@@ -908,238 +772,103 @@ const upgradeSubscription = async (req, res) => {
     const newPrice =
       billingCycle === "yearly" ? newPlan.yearlyPrice : newPlan.monthlyPrice;
 
-    // If upgrading from free plan, full price applies
-    if (currentPrice === 0) {
-      // Create payment link for full amount
-      const {
-        createPaymentLink,
-        createRazorpayCustomer,
-      } = require("../utils/razorpay");
-
-      // Get provider details
-      const [business] = await db
-        .select()
-        .from(businessProfiles)
-        .where(eq(businessProfiles.providerId, providerId))
-        .limit(1);
-
-      const [user] = await db
-        .select()
-        .from(users)
-        .where(eq(users.id, providerId))
-        .limit(1);
-
-      const displayName =
-        business?.businessName?.trim() || user?.name || "Service Provider";
-
-      const customer = await createRazorpayCustomer({
-        name: displayName,
-        email: user?.email || "provider@example.com",
-        contact: business?.phone || user?.phone || "",
-      });
-
-      const frontendUrl = process.env.FRONTEND_URL || "http://localhost:3000";
-      const callbackUrl = `${frontendUrl}/provider/subscription?success=upgrade&plan=${newPlan.name}`;
-
-      const paymentLink = await createPaymentLink(newPrice, {
-        description: `${newPlan.name} - ${billingCycle === "monthly" ? "Monthly" : "Yearly"} Subscription (Upgrade from Free)`,
-        customer_id: customer.id,
-        notes: {
-          provider_id: providerId.toString(),
-          plan_id: newPlanId.toString(),
-          billing_cycle: billingCycle,
-          platform_fee: newPlan.platformFeePercentage.toString(),
-          type: "subscription_upgrade",
-          from_plan_id: currentSub.planId.toString(),
-        },
-        expire_by: Math.floor(Date.now() / 1000) + 1800,
-        callback_url: callbackUrl,
-        callback_method: "get",
-      });
-
-      return res.json({
-        message: "Payment link generated for plan upgrade",
-        data: {
-          redirectUrl: paymentLink.short_url,
-          paymentLinkId: paymentLink.id,
-          amount: newPrice,
-          requiresPayment: true,
-        },
+    // IMPORTANT: Only allow UPGRADES (new price > current price)
+    // Prevent downgrades temporarily
+    if (newPrice <= currentPrice) {
+      return res.status(400).json({
+        message:
+          "Downgrades are temporarily disabled. You can only upgrade to a higher-priced plan.",
+        currentPrice,
+        requestedPrice: newPrice,
+        currentPlan: currentPlan.name,
+        requestedPlan: newPlan.name,
       });
     }
 
-    // Calculate proration for paid plans
-    const now = new Date();
-    const startDate = currentSub.startDate
-      ? new Date(currentSub.startDate)
-      : now;
-    const endDate = currentSub.endDate ? new Date(currentSub.endDate) : now;
-
-    // Calculate total days in billing cycle
-    const totalDaysInCycle = Math.ceil(
-      (endDate - startDate) / (1000 * 60 * 60 * 24),
-    );
-
-    // Calculate remaining days in current cycle
-    const remainingDays = Math.max(
-      0,
-      Math.ceil((endDate - now) / (1000 * 60 * 60 * 24)),
-    );
-
-    // Calculate daily rates
-    const currentDailyRate = currentPrice / totalDaysInCycle;
-    const newDailyRate = newPrice / totalDaysInCycle;
-
-    // Calculate prorated amounts
-    const refundAmount = Math.round(currentDailyRate * remainingDays); // Unused portion of current plan
-    const chargeAmount = Math.round(newDailyRate * remainingDays); // Cost of new plan for remaining days
-    const netAmount = chargeAmount - refundAmount; // Amount user needs to pay
-
-    console.log("💰 Proration calculation:", {
-      currentPlan: currentPlan.name,
-      newPlan: newPlan.name,
-      currentPrice,
-      newPrice,
-      totalDaysInCycle,
-      remainingDays,
-      currentDailyRate,
-      newDailyRate,
-      refundAmount,
-      chargeAmount,
-      netAmount,
+    console.log("🔄 Upgrading subscription:", {
+      providerId,
+      from: currentPlan.name,
+      to: newPlan.name,
+      fromPrice: currentPrice,
+      toPrice: newPrice,
+      billingCycle,
     });
 
-    // If net amount is zero or negative (downgrade), just update the plan
-    if (netAmount <= 0) {
-      const [updated] = await db
-        .update(providerSubscriptions)
-        .set({
-          planId: newPlanId,
-          platformFeeAtPurchase: newPlan.platformFeePercentage,
-          originalAmount: currentSub.originalAmount, // Keep original amount
-          updatedAt: new Date(),
-        })
-        .where(eq(providerSubscriptions.id, currentSub.id))
-        .returning();
+    // Get the new plan's Razorpay plan ID
+    const razorpayPlanId =
+      billingCycle === "yearly"
+        ? newPlan.razorpayYearlyPlanId
+        : newPlan.razorpayMonthlyPlanId;
 
-      const { notificationTemplates } = require("../utils/notificationHelper");
-      await notificationTemplates.planUpgraded(providerId, newPlan.name);
-
-      return res.json({
-        message: "Plan downgraded successfully",
-        data: {
-          previousPlan: currentPlan.name,
-          newPlan: newPlan.name,
-          billingCycle,
-          refundAmount: Math.abs(netAmount),
-        },
+    if (!razorpayPlanId) {
+      return res.status(400).json({
+        message: `Razorpay plan ID not found for ${newPlan.name} (${billingCycle})`,
       });
     }
 
-    // Create payment link for the prorated difference
-    const {
-      createPaymentLink,
-      createRazorpayCustomer,
-    } = require("../utils/razorpay");
-
-    // Get provider details
-    const [business] = await db
-      .select()
-      .from(businessProfiles)
-      .where(eq(businessProfiles.providerId, providerId))
-      .limit(1);
-
-    const [user] = await db
-      .select()
-      .from(users)
-      .where(eq(users.id, providerId))
-      .limit(1);
-
-    const displayName =
-      business?.businessName?.trim() || user?.name || "Service Provider";
-
-    const customer = await createRazorpayCustomer({
-      name: displayName,
-      email: user?.email || "provider@example.com",
-      contact: business?.phone || user?.phone || "",
-    });
-
-    const frontendUrl = process.env.FRONTEND_URL || "http://localhost:3000";
-    const callbackUrl = `${frontendUrl}/provider/subscription?success=upgrade&plan=${newPlan.name}`;
-
-    const paymentLink = await createPaymentLink(netAmount, {
-      description: `Upgrade from ${currentPlan.name} to ${newPlan.name} (${remainingDays} days remaining)`,
-      customer_id: customer.id,
-      notes: {
-        provider_id: providerId.toString(),
-        plan_id: newPlanId.toString(),
-        billing_cycle: billingCycle,
-        platform_fee: newPlan.platformFeePercentage.toString(),
-        type: "subscription_upgrade",
-        from_plan_id: currentSub.planId.toString(),
-        subscription_id: currentSub.id.toString(),
-        remaining_days: remainingDays.toString(),
-        proration: JSON.stringify({
-          refundAmount,
-          chargeAmount,
-          netAmount,
-          remainingDays,
-        }),
-      },
-      expire_by: Math.floor(Date.now() / 1000) + 1800,
-      callback_url: callbackUrl,
-      callback_method: "get",
-    });
-
-    // Check if mock payment link
-    const isMockLink =
-      paymentLink.id.startsWith("mock_plink_") ||
-      paymentLink.short_url?.includes("mock");
-
-    if (isMockLink) {
-      // Development mode - update immediately
-      const [updated] = await db
-        .update(providerSubscriptions)
-        .set({
-          planId: newPlanId,
-          platformFeeAtPurchase: newPlan.platformFeePercentage,
-          originalAmount: currentSub.originalAmount + netAmount,
-          amountPaid: (currentSub.amountPaid || 0) + netAmount,
-          updatedAt: new Date(),
-        })
-        .where(eq(providerSubscriptions.id, currentSub.id))
-        .returning();
-
-      const { notificationTemplates } = require("../utils/notificationHelper");
-      await notificationTemplates.planUpgraded(providerId, newPlan.name);
-
-      return res.json({
-        message: "Plan upgraded successfully (development mode)",
-        data: {
-          previousPlan: currentPlan.name,
-          newPlan: newPlan.name,
-          billingCycle,
-          proration: { refundAmount, chargeAmount, netAmount, remainingDays },
-        },
+    // Check if current subscription has a Razorpay subscription ID
+    if (!currentSub.razorpaySubscriptionId) {
+      return res.status(400).json({
+        message:
+          "Current subscription is not linked to Razorpay. Please contact support.",
       });
     }
 
-    // Production - return payment link
+    // Use Razorpay's native upgrade with proration
+    const { upgradeRazorpaySubscription } = require("../utils/razorpay");
+
+    let razorpayUpdated;
+    try {
+      razorpayUpdated = await upgradeRazorpaySubscription(
+        currentSub.razorpaySubscriptionId,
+        razorpayPlanId,
+        true, // immediate = true, executes change instantly
+      );
+      console.log("✅ Razorpay subscription updated:", {
+        id: razorpayUpdated.id,
+        status: razorpayUpdated.status,
+        plan_id: razorpayUpdated.plan_id,
+      });
+    } catch (razorpayError) {
+      // Handle Razorpay-specific errors with user-friendly messages
+      if (razorpayError.message?.includes("payment mode is upi")) {
+        return res.status(400).json({
+          message:
+            "Plan upgrades are not available for UPI subscriptions. To upgrade, please cancel your current subscription and purchase the new plan using card payment.",
+          error: "UPI_SUBSCRIPTIONS_CANNOT_BE_UPDATED",
+        });
+      }
+      throw razorpayError; // Re-throw other errors
+    }
+
+    // Update our database to reflect the new plan immediately
+    const [updated] = await db
+      .update(providerSubscriptions)
+      .set({
+        planId: newPlanId,
+        razorpayPlanId: razorpayPlanId,
+        platformFeeAtPurchase: newPlan.platformFeePercentage,
+        originalAmount: newPrice,
+        updatedAt: new Date(),
+      })
+      .where(eq(providerSubscriptions.id, currentSub.id))
+      .returning();
+
+    // Send notification
+    const { notificationTemplates } = require("../utils/notificationHelper");
+    await notificationTemplates.planUpgraded(providerId, newPlan.name);
+
     res.json({
-      message: "Payment link generated for plan upgrade",
+      message: "Plan upgraded successfully using Razorpay proration",
       data: {
-        redirectUrl: paymentLink.short_url,
-        paymentLinkId: paymentLink.id,
-        amount: netAmount,
-        requiresPayment: true,
-        proration: {
-          previousPlan: currentPlan.name,
-          newPlan: newPlan.name,
-          refundAmount: `₹${refundAmount / 100}`,
-          chargeAmount: `₹${chargeAmount / 100}`,
-          netAmount: `₹${netAmount / 100}`,
-          remainingDays,
-        },
+        previousPlan: currentPlan.name,
+        newPlan: newPlan.name,
+        billingCycle,
+        previousPrice: currentPrice,
+        newPrice: newPrice,
+        razorpaySubscriptionId: razorpayUpdated.id,
+        prorationNote:
+          "Razorpay will automatically charge the prorated difference on your next billing cycle (or immediately based on your Razorpay settings).",
       },
     });
   } catch (error) {
@@ -1366,6 +1095,10 @@ const handleWebhook = async (req, res) => {
             break;
           }
 
+          // IMPORTANT: Cancel all old active subscriptions before creating new one
+          // This ensures only one subscription is active at a time
+          await cancelOldSubscriptions(providerId, localSubscriptionId);
+
           // Check if there's a local subscription already created (from purchaseSubscriptionWithRazorpay)
           const localSubscriptionId = notes.local_subscription_id
             ? parseInt(notes.local_subscription_id)
@@ -1396,10 +1129,24 @@ const handleWebhook = async (req, res) => {
               "🔄 Updating existing local subscription:",
               localSubscriptionId,
             );
+
+            // Get the subscription to check trialEndDate
+            const [subRecord] = await db
+              .select()
+              .from(providerSubscriptions)
+              .where(eq(providerSubscriptions.id, localSubscriptionId))
+              .limit(1);
+
+            // Determine status based on trial end date
+            const trialEndDate = subRecord?.trialEndDate
+              ? new Date(subRecord.trialEndDate)
+              : null;
+            const hasActiveTrial = trialEndDate && trialEndDate > new Date();
+
             [newSubscription] = await db
               .update(providerSubscriptions)
               .set({
-                status: "active",
+                status: hasActiveTrial ? "trial" : "active",
                 razorpaySubscriptionId: paymentId, // Temporary: using payment ID
                 startDate: new Date(),
                 endDate,
@@ -1451,12 +1198,12 @@ const handleWebhook = async (req, res) => {
                 .values({
                   providerId,
                   planId,
-                  status: "active",
+                  status: "active", // Will be updated to "trial" below if applicable
                   razorpaySubscriptionId: paymentId,
                   razorpayPlanId: null, // Will be set up if autoRenew is true
                   startDate: new Date(),
                   endDate,
-                  trialEndDate: null,
+                  trialEndDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 days trial
                   billingCycle,
                   autoRenew: setupAutoRenew,
                   amountPaid: paymentEntity.amount || price,
@@ -1465,6 +1212,23 @@ const handleWebhook = async (req, res) => {
                   cancelAtPeriodEnd: false,
                 })
                 .returning();
+
+              // Now update to trial if applicable
+              if (plan.trialDays && plan.trialDays > 0) {
+                await db
+                  .update(providerSubscriptions)
+                  .set({ status: "trial" })
+                  .where(eq(providerSubscriptions.id, newSubscription.id));
+              }
+
+              // Record payment in subscription_payments
+              await db.insert(subscriptionPayments).values({
+                providerSubscriptionId: newSubscription.id,
+                razorpayPaymentId: paymentId,
+                amount: paymentEntity.amount || price,
+                status: "captured",
+                paymentDate: new Date(),
+              });
             }
           }
 
@@ -1667,17 +1431,75 @@ const handleWebhook = async (req, res) => {
         // Payment successful, activate subscription
         const subscriptionId = payload.notes?.subscription_id;
         const razorpaySubId = payload.id;
+        const paymentAmount = payload.amount || 0;
+
+        console.log("🔑 Webhook - subscription activated/charged:", {
+          subscriptionId,
+          razorpaySubId,
+          paymentAmount,
+        });
 
         if (subscriptionId) {
-          // Update by our internal subscription ID from notes
-          await db
-            .update(providerSubscriptions)
-            .set({
-              status: "active",
+          console.log(
+            "🔍 Webhook: Looking for subscription by local_subscription_id:",
+            subscriptionId,
+          );
+
+          const [subscription] = await db
+            .select()
+            .from(providerSubscriptions)
+            .where(eq(providerSubscriptions.id, parseInt(subscriptionId)))
+            .limit(1);
+
+          console.log(
+            "🔍 Webhook: Subscription found by local_subscription_id:",
+            subscription ? "YES" : "NO",
+          );
+
+          if (subscription) {
+            // Determine status based on whether it has a trial end date in the future
+            const trialEndDate = subscription.trialEndDate
+              ? new Date(subscription.trialEndDate)
+              : null;
+            const hasActiveTrial = trialEndDate && trialEndDate > new Date();
+
+            const updateData = {
+              status: hasActiveTrial ? "trial" : "active",
               razorpaySubscriptionId: razorpaySubId,
               updatedAt: new Date(),
-            })
-            .where(eq(providerSubscriptions.id, subscriptionId));
+            };
+
+            await db
+              .update(providerSubscriptions)
+              .set(updateData)
+              .where(eq(providerSubscriptions.id, subscriptionId));
+
+            // Record payment
+            if (paymentAmount > 0) {
+              await db.insert(subscriptionPayments).values({
+                providerSubscriptionId: subscription.id,
+                razorpayPaymentId: payload.payment_id,
+                amount: paymentAmount,
+                status: "captured",
+                paymentDate: new Date(),
+              });
+
+              // Update amountPaid
+              await db
+                .update(providerSubscriptions)
+                .set({
+                  amountPaid: sql`${providerSubscriptions.amountPaid} + ${paymentAmount}`,
+                })
+                .where(eq(providerSubscriptions.id, subscription.id));
+            }
+
+            console.log(
+              "✅ Subscription activated:",
+              subscription.id,
+              "status:",
+              updateData.status,
+            );
+          }
         } else {
           // Fallback: try to find by razorpaySubscriptionId if already set
           const [existingSub] = await db
@@ -1689,34 +1511,46 @@ const handleWebhook = async (req, res) => {
             .limit(1);
 
           if (existingSub) {
+            const trialEndDate = existingSub.trialEndDate
+              ? new Date(existingSubSub.trialEndDate)
+              : null;
+            const hasActiveTrial = trialEndDate && trialEndDate > new Date();
+
+            const updateData = {
+              status: hasActiveTrial ? "trial" : "active",
+              updatedAt: new Date(),
+            };
+
             await db
               .update(providerSubscriptions)
-              .set({
-                status: "active",
-                updatedAt: new Date(),
-              })
+              .set(updateData)
               .where(eq(providerSubscriptions.id, existingSub.id));
-          }
-        }
 
-        // Record payment
-        if (eventType === "subscription.charged") {
-          const [subscription] = await db
-            .select()
-            .from(providerSubscriptions)
-            .where(
-              eq(providerSubscriptions.razorpaySubscriptionId, razorpaySubId),
-            )
-            .limit(1);
+            // Record payment if paymentAmount > 0
+            if (paymentAmount > 0) {
+              await db.insert(subscriptionPayments).values({
+                providerSubscriptionId: existingSub.id,
+                razorpayPaymentId: payload.payment_id,
+                amount: paymentAmount,
+                status: "captured",
+                paymentDate: new Date(),
+              });
 
-          if (subscription) {
-            await db.insert(subscriptionPayments).values({
-              providerSubscriptionId: subscription.id,
-              razorpayPaymentId: payload.payment_id,
-              amount: payload.amount,
-              status: "captured",
-              paymentDate: new Date(),
-            });
+              // Update amountPaid
+              await db
+                .update(providerSubscriptions)
+                .set({
+                  amountPaid: sql`${providerSubscriptions.amountPaid} + ${paymentAmount}`,
+                })
+                .where(eq(providerSubscriptions.id, existingSub.id));
+            }
+
+            console.log(
+              "✅ Subscription activated via fallback:",
+              existingSub.id,
+              "status:",
+              updateData.status,
+            );
           }
         }
 
@@ -1937,160 +1771,8 @@ const handleWebhook = async (req, res) => {
 };
 
 // ============================================
-// RAZORPAY SUBSCRIPTION API (PRODUCTION)
+// RAZORPAY SUBSCRIPTION LINKS API
 // ============================================
-
-/**
- * Purchase subscription using Razorpay Subscription API (auto-recurring)
- * This creates a REAL Razorpay subscription that auto-renews
- * POST /api/provider/subscription/purchase-razorpay
- */
-const purchaseSubscriptionWithRazorpay = async (req, res) => {
-  try {
-    const { planId, billingCycle = "monthly" } = req.body;
-    const providerId = req.token.id;
-
-    console.log(
-      "🛒 Starting Subscription purchase (Payment Link approach) - provider:",
-      providerId,
-      "plan:",
-      planId,
-      "cycle:",
-      billingCycle,
-    );
-
-    // Validate billing cycle
-    if (!["monthly", "yearly"].includes(billingCycle)) {
-      return res.status(400).json({ message: "Invalid billing cycle" });
-    }
-
-    // Get plan details
-    const [plan] = await db
-      .select()
-      .from(subscriptionPlans)
-      .where(eq(subscriptionPlans.id, planId))
-      .limit(1);
-
-    if (!plan) {
-      return res.status(404).json({ message: "Plan not found" });
-    }
-
-    if (!plan.isActive) {
-      return res.status(400).json({ message: "This plan is not active" });
-    }
-
-    // Check if provider has a business profile
-    const [business] = await db
-      .select()
-      .from(businessProfiles)
-      .where(eq(businessProfiles.providerId, providerId))
-      .limit(1);
-
-    if (!business) {
-      return res
-        .status(400)
-        .json({ message: "Please create a business profile first" });
-    }
-
-    // Get price based on billing cycle
-    const price =
-      billingCycle === "yearly" ? plan.yearlyPrice : plan.monthlyPrice;
-
-    // FREE PLAN: Bypass Razorpay
-    if (price === 0) {
-      const endDate = new Date("2099-12-31");
-      const [subscription] = await db
-        .insert(providerSubscriptions)
-        .values({
-          providerId,
-          planId,
-          status: "active",
-          razorpaySubscriptionId: `free_sub_${providerId}_${Date.now()}`,
-          razorpayPlanId: "free_plan",
-          startDate: new Date(),
-          endDate,
-          billingCycle,
-          autoRenew: false,
-          amountPaid: 0,
-          platformFeeAtPurchase: plan.platformFeePercentage,
-          originalAmount: 0,
-        })
-        .returning();
-
-      return res.json({
-        message: "Free plan activated",
-        data: {
-          subscription,
-          redirectUrl: "/provider/subscription?success=free",
-        },
-      });
-    }
-
-    // ============================================
-    // PAYMENT LINK APPROACH (Most Reliable)
-    // ============================================
-    // Payment Links work reliably with UPI, cards, netbanking, etc.
-    // Webhook will handle subscription creation and auto-renewal setup
-
-    // Get provider details for customer creation
-    const [user] = await db
-      .select()
-      .from(users)
-      .where(eq(users.id, providerId))
-      .limit(1);
-
-    const displayName =
-      business?.businessName?.trim() || user?.name || "Service Provider";
-
-    // Create Razorpay Customer
-    console.log("👤 Creating Razorpay customer...");
-    const customer = await createRazorpayCustomer({
-      name: displayName,
-      email: user?.email || "provider@example.com",
-      contact: business?.phone || user?.phone || "",
-    });
-
-    // Calculate end date
-    const endDate = calculateEndDate(billingCycle);
-
-    // Build callback URL for redirect after payment
-    const frontendUrl = process.env.FRONTEND_URL || "http://localhost:3000";
-    const callbackUrl = `${frontendUrl}/provider/subscription?success=true`;
-
-    // Create payment link (full amount charged immediately)
-    const paymentLink = await createPaymentLink(price, {
-      description: `${plan.name} - ${billingCycle === "monthly" ? "Monthly" : "Yearly"} Subscription`,
-      customer_id: customer.id,
-      notes: {
-        provider_id: providerId.toString(),
-        plan_id: planId.toString(),
-        billing_cycle: billingCycle,
-        platform_fee: plan.platformFeePercentage.toString(),
-        type: "subscription_payment",
-        setup_auto_renew: "true", // Flag to set up Razorpay subscription after payment
-      },
-      expire_by: Math.floor(Date.now() / 1000) + 1800, // 30 minutes
-      callback_url: callbackUrl,
-      callback_method: "get",
-    });
-
-    console.log("💳 Payment link created:", paymentLink.short_url);
-
-    // Return payment link URL (full amount charged immediately!)
-    res.json({
-      message:
-        "Payment link generated. Please complete payment to activate your subscription.",
-      data: {
-        redirectUrl: paymentLink.short_url,
-        paymentLinkId: paymentLink.id,
-        amount: price,
-      },
-    });
-  } catch (error) {
-    console.error("Error purchasing subscription:", error);
-    res.status(500).json({ message: "Server error", error: error.message });
-  }
-};
 
 /**
  * Purchase subscription using Razorpay Subscription Links API
@@ -2150,6 +1832,9 @@ const purchaseSubscriptionWithLink = async (req, res) => {
 
     // FREE PLAN: Bypass Razorpay
     if (price === 0) {
+      // Cancel any existing active subscriptions before activating free plan
+      await cancelOldSubscriptions(providerId, null);
+
       const endDate = new Date("2099-12-31");
       const [subscription] = await db
         .insert(providerSubscriptions)
@@ -2292,47 +1977,9 @@ const purchaseSubscriptionWithLink = async (req, res) => {
       }
     }
 
-    // ============================================
-    // CHECK FOR EXISTING ACTIVE SUBSCRIPTIONS
-    // ============================================
-    // If provider has an active subscription, expire it before creating new one
-    // This prevents multiple active subscriptions
-    const [existingActiveSub] = await db
-      .select()
-      .from(providerSubscriptions)
-      .where(
-        and(
-          eq(providerSubscriptions.providerId, providerId),
-          eq(providerSubscriptions.status, "active"),
-        ),
-      )
-      .orderBy(desc(providerSubscriptions.createdAt))
-      .limit(1);
-
-    if (existingActiveSub) {
-      console.log(
-        "⚠️  Provider has existing active subscription:",
-        existingActiveSub.id,
-        "Expiring it before creating new one...",
-      );
-
-      // Expire the old subscription in our database
-      await db
-        .update(providerSubscriptions)
-        .set({
-          status: "expired",
-          updatedAt: new Date(),
-          cancelAtPeriodEnd: true,
-        })
-        .where(eq(providerSubscriptions.id, existingActiveSub.id));
-
-      console.log(
-        "✅ Old subscription marked as expired:",
-        existingActiveSub.id,
-      );
-    }
-
     // Create local subscription record FIRST in "pending_payment" status
+    // NOTE: Old active subscription will only be expired AFTER new payment is successful (in webhook handler)
+    // This prevents losing access if user doesn't complete payment
     const endDate = calculateEndDate(billingCycle);
     const now = new Date();
     const [localSubscription] = await db
@@ -2370,7 +2017,7 @@ const purchaseSubscriptionWithLink = async (req, res) => {
     const razorpaySubscription = await createSubscriptionLink(price, {
       plan_id: razorpayPlanId,
       total_count: totalCount,
-      // customer_id: customer.id, // DON'T pass - breaks hosted page!
+      //customer_id: customer.id, // DON'T pass - breaks hosted page!
       // customer_notify: true,    // DON'T pass - breaks hosted page!
       // notify_info: {...},        // DON'T pass - breaks hosted page!
       notes: {
@@ -2825,21 +2472,169 @@ const cleanupAbandonedSubscriptions = async (req, res) => {
   }
 };
 
+/**
+ * Start free trial for a provider
+ * POST /provider/subscription/start-trial
+ *
+ * Creates a trial subscription WITHOUT Razorpay
+ * Trial lasts 7 days, then auto-ends
+ * Provider can only use trial once per platform
+ */
+const startTrial = async (req, res) => {
+  try {
+    const { planId } = req.body;
+    const providerId = req.token.id;
+
+    if (!planId) {
+      return res.status(400).json({ message: "planId is required" });
+    }
+
+    console.log("🎯 Starting trial for provider:", providerId, "plan:", planId);
+
+    // 1. Check if provider already used trial (search for isTrial=true subscriptions)
+    const [pastTrial] = await db
+      .select()
+      .from(providerSubscriptions)
+      .where(
+        and(
+          eq(providerSubscriptions.providerId, providerId),
+          eq(providerSubscriptions.isTrial, true),
+        ),
+      )
+      .orderBy(desc(providerSubscriptions.createdAt))
+      .limit(1);
+
+    if (pastTrial) {
+      return res.status(400).json({
+        message: "You have already used your free trial",
+        data: { pastTrialEndDate: pastTrial.trialEndDate },
+      });
+    }
+
+    // 2. Check if provider has business profile
+    const [business] = await db
+      .select()
+      .from(businessProfiles)
+      .where(eq(businessProfiles.providerId, providerId))
+      .limit(1);
+
+    if (!business) {
+      return res.status(400).json({
+        message: "Business profile required to start trial",
+      });
+    }
+
+    // 3. Get plan details
+    const [plan] = await db
+      .select()
+      .from(subscriptionPlans)
+      .where(eq(subscriptionPlans.id, planId))
+      .limit(1);
+
+    if (!plan) {
+      return res.status(404).json({ message: "Plan not found" });
+    }
+
+    if (plan.trialDays === 0) {
+      return res.status(400).json({
+        message: "This plan does not offer a free trial",
+      });
+    }
+
+    // 4. Check for existing active/trial subscription
+    const [existingSub] = await db
+      .select()
+      .from(providerSubscriptions)
+      .where(
+        and(
+          eq(providerSubscriptions.providerId, providerId),
+          inArray(providerSubscriptions.status, ["active", "trial"]),
+        ),
+      )
+      .orderBy(desc(providerSubscriptions.createdAt))
+      .limit(1);
+
+    if (existingSub) {
+      if (existingSub.status === "trial") {
+        return res.status(400).json({
+          message: "You already have an active trial",
+          data: { trialEndDate: existingSub.trialEndDate },
+        });
+      } else {
+        return res.status(400).json({
+          message: "You already have an active subscription",
+          data: { currentPlan: existingSub.planId },
+        });
+      }
+    }
+
+    // 5. Calculate trial dates
+    const now = new Date();
+    const trialEndDate = new Date(
+      now.getTime() + plan.trialDays * 24 * 60 * 60 * 1000,
+    ); // trialDays from plan
+    const endDate = new Date(trialEndDate.getTime() + 24 * 60 * 60 * 1000); // +1 day buffer
+
+    console.log(
+      `📅 Trial dates: ${now.toISOString()} to ${trialEndDate.toISOString()}`,
+    );
+
+    // 6. Create trial subscription
+    const [trialSubscription] = await db
+      .insert(providerSubscriptions)
+      .values({
+        providerId,
+        planId,
+        status: "trial",
+        startDate: now,
+        endDate: endDate,
+        trialEndDate: trialEndDate,
+        billingCycle: "monthly",
+        autoRenew: false, // Trials don't auto-renew
+        isTrial: true, // Mark as trial subscription
+        amountPaid: 0,
+        originalAmount: plan.monthlyPrice,
+        platformFeeAtPurchase: plan.platformFeePercentage,
+        cancelAtPeriodEnd: true, // End after trial
+        createdAt: now,
+        updatedAt: now,
+      })
+      .returning();
+
+    console.log(
+      "✅ Trial started successfully:",
+      trialSubscription.id,
+      "for provider:",
+      providerId,
+    );
+
+    res.json({
+      message: "Free trial started successfully",
+      data: {
+        subscriptionId: trialSubscription.id,
+        planName: plan.name,
+        trialEndDate: trialEndDate,
+        daysRemaining: plan.trialDays,
+      },
+    });
+  } catch (error) {
+    console.error("Error starting trial:", error);
+    res.status(500).json({ message: "Server error", error: error.message });
+  }
+};
+
 module.exports = {
   getCurrentSubscription,
-  purchaseSubscription,
-  purchaseSubscriptionWithRazorpay,
   purchaseSubscriptionWithLink,
   cancelSubscription,
   toggleAutoRenew,
   upgradeSubscription,
   getPaymentHistory,
   getAllProviderSubscriptions,
-  handleWebhook,
-  handleSubscriptionWebhook,
   getProviderActiveSubscription,
   getMonthlyBookingCount,
   authorizeSubscription,
   cancelPendingSubscription,
   cleanupAbandonedSubscriptions,
+  startTrial,
 };

@@ -10,6 +10,9 @@ const {
   payments,
   subscriptionPlans,
   providerSubscriptions,
+  staff,
+  staffPayouts,
+  staffLeave,
 } = require("../models/schema");
 const {
   eq,
@@ -19,10 +22,12 @@ const {
   desc,
   or,
   isNull,
+  isNotNull,
   sql,
   ne,
   inArray,
   ilike,
+  count,
 } = require("drizzle-orm");
 const { logBookingHistory } = require("../utils/historyHelper");
 const {
@@ -30,7 +35,10 @@ const {
   paiseToRupees,
   rupeesToPaise,
 } = require("../utils/razorpay");
-const { getProviderActiveSubscription, getMonthlyBookingCount } = require("../controllers/providerSubscription.controller");
+const {
+  getProviderActiveSubscription,
+  getMonthlyBookingCount,
+} = require("../controllers/providerSubscription.controller");
 const { notificationTemplates } = require("../utils/notificationHelper");
 // Import email service
 const { sendCompletionOTPEmail } = require("../helper/emailService");
@@ -209,31 +217,52 @@ const getCustomerBookings = async (req, res) => {
     }
 
     // Collect all IDs for batch queries (same pattern as getProviderBookings)
-    const serviceIds = [...new Set(customerBookings.map((b) => b.serviceId).filter(Boolean))];
-    const businessIds = [...new Set(customerBookings.map((b) => b.businessProfileId).filter(Boolean))];
-    const addressIds = [...new Set(customerBookings.map((b) => b.addressId).filter(Boolean))];
-    const slotIds = [...new Set(customerBookings.map((b) => b.slotId).filter(Boolean))];
+    const serviceIds = [
+      ...new Set(customerBookings.map((b) => b.serviceId).filter(Boolean)),
+    ];
+    const businessIds = [
+      ...new Set(
+        customerBookings.map((b) => b.businessProfileId).filter(Boolean),
+      ),
+    ];
+    const addressIds = [
+      ...new Set(customerBookings.map((b) => b.addressId).filter(Boolean)),
+    ];
+    const slotIds = [
+      ...new Set(customerBookings.map((b) => b.slotId).filter(Boolean)),
+    ];
     const bookingIds = customerBookings.map((b) => b.id);
 
     // Batch fetch all related data in parallel (5 queries instead of N*5)
-    const [serviceList, businessProfilesData, addresses, slotsData, feedbackRecords] =
-      await Promise.all([
-        serviceIds.length > 0
-          ? db.select().from(services).where(inArray(services.id, serviceIds))
-          : Promise.resolve([]),
-        businessIds.length > 0
-          ? db.select().from(businessProfiles).where(inArray(businessProfiles.id, businessIds))
-          : Promise.resolve([]),
-        addressIds.length > 0
-          ? db.select().from(Address).where(inArray(Address.id, addressIds))
-          : Promise.resolve([]),
-        slotIds.length > 0
-          ? db.select().from(slots).where(inArray(slots.id, slotIds))
-          : Promise.resolve([]),
-        bookingIds.length > 0
-          ? db.select().from(feedback).where(inArray(feedback.bookingId, bookingIds))
-          : Promise.resolve([]),
-      ]);
+    const [
+      serviceList,
+      businessProfilesData,
+      addresses,
+      slotsData,
+      feedbackRecords,
+    ] = await Promise.all([
+      serviceIds.length > 0
+        ? db.select().from(services).where(inArray(services.id, serviceIds))
+        : Promise.resolve([]),
+      businessIds.length > 0
+        ? db
+            .select()
+            .from(businessProfiles)
+            .where(inArray(businessProfiles.id, businessIds))
+        : Promise.resolve([]),
+      addressIds.length > 0
+        ? db.select().from(Address).where(inArray(Address.id, addressIds))
+        : Promise.resolve([]),
+      slotIds.length > 0
+        ? db.select().from(slots).where(inArray(slots.id, slotIds))
+        : Promise.resolve([]),
+      bookingIds.length > 0
+        ? db
+            .select()
+            .from(feedback)
+            .where(inArray(feedback.bookingId, bookingIds))
+        : Promise.resolve([]),
+    ]);
 
     // Create maps for O(1) lookup
     const serviceMap = new Map(serviceList.map((s) => [s.id, s]));
@@ -425,29 +454,51 @@ const getProviderBookings = async (req, res) => {
     const completedBookingIds = providerBookings
       .filter((b) => b.status === "completed")
       .map((b) => b.id);
+    const staffIds = [
+      ...new Set(
+        providerBookings.map((b) => b.assignedStaffId).filter(Boolean),
+      ),
+    ];
 
-    // Batch fetch all related data in parallel (4 queries instead of N*4)
-    const [customers, serviceList, slotsData, addresses, feedbackRecords] =
-      await Promise.all([
-        customerIds.length > 0
-          ? db.select().from(users).where(inArray(users.id, customerIds))
-          : Promise.resolve([]),
-        serviceIds.length > 0
-          ? db.select().from(services).where(inArray(services.id, serviceIds))
-          : Promise.resolve([]),
-        slotIds.length > 0
-          ? db.select().from(slots).where(inArray(slots.id, slotIds))
-          : Promise.resolve([]),
-        addressIds.length > 0
-          ? db.select().from(Address).where(inArray(Address.id, addressIds))
-          : Promise.resolve([]),
-        completedBookingIds.length > 0
-          ? db
-              .select()
-              .from(feedback)
-              .where(inArray(feedback.bookingId, completedBookingIds))
-          : Promise.resolve([]),
-      ]);
+    // Batch fetch all related data in parallel (5 queries instead of N*5)
+    const [
+      customers,
+      serviceList,
+      slotsData,
+      addresses,
+      feedbackRecords,
+      staffData,
+    ] = await Promise.all([
+      customerIds.length > 0
+        ? db.select().from(users).where(inArray(users.id, customerIds))
+        : Promise.resolve([]),
+      serviceIds.length > 0
+        ? db.select().from(services).where(inArray(services.id, serviceIds))
+        : Promise.resolve([]),
+      slotIds.length > 0
+        ? db.select().from(slots).where(inArray(slots.id, slotIds))
+        : Promise.resolve([]),
+      addressIds.length > 0
+        ? db.select().from(Address).where(inArray(Address.id, addressIds))
+        : Promise.resolve([]),
+      completedBookingIds.length > 0
+        ? db
+            .select()
+            .from(feedback)
+            .where(inArray(feedback.bookingId, completedBookingIds))
+        : Promise.resolve([]),
+      staffIds.length > 0
+        ? db
+            .select({
+              id: staff.id,
+              userId: staff.userId,
+              name: users.name,
+            })
+            .from(staff)
+            .leftJoin(users, eq(staff.userId, users.id))
+            .where(inArray(staff.id, staffIds))
+        : Promise.resolve([]),
+    ]);
 
     // Create maps for O(1) lookup
     const customerMap = new Map(customers.map((c) => [c.id, c]));
@@ -455,6 +506,7 @@ const getProviderBookings = async (req, res) => {
     const slotMap = new Map(slotsData.map((s) => [s.id, s]));
     const addressMap = new Map(addresses.map((a) => [a.id, a]));
     const feedbackMap = new Map(feedbackRecords.map((f) => [f.bookingId, f]));
+    const staffMap = new Map(staffData.map((s) => [s.id, s]));
 
     // Format the response using maps
     const bookingsWithCustomers = providerBookings.map((booking) => {
@@ -463,6 +515,9 @@ const getProviderBookings = async (req, res) => {
       const slot = slotMap.get(booking.slotId);
       const address = addressMap.get(booking.addressId);
       const feedbackData = feedbackMap.get(booking.id);
+      const staffMember = booking.assignedStaffId
+        ? staffMap.get(booking.assignedStaffId)
+        : null;
 
       // DEBUG: Log reschedule fields for pending bookings
       if (booking.status === "reschedule_pending") {
@@ -524,6 +579,13 @@ const getProviderBookings = async (req, res) => {
         completionOtp: booking.completionOtp || null,
         completionOtpExpiry: booking.completionOtpExpiry || null,
         completionOtpVerifiedAt: booking.completionOtpVerifiedAt || null,
+        // Staff assignment and earning details
+        assignedStaffId: booking.assignedStaffId || null,
+        assignedStaffName: staffMember?.name || null,
+        staffEarningType: booking.staffEarningType || null,
+        staffCommissionPercent: booking.staffCommissionPercent || null,
+        staffFixedAmount: booking.staffFixedAmount || null,
+        staffEarning: booking.staffEarning || null,
         customerName: customer?.name || "Unknown",
         customerPhone: customer?.phone || "",
         customerEmail: customer?.email || "",
@@ -728,7 +790,11 @@ const addBooking = async (req, res) => {
     const subscription = await getProviderActiveSubscription(providerId);
 
     // Check booking limit: null, 0, or -1 means unlimited
-    if (subscription && subscription.planMaxBookingsPerMonth && subscription.planMaxBookingsPerMonth > 0) {
+    if (
+      subscription &&
+      subscription.planMaxBookingsPerMonth &&
+      subscription.planMaxBookingsPerMonth > 0
+    ) {
       const currentMonthBookings = await getMonthlyBookingCount(providerId);
 
       if (currentMonthBookings >= subscription.planMaxBookingsPerMonth) {
@@ -737,7 +803,7 @@ const addBooking = async (req, res) => {
           await notificationTemplates.bookingLimitReached(
             providerId,
             subscription.planMaxBookingsPerMonth,
-            subscription.planName
+            subscription.planName,
           );
         } catch (notifError) {
           console.error("Error sending limit notification:", notifError);
@@ -746,7 +812,7 @@ const addBooking = async (req, res) => {
 
         return res.status(403).json({
           message: `Monthly booking limit reached. Please upgrade your plan.`,
-          code: "BOOKING_LIMIT_EXCEEDED"
+          code: "BOOKING_LIMIT_EXCEEDED",
         });
       }
     }
@@ -797,7 +863,7 @@ const addBooking = async (req, res) => {
       "booked",
       "Booking was created successfully.",
       "customer",
-      userId
+      userId,
     );
 
     // Send notification to provider about new booking
@@ -973,7 +1039,7 @@ const acceptBooking = async (req, res) => {
       "confirmed",
       "Booking was confirmed by provider.",
       "provider",
-      userId
+      userId,
     );
 
     return res.status(200).json({
@@ -1102,7 +1168,7 @@ const rejectBooking = async (req, res) => {
       "cancelled",
       "Booking Cancelled by Provider",
       "provider",
-      userId
+      userId,
     );
 
     return res.status(200).json({
@@ -1164,11 +1230,12 @@ function calculateCancellationRefund(
   servicePrice,
   hoursRemaining,
   isProvider = false,
-  customPlatformFeePercentage = null
+  customPlatformFeePercentage = null,
 ) {
   let customerRefundPercentage = 0;
   // Use custom platform fee if provided, otherwise use default 5%
-  let platformFeePercentage = customPlatformFeePercentage !== null ? customPlatformFeePercentage : 5;
+  let platformFeePercentage =
+    customPlatformFeePercentage !== null ? customPlatformFeePercentage : 5;
 
   if (isProvider) {
     customerRefundPercentage = 100;
@@ -1195,12 +1262,19 @@ function calculateCancellationRefund(
   if (platformFeePercentage === 0 && customerRefundPercentage === 100) {
     providerPayoutPercentage = 0;
   } else {
-    providerPayoutPercentage = 100 - (customerRefundPercentage + platformFeePercentage);
+    providerPayoutPercentage =
+      100 - (customerRefundPercentage + platformFeePercentage);
   }
 
-  const customerRefundAmount = Math.round((servicePrice * customerRefundPercentage) / 100);
-  const providerPayoutAmount = Math.round((servicePrice * providerPayoutPercentage) / 100);
-  const platformFeeAmount = Math.round((servicePrice * platformFeePercentage) / 100);
+  const customerRefundAmount = Math.round(
+    (servicePrice * customerRefundPercentage) / 100,
+  );
+  const providerPayoutAmount = Math.round(
+    (servicePrice * providerPayoutPercentage) / 100,
+  );
+  const platformFeeAmount = Math.round(
+    (servicePrice * platformFeePercentage) / 100,
+  );
 
   return {
     customerRefundAmount,
@@ -1428,8 +1502,8 @@ const requestReschedule = async (req, res) => {
         previousDate: booking.bookingDate,
         previousTime: currentSlot?.startTime || "N/A",
         newDate: bookingDateObj,
-        newTime: slot.startTime || "N/A"
-      }
+        newTime: slot.startTime || "N/A",
+      },
     );
 
     return res.status(200).json({
@@ -1582,7 +1656,7 @@ const cancelRescheduleRequest = async (req, res) => {
       "reschedule_cancelled",
       "Customer cancelled the reschedule request. Original slot restored.",
       "customer",
-      userId
+      userId,
     );
 
     return res.status(200).json({
@@ -1665,14 +1739,20 @@ const cancelBooking = async (req, res) => {
     if (currentSlot && booking.bookingDate) {
       const slotDate = new Date(booking.bookingDate);
       const timeParts = currentSlot.startTime.split(":");
-      slotDate.setHours(parseInt(timeParts[0], 10), parseInt(timeParts[1], 10), 0, 0);
+      slotDate.setHours(
+        parseInt(timeParts[0], 10),
+        parseInt(timeParts[1], 10),
+        0,
+        0,
+      );
 
       const now = new Date();
       hoursRemaining = (slotDate.getTime() - now.getTime()) / (1000 * 60 * 60);
 
       if (hoursRemaining < 0.5) {
         return res.status(400).json({
-          message: "Cannot cancel a booking less than 30 minutes before the start time.",
+          message:
+            "Cannot cancel a booking less than 30 minutes before the start time.",
         });
       }
     }
@@ -1680,12 +1760,20 @@ const cancelBooking = async (req, res) => {
     // Get provider's subscription to determine platform fee percentage
     let platformFeePercentage = null;
     try {
-      const providerSubscription = await getProviderActiveSubscription(business.providerId);
-      if (providerSubscription && providerSubscription.planPlatformFeePercentage !== undefined) {
+      const providerSubscription = await getProviderActiveSubscription(
+        business.providerId,
+      );
+      if (
+        providerSubscription &&
+        providerSubscription.planPlatformFeePercentage !== undefined
+      ) {
         platformFeePercentage = providerSubscription.planPlatformFeePercentage;
       }
     } catch (error) {
-      console.error("Error fetching provider subscription for platform fee:", error);
+      console.error(
+        "Error fetching provider subscription for platform fee:",
+        error,
+      );
       // Fall back to default 5%
       platformFeePercentage = 5;
     }
@@ -1697,7 +1785,12 @@ const cancelBooking = async (req, res) => {
       providerPayoutAmount,
       providerPayoutPercentage,
       platformFeeAmount,
-    } = calculateCancellationRefund(booking.totalPrice, hoursRemaining, false, platformFeePercentage);
+    } = calculateCancellationRefund(
+      booking.totalPrice,
+      hoursRemaining,
+      false,
+      platformFeePercentage,
+    );
 
     // Check if payment exists and process refund
     let refundDetails = null;
@@ -1747,8 +1840,8 @@ const cancelBooking = async (req, res) => {
           debug: {
             paymentId: payment?.razorpayPaymentId,
             amount: customerRefundAmount,
-            bookingId
-          }
+            bookingId,
+          },
         });
       }
     }
@@ -1773,13 +1866,47 @@ const cancelBooking = async (req, res) => {
       }
     }
 
+    // Handle staff assignment on cancellation
+    let staffNotified = false;
+    if (booking.assignedStaffId) {
+      // Notify assigned staff about cancellation
+      try {
+        // Get staff user ID
+        const [staffMember] = await db
+          .select()
+          .from(staff)
+          .where(eq(staff.id, booking.assignedStaffId))
+          .limit(1);
+
+        if (staffMember) {
+          await notificationTemplates.sendNotification(staffMember.userId, {
+            type: "booking_cancelled",
+            title: "Booking Cancelled",
+            message: `The booking assigned to you has been cancelled by the customer. You will not receive payment for this booking.`,
+            data: { bookingId },
+          });
+          staffNotified = true;
+        }
+      } catch (notifError) {
+        console.error("Failed to notify staff about cancellation:", notifError);
+      }
+    }
+
     // Update booking status - customer cancellation sets status to "cancelled"
+    // Also clear staff assignment since no work was done
     const [updatedBooking] = await db
       .update(bookings)
       .set({
         status: "cancelled",
         isRefunded: customerRefundAmount > 0,
         refundAmount: customerRefundAmount, // Track customer refund amount
+        // Clear staff assignment since no work was done
+        assignedStaffId: null,
+        staffAssignedAt: null,
+        staffEarningType: null,
+        staffCommissionPercent: null,
+        staffFixedAmount: null,
+        staffEarning: null,
         // Provider earning tracking
         providerEarning: providerPayoutAmount || 0, // Amount provider earns after cancellation
         platformFee: platformFeeAmount || 0, // Platform commission from cancellation
@@ -1803,9 +1930,9 @@ const cancelBooking = async (req, res) => {
     await logBookingHistory(
       bookingId,
       "cancelled",
-      "Booking Cancelled by Customer",
+      `Booking Cancelled by Customer${booking.assignedStaffId ? " - Staff assignment removed, no payout will be made" : ""}`,
       "customer",
-      userId
+      userId,
     );
 
     return res.status(200).json({
@@ -1816,6 +1943,7 @@ const cancelBooking = async (req, res) => {
       refund: refundDetails,
       providerPayout: providerPayoutDetails,
       platformFee: platformFeeDetails,
+      staffNotified, // Indicate if assigned staff was notified
     });
   } catch (error) {
     console.error("Error cancelling booking:", error);
@@ -2037,7 +2165,7 @@ const declineReschedule = async (req, res) => {
       "rescheduled",
       "Reschedule declined by provider. Original booking restored.",
       "provider",
-      userId
+      userId,
     );
 
     return res.status(200).json({
@@ -2218,7 +2346,7 @@ const rescheduleBooking = async (req, res) => {
       "rescheduled",
       "Booking was rescheduled by customer (legacy flow).",
       "customer",
-      userId
+      userId,
     );
 
     return res.status(200).json({
@@ -2340,7 +2468,7 @@ const completeBooking = async (req, res) => {
       "completed",
       "Booking Completed",
       "provider",
-      userId
+      userId,
     );
 
     return res.status(200).json({
@@ -2496,12 +2624,12 @@ const providerReschedule = async (req, res) => {
         previousDate: booking.bookingDate,
         previousTime: currentSlot?.startTime || "N/A",
         newDate: bookingDateObj,
-        newTime: slot.startTime || "N/A"
-      }
+        newTime: slot.startTime || "N/A",
+      },
     );
 
     // Send notification to customer about provider reschedule
-    const { notificationTemplates } = require('../utils/notificationHelper');
+    const { notificationTemplates } = require("../utils/notificationHelper");
     await notificationTemplates.providerRescheduled(bookingId, reason);
 
     return res.status(200).json({
@@ -2629,10 +2757,18 @@ const getAllBookingsForAdmin = async (req, res) => {
     }
 
     // Collect all IDs for batch queries
-    const customerIds = [...new Set(allBookings.map((b) => b.customerId).filter(Boolean))];
-    const businessIds = [...new Set(allBookings.map((b) => b.businessProfileId).filter(Boolean))];
-    const serviceIds = [...new Set(allBookings.map((b) => b.serviceId).filter(Boolean))];
-    const addressIds = [...new Set(allBookings.map((b) => b.addressId).filter(Boolean))];
+    const customerIds = [
+      ...new Set(allBookings.map((b) => b.customerId).filter(Boolean)),
+    ];
+    const businessIds = [
+      ...new Set(allBookings.map((b) => b.businessProfileId).filter(Boolean)),
+    ];
+    const serviceIds = [
+      ...new Set(allBookings.map((b) => b.serviceId).filter(Boolean)),
+    ];
+    const addressIds = [
+      ...new Set(allBookings.map((b) => b.addressId).filter(Boolean)),
+    ];
 
     // Batch fetch all related data in parallel (4 queries instead of N*4)
     const [customers, businesses, serviceList, addresses] = await Promise.all([
@@ -2706,7 +2842,9 @@ const getAllBookingsForAdmin = async (req, res) => {
         bookingDate: booking.bookingDate,
         startTime: booking.slotStartTime,
         endTime: booking.slotEndTime,
-        address: address ? `${address.street}, ${address.city}, ${address.state}` : "N/A",
+        address: address
+          ? `${address.street}, ${address.city}, ${address.state}`
+          : "N/A",
         createdAt: booking.bookingDate || booking.createdAt,
         beforePhotoUrl: booking.beforePhotoUrl,
         afterPhotoUrl: booking.afterPhotoUrl,
@@ -2761,7 +2899,7 @@ const initiateCompletion = async (req, res) => {
       `[initiateCompletion] Provider ${userId} initiating completion for booking ${bookingId}`,
     );
 
-    // 1. Fetch booking with business profile and service
+    // 1. Fetch booking with business profile, service, and staff assignment
     const [booking] = await db
       .select({
         booking: bookings,
@@ -2788,8 +2926,22 @@ const initiateCompletion = async (req, res) => {
       });
     }
 
-    // 3. Verify provider owns the business
-    if (booking.business.providerId !== userId) {
+    // 3. Verify provider owns the business OR is assigned staff
+    const isProvider = booking.business.providerId === userId;
+
+    // Check if user is the assigned staff
+    let isAssignedStaff = false;
+    if (booking.booking.assignedStaffId) {
+      const [staffMember] = await db
+        .select()
+        .from(staff)
+        .where(eq(staff.id, booking.booking.assignedStaffId))
+        .limit(1);
+
+      isAssignedStaff = staffMember && staffMember.userId === userId;
+    }
+
+    if (!isProvider && !isAssignedStaff) {
       return res
         .status(403)
         .json({ message: "You are not authorized to complete this booking" });
@@ -2810,7 +2962,19 @@ const initiateCompletion = async (req, res) => {
     if (completionNotes) updateData.completionNotes = completionNotes;
 
     await db.update(bookings).set(updateData).where(eq(bookings.id, bookingId));
-    await logBookingHistory(bookingId, "completion_initiated", "Provider initiated booking completion (OTP sent).", "provider", userId);
+
+    // Log history with correct actor type
+    const actorType = isProvider ? "provider" : "staff";
+    const actorMessage = isProvider
+      ? "Provider initiated booking completion (OTP sent)."
+      : "Staff initiated booking completion (OTP sent).";
+    await logBookingHistory(
+      bookingId,
+      "completion_initiated",
+      actorMessage,
+      actorType,
+      userId,
+    );
 
     // 6. Send OTP email to customer
     const customer = await db
@@ -2923,8 +3087,22 @@ const verifyCompletionOTP = async (req, res) => {
       return res.status(404).json({ message: "Booking not found" });
     }
 
-    // 2. Verify provider owns the business
-    if (booking.business.providerId !== userId) {
+    // 2. Verify provider owns the business OR is assigned staff
+    const isProvider = booking.business.providerId === userId;
+
+    // Check if user is the assigned staff
+    let isAssignedStaff = false;
+    if (booking.booking.assignedStaffId) {
+      const [staffMember] = await db
+        .select()
+        .from(staff)
+        .where(eq(staff.id, booking.booking.assignedStaffId))
+        .limit(1);
+
+      isAssignedStaff = staffMember && staffMember.userId === userId;
+    }
+
+    if (!isProvider && !isAssignedStaff) {
       return res
         .status(403)
         .json({ message: "You are not authorized to verify this booking" });
@@ -2966,7 +3144,42 @@ const verifyCompletionOTP = async (req, res) => {
       .where(eq(bookings.id, bookingId))
       .returning();
 
-    // 7. Set provider payout status to "pending"
+    // 7. Calculate and record staff earning if staff was assigned
+    if (updatedBooking.assignedStaffId && updatedBooking.staffEarningType) {
+      let staffEarning = 0;
+
+      if (updatedBooking.staffEarningType === "commission") {
+        // Commission: % of booking total price
+        staffEarning = Math.round(
+          (updatedBooking.totalPrice *
+            (updatedBooking.staffCommissionPercent || 10)) /
+            100,
+        );
+      } else if (updatedBooking.staffEarningType === "fixed") {
+        // Fixed amount (already stored)
+        staffEarning = updatedBooking.staffFixedAmount || 0;
+      }
+
+      // Update booking with calculated earning
+      await db
+        .update(bookings)
+        .set({ staffEarning })
+        .where(eq(bookings.id, bookingId));
+
+      // Create staff payout record
+      const { createStaffPayout } = require("./staffPayout.controller");
+      await createStaffPayout(
+        bookingId,
+        updatedBooking.assignedStaffId,
+        staffEarning,
+      );
+
+      console.log(
+        `✅ Staff earning calculated: Booking ${bookingId}, Staff ${updatedBooking.assignedStaffId}, Amount ${staffEarning} paise (${staffEarning / 100} ₹)`,
+      );
+    }
+
+    // 8. Set provider payout status to "pending"
     const [payment] = await db
       .select()
       .from(payments)
@@ -2981,15 +3194,15 @@ const verifyCompletionOTP = async (req, res) => {
       console.log(`✅ Payment ${payment.id} marked as "pending" for payout`);
     }
 
-    // 8. Send notification to customer
+    // 9. Send notification to customer
     await notificationTemplates.bookingCompleted(bookingId);
 
-    // 9. Log history
+    // 10. Log history
     await logBookingHistory(
       bookingId,
       "completed",
       "Booking was successfully completed after OTP verification.",
-      "system"
+      "system",
     );
 
     return res.status(200).json({
@@ -3212,39 +3425,58 @@ const { bookingHistory } = require("../models/schema");
 const cancelByProvider = async (req, res) => {
   try {
     const bookingId = Number(req.params.id);
-    const userId = req.token.id; 
-    
+    const userId = req.token.id;
+
     const [businessProfile] = await db
       .select({ id: businessProfiles.id })
       .from(businessProfiles)
       .where(eq(businessProfiles.providerId, userId))
       .limit(1);
 
-    const businessProfileId = businessProfile ? businessProfile.id : (req.token.businessProfileId || req.token.providerId);
-    const reason = req.query.reason || req.body?.reason || "Cancelled by provider";
+    const businessProfileId = businessProfile
+      ? businessProfile.id
+      : req.token.businessProfileId || req.token.providerId;
+    const reason =
+      req.query.reason || req.body?.reason || "Cancelled by provider";
 
-    if (!bookingId) return res.status(400).json({ message: "Booking ID is required" });
+    if (!bookingId)
+      return res.status(400).json({ message: "Booking ID is required" });
 
-    const [booking] = await db.select().from(bookings).where(eq(bookings.id, bookingId));
+    const [booking] = await db
+      .select()
+      .from(bookings)
+      .where(eq(bookings.id, bookingId));
     if (!booking) return res.status(404).json({ message: "Booking not found" });
 
     // Verify authorized provider or admin
-    if (booking.businessProfileId !== businessProfileId && req.token.role !== "admin") {
-      return res.status(403).json({ message: "You are not authorized to cancel this booking" });
+    if (
+      booking.businessProfileId !== businessProfileId &&
+      req.token.role !== "admin"
+    ) {
+      return res
+        .status(403)
+        .json({ message: "You are not authorized to cancel this booking" });
     }
 
-    if (!["pending", "confirmed", "reschedule_pending"].includes(booking.status)) {
-      return res.status(400).json({ message: `Cannot cancel ${booking.status} bookings.` });
+    if (
+      !["pending", "confirmed", "reschedule_pending"].includes(booking.status)
+    ) {
+      return res
+        .status(400)
+        .json({ message: `Cannot cancel ${booking.status} bookings.` });
     }
 
     // Provider cancellation always gives 100% refund
-    const { customerRefundAmount, customerRefundPercentage } = calculateCancellationRefund(booking.totalPrice, 999, true);
+    const { customerRefundAmount, customerRefundPercentage } =
+      calculateCancellationRefund(booking.totalPrice, 999, true);
 
     let refundDetails = null;
     const allPaidPayments = await db
       .select()
       .from(payments)
-      .where(and(eq(payments.bookingId, bookingId), eq(payments.status, "paid")))
+      .where(
+        and(eq(payments.bookingId, bookingId), eq(payments.status, "paid")),
+      )
       .orderBy(desc(payments.amount));
 
     const payment = allPaidPayments[0];
@@ -3254,46 +3486,53 @@ const cancelByProvider = async (req, res) => {
         const refund = await initiateRefund(
           payment.razorpayPaymentId,
           rupeesToPaise(customerRefundAmount),
-          `Booking cancelled by provider - 100% refund`
+          `Booking cancelled by provider - 100% refund`,
         );
-        await db.update(payments).set({
-          status: "refunded", 
-          refundId: refund.id, 
-          refundAmount: refund.amount,
-          refundReason: `Booking cancelled by provider - 100% refund`, 
-          refundedAt: new Date(),
-        }).where(eq(payments.id, payment.id));
-        
-        refundDetails = { 
-          refundId: refund.id, 
-          refundAmount: paiseToRupees(refund.amount), 
-          refundPercentage: customerRefundPercentage 
+        await db
+          .update(payments)
+          .set({
+            status: "refunded",
+            refundId: refund.id,
+            refundAmount: refund.amount,
+            refundReason: `Booking cancelled by provider - 100% refund`,
+            refundedAt: new Date(),
+          })
+          .where(eq(payments.id, payment.id));
+
+        refundDetails = {
+          refundId: refund.id,
+          refundAmount: paiseToRupees(refund.amount),
+          refundPercentage: customerRefundPercentage,
         };
       } catch (e) {
         console.error("Refund failed:", e);
-        return res.status(500).json({ 
+        return res.status(500).json({
           message: "Failed to process refund. " + e.message,
           error: e.message || "Unknown refund error",
           debug: {
             paymentId: payment?.razorpayPaymentId,
             amount: customerRefundAmount,
-            bookingId
-          }
+            bookingId,
+          },
         });
       }
     }
 
-    const [updatedBooking] = await db.update(bookings).set({
-      status: "cancelled",
-      isRefunded: customerRefundAmount > 0,
-      refundAmount: customerRefundAmount, // Store refund amount in bookings table
-      providerPayoutAmount: null,
-      providerPayoutStatus: null,
-      platformFeeAmount: null,
-      cancelledAt: new Date(),
-      cancellationReason: reason,
-      cancelledBy: req.token.role === "admin" ? "admin" : "provider",
-    }).where(eq(bookings.id, bookingId)).returning();
+    const [updatedBooking] = await db
+      .update(bookings)
+      .set({
+        status: "cancelled",
+        isRefunded: customerRefundAmount > 0,
+        refundAmount: customerRefundAmount, // Store refund amount in bookings table
+        providerPayoutAmount: null,
+        providerPayoutStatus: null,
+        platformFeeAmount: null,
+        cancelledAt: new Date(),
+        cancellationReason: reason,
+        cancelledBy: req.token.role === "admin" ? "admin" : "provider",
+      })
+      .where(eq(bookings.id, bookingId))
+      .returning();
 
     await notificationTemplates.bookingCancelled(bookingId);
     await logBookingHistory(
@@ -3301,17 +3540,19 @@ const cancelByProvider = async (req, res) => {
       "cancelled",
       "Booking Cancelled by Provider",
       req.token.role === "admin" ? "admin" : "provider",
-      userId
+      userId,
     );
 
-    return res.status(200).json({ 
-      message: "Booking cancelled successfully", 
-      booking: updatedBooking, 
-      refund: refundDetails 
+    return res.status(200).json({
+      message: "Booking cancelled successfully",
+      booking: updatedBooking,
+      refund: refundDetails,
     });
   } catch (error) {
     console.error("Error cancelling booking by provider:", error);
-    return res.status(500).json({ message: "Server error", error: error.message });
+    return res
+      .status(500)
+      .json({ message: "Server error", error: error.message });
   }
 };
 
@@ -3319,16 +3560,694 @@ const getBookingHistory = async (req, res) => {
   try {
     const bookingId = Number(req.params.id);
     const userId = req.token.id;
-    if (!bookingId) return res.status(400).json({ message: "Booking ID is required" });
-    const [booking] = await db.select({ booking: bookings, business: businessProfiles }).from(bookings).leftJoin(businessProfiles, eq(bookings.businessProfileId, businessProfiles.id)).where(eq(bookings.id, bookingId));
+    if (!bookingId)
+      return res.status(400).json({ message: "Booking ID is required" });
+    const [booking] = await db
+      .select({ booking: bookings, business: businessProfiles })
+      .from(bookings)
+      .leftJoin(
+        businessProfiles,
+        eq(bookings.businessProfileId, businessProfiles.id),
+      )
+      .where(eq(bookings.id, bookingId));
     if (!booking) return res.status(404).json({ message: "Booking not found" });
-    if (booking.booking.customerId !== userId && (!booking.business || booking.business.providerId !== userId) && req.token.roleId !== 3) return res.status(403).json({ message: "Not authorized" });
-    const history = await db.select().from(bookingHistory).where(eq(bookingHistory.bookingId, bookingId)).orderBy(bookingHistory.createdAt);
+    if (
+      booking.booking.customerId !== userId &&
+      (!booking.business || booking.business.providerId !== userId) &&
+      req.token.roleId !== 3
+    )
+      return res.status(403).json({ message: "Not authorized" });
+    const history = await db
+      .select()
+      .from(bookingHistory)
+      .where(eq(bookingHistory.bookingId, bookingId))
+      .orderBy(bookingHistory.createdAt);
     return res.status(200).json({ history });
   } catch (error) {
-    return res.status(500).json({ message: "Server error", error: error.message });
+    return res
+      .status(500)
+      .json({ message: "Server error", error: error.message });
   }
 };
+
+// ============================================
+// STAFF ASSIGNMENT FUNCTIONS
+// ============================================
+
+const {
+  createStaffPayout,
+  calculateStaffEarning,
+} = require("../controllers/staffPayout.controller");
+
+/**
+ * Assign booking to staff (Provider only)
+ * POST /api/booking/:id/assign-staff
+ */
+const assignBookingToStaff = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { staffId, earningType, commissionPercent, fixedAmount } = req.body;
+
+    if (!staffId) {
+      return res.status(400).json({ message: "Staff ID is required" });
+    }
+
+    // Validate earning type parameters
+    if (
+      earningType === "commission" &&
+      (!commissionPercent || commissionPercent <= 0)
+    ) {
+      return res
+        .status(400)
+        .json({ message: "Valid commission percentage is required" });
+    }
+    if (earningType === "fixed" && (!fixedAmount || fixedAmount <= 0)) {
+      return res
+        .status(400)
+        .json({ message: "Valid fixed amount is required" });
+    }
+    if (!earningType) {
+      return res
+        .status(400)
+        .json({ message: "Earning type (commission or fixed) is required" });
+    }
+
+    const userId = req.token.id;
+
+    // Get booking
+    const [booking] = await db
+      .select()
+      .from(bookings)
+      .where(eq(bookings.id, parseInt(id)));
+
+    if (!booking) {
+      return res.status(404).json({ message: "Booking not found" });
+    }
+
+    // Verify user is the provider
+    const [business] = await db
+      .select()
+      .from(businessProfiles)
+      .where(eq(businessProfiles.providerId, userId));
+
+    if (!business || business.id !== booking.businessProfileId) {
+      return res
+        .status(403)
+        .json({ message: "You are not authorized to assign this booking" });
+    }
+
+    // Check if booking is in assignable status
+    if (!["confirmed", "reschedule_pending"].includes(booking.status)) {
+      return res.status(400).json({
+        message: "Can only assign confirmed or pending bookings",
+      });
+    }
+
+    // Get staff member
+    const [staffMember] = await db
+      .select()
+      .from(staff)
+      .where(eq(staff.id, parseInt(staffId)));
+
+    if (!staffMember) {
+      return res.status(404).json({ message: "Staff not found" });
+    }
+
+    // Verify staff belongs to this business
+    if (staffMember.businessProfileId !== business.id) {
+      return res
+        .status(403)
+        .json({ message: "Staff does not belong to your business" });
+    }
+
+    // Check if staff is active
+    if (staffMember.status !== "active") {
+      return res
+        .status(400)
+        .json({ message: `Staff is ${staffMember.status}, cannot assign` });
+    }
+
+    // Check if staff is on leave
+    const bookingDate = new Date(booking.bookingDate)
+      .toISOString()
+      .split("T")[0];
+    const [onLeave] = await db
+      .select()
+      .from(staffLeave)
+      .where(
+        and(
+          eq(staffLeave.staffId, parseInt(staffId)),
+          eq(staffLeave.status, "approved"),
+          sql`${staffLeave.startDate} <= ${bookingDate} AND ${staffLeave.endDate} >= ${bookingDate}`,
+        ),
+      )
+      .limit(1);
+
+    if (onLeave) {
+      return res
+        .status(400)
+        .json({ message: "Staff is on leave on this date" });
+    }
+
+    // Check for overlapping bookings
+    const [overlapping] = await db
+      .select()
+      .from(bookings)
+      .where(
+        and(
+          eq(bookings.assignedStaffId, parseInt(staffId)),
+          eq(bookings.slotId, booking.slotId),
+          sql`DATE(${bookings.bookingDate}) = ${bookingDate}`,
+          eq(bookings.status, "confirmed"),
+        ),
+      )
+      .limit(1);
+
+    if (overlapping) {
+      return res
+        .status(400)
+        .json({ message: "Staff has another booking at this time" });
+    }
+
+    // Validate staff earning against provider earning
+    const providerEarning = booking.providerEarning || booking.totalPrice;
+    let calculatedStaffEarning = 0;
+
+    if (earningType === "commission") {
+      // Commission percentage should be between 1% and 100%
+      if (commissionPercent < 1 || commissionPercent > 100) {
+        return res.status(400).json({
+          message: "Commission percentage must be between 1% and 100%",
+        });
+      }
+      calculatedStaffEarning = Math.round(
+        (providerEarning * commissionPercent) / 100,
+      );
+    } else if (earningType === "fixed") {
+      // Fixed amount must be less than or equal to provider earning
+      const fixedAmountInPaise = parseInt(fixedAmount);
+      if (fixedAmountInPaise > providerEarning) {
+        return res.status(400).json({
+          message: `Staff earning (₹${(fixedAmountInPaise / 100).toFixed(2)}) cannot exceed provider earning (₹${(providerEarning / 100).toFixed(2)})`,
+        });
+      }
+      calculatedStaffEarning = fixedAmountInPaise;
+    }
+
+    // Additional check: provider should keep at least 10% after staff payment
+    const providerShareAfterStaff = providerEarning - calculatedStaffEarning;
+    const minimumProviderShare = Math.round(booking.totalPrice * 0.1); // At least 10% of service price
+    if (providerShareAfterStaff < minimumProviderShare) {
+      return res.status(400).json({
+        message: `Staff earning is too high. Provider must keep at least ₹${(minimumProviderShare / 100).toFixed(2)} (10% of service price)`,
+      });
+    }
+
+    // Prepare assignment data
+    const assignmentData = {
+      assignedStaffId: parseInt(staffId),
+      staffAssignedAt: new Date(),
+      staffEarningType: earningType,
+    };
+
+    if (earningType === "commission") {
+      assignmentData.staffCommissionPercent = parseInt(commissionPercent);
+    } else if (earningType === "fixed") {
+      assignmentData.staffFixedAmount = parseInt(fixedAmount);
+    }
+
+    // Assign booking to staff
+    const [updatedBooking] = await db
+      .update(bookings)
+      .set(assignmentData)
+      .where(eq(bookings.id, parseInt(id)))
+      .returning();
+
+    // Log history
+    const earningInfo =
+      earningType === "commission"
+        ? `earning: ${commissionPercent}% commission of provider earning`
+        : `earning: ₹${(parseInt(fixedAmount) / 100).toFixed(2)} fixed`;
+
+    await logBookingHistory(
+      id,
+      "staff_assigned",
+      `Booking assigned to staff`,
+      "provider",
+      userId,
+    );
+
+    // Create notification for staff with earning info
+    try {
+      const { notificationTemplates } = require("../utils/notificationHelper");
+      await notificationTemplates.sendNotification(staffMember.userId, {
+        type: "booking_assigned",
+        title: "New Booking Assigned",
+        message: `You have been assigned a new booking. ${earningInfo}`,
+        data: { bookingId: parseInt(id) },
+      });
+    } catch (notifError) {
+      console.error("Failed to send notification:", notifError);
+    }
+
+    return res.status(200).json({
+      message: "Booking assigned to staff successfully",
+      booking: updatedBooking,
+    });
+  } catch (error) {
+    console.error("Error assigning booking to staff:", error);
+    return res
+      .status(500)
+      .json({ message: "Server error", error: error.message });
+  }
+};
+
+/**
+ * Get available staff for a booking (Provider only)
+ * GET /api/booking/available-staff?slotId=X&date=Y
+ */
+const getAvailableStaffForBooking = async (req, res) => {
+  try {
+    const { slotId, date } = req.query;
+
+    if (!slotId || !date) {
+      return res.status(400).json({ message: "slotId and date are required" });
+    }
+
+    const userId = req.token.id;
+
+    // Get provider's business
+    const [business] = await db
+      .select()
+      .from(businessProfiles)
+      .where(eq(businessProfiles.providerId, userId));
+
+    if (!business) {
+      return res.status(400).json({ message: "Business profile not found" });
+    }
+
+    // Get all active staff for this business
+    const allStaff = await db
+      .select({
+        id: staff.id,
+        userId: staff.userId,
+        employeeId: staff.employeeId,
+        status: staff.status,
+        name: users.name,
+        email: users.email,
+        phone: users.phone,
+        avatar: users.avatar,
+      })
+      .from(staff)
+      .leftJoin(users, eq(staff.userId, users.id))
+      .where(
+        and(
+          eq(staff.businessProfileId, business.id),
+          eq(staff.status, "active"),
+        ),
+      );
+
+    // Get staff on leave for this date
+    const leaveDate = new Date(date).toISOString().split("T")[0];
+    const staffOnLeave = await db
+      .select({ staffId: staffLeave.staffId })
+      .from(staffLeave)
+      .where(
+        and(
+          eq(staffLeave.businessProfileId, business.id),
+          eq(staffLeave.status, "approved"),
+          sql`${staffLeave.startDate} <= ${leaveDate} AND ${staffLeave.endDate} >= ${leaveDate}`,
+        ),
+      );
+
+    const leaveStaffIds = new Set(staffOnLeave.map((l) => l.staffId));
+
+    // Get staff with overlapping bookings at this slot
+    // First, get all bookings for this slot (we'll filter by date in memory if needed)
+    const allSlotBookings = await db
+      .select({
+        assignedStaffId: bookings.assignedStaffId,
+        bookingDate: bookings.bookingDate,
+        status: bookings.status
+      })
+      .from(bookings)
+      .where(
+        and(
+          eq(bookings.slotId, parseInt(slotId)),
+          eq(bookings.status, "confirmed"),
+          isNotNull(bookings.assignedStaffId),
+        ),
+      );
+
+    // Filter by date in JavaScript (extract YYYY-MM-DD from timestamp)
+    const overlappingBookings = allSlotBookings.filter(
+      b => b.bookingDate && b.bookingDate.toISOString().startsWith(leaveDate)
+    );
+
+    const busyStaffIds = new Set(
+      overlappingBookings.map((b) => b.assignedStaffId).filter(Boolean),
+    );
+
+    // Filter available staff
+    const availableStaff = allStaff.filter(
+      (s) => !leaveStaffIds.has(s.id) && !busyStaffIds.has(s.id),
+    );
+
+    // Count today's bookings for each available staff
+    // First, get all bookings for this staff (filter by date in JS)
+    const allStaffBookings = await db
+      .select({
+        assignedStaffId: bookings.assignedStaffId,
+        bookingDate: bookings.bookingDate,
+        status: bookings.status,
+      })
+      .from(bookings)
+      .where(
+        and(
+          inArray(bookings.assignedStaffId, availableStaff.map(s => s.id)),
+          inArray(bookings.status, ["confirmed", "completed"]),
+        ),
+      );
+
+    // Group by staff and count today's bookings
+    const staffBookingCounts = new Map();
+    for (const booking of allStaffBookings) {
+      if (!booking.assignedStaffId) continue;
+      const bookingDateStr = booking.bookingDate?.toISOString().split('T')[0];
+      if (bookingDateStr === leaveDate) {
+        staffBookingCounts.set(
+          booking.assignedStaffId,
+          (staffBookingCounts.get(booking.assignedStaffId) || 0) + 1
+        );
+      }
+    }
+
+    // Set the count for each staff member
+    for (const s of availableStaff) {
+      s.todayBookingCount = staffBookingCounts.get(s.id) || 0;
+    }
+
+    return res.json({
+      message: "Available staff retrieved successfully",
+      data: availableStaff,
+    });
+  } catch (error) {
+    console.error("Error fetching available staff:", error);
+    return res
+      .status(500)
+      .json({ message: "Server error", error: error.message });
+  }
+};
+
+/**
+ * Unassign staff from booking (Provider only)
+ * POST /api/booking/:id/unassign-staff
+ */
+const unassignBookingFromStaff = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.token.id;
+
+    // Get booking
+    const [booking] = await db
+      .select()
+      .from(bookings)
+      .where(eq(bookings.id, parseInt(id)));
+
+    if (!booking) {
+      return res.status(404).json({ message: "Booking not found" });
+    }
+
+    // Verify user is the provider
+    const [business] = await db
+      .select()
+      .from(businessProfiles)
+      .where(eq(businessProfiles.providerId, userId));
+
+    if (!business || business.id !== booking.businessProfileId) {
+      return res
+        .status(403)
+        .json({ message: "You are not authorized to modify this booking" });
+    }
+
+    if (!booking.assignedStaffId) {
+      return res
+        .status(400)
+        .json({ message: "No staff assigned to this booking" });
+    }
+
+    // Check if service already started
+    if (["completed", "cancelled"].includes(booking.status)) {
+      return res
+        .status(400)
+        .json({ message: "Cannot unassign from completed/cancelled bookings" });
+    }
+
+    // Unassign staff
+    const [updatedBooking] = await db
+      .update(bookings)
+      .set({
+        assignedStaffId: null,
+        staffAssignedAt: null,
+      })
+      .where(eq(bookings.id, parseInt(id)))
+      .returning();
+
+    // Log history
+    await logBookingHistory(
+      id,
+      "unassigned_staff",
+      "Staff unassigned from booking",
+      "provider",
+      userId,
+    );
+
+    return res.status(200).json({
+      message: "Staff unassigned successfully",
+      booking: updatedBooking,
+    });
+  } catch (error) {
+    console.error("Error unassigning staff:", error);
+    return res
+      .status(500)
+      .json({ message: "Server error", error: error.message });
+  }
+};
+
+/**
+ * Get staff assigned bookings (Staff only)
+ * GET /api/booking/staff/my-bookings
+ */
+const getStaffAssignedBookings = async (req, res) => {
+  try {
+    const userId = req.token.id;
+    const { status, date } = req.query;
+
+    // Get staff record for this user
+    const [staffMember] = await db
+      .select()
+      .from(staff)
+      .where(eq(staff.userId, userId));
+
+    if (!staffMember) {
+      return res.status(400).json({ message: "Staff record not found" });
+    }
+
+    // Build query
+    let query = db
+      .select({
+        // Booking fields
+        id: bookings.id,
+        customerId: bookings.customerId,
+        businessProfileId: bookings.businessProfileId,
+        serviceId: bookings.serviceId,
+        slotId: bookings.slotId,
+        addressId: bookings.addressId,
+        bookingDate: bookings.bookingDate,
+        status: bookings.status,
+        totalPrice: bookings.totalPrice,
+        completionOtp: bookings.completionOtp,
+        completionOtpExpiry: bookings.completionOtpExpiry,
+        beforePhotoUrl: bookings.beforePhotoUrl,
+        afterPhotoUrl: bookings.afterPhotoUrl,
+        staffAssignedAt: bookings.staffAssignedAt,
+        staffCompletedAt: bookings.staffCompletedAt,
+        staff_earning: bookings.staffEarning,
+        staff_earning_type: bookings.staffEarningType,
+        staff_commission_percent: bookings.staffCommissionPercent,
+        staff_fixed_amount: bookings.staffFixedAmount,
+        createdAt: bookings.createdAt,
+        // Related data
+        serviceName: services.name,
+        servicePrice: services.price,
+        serviceImage: services.image,
+        businessName: businessProfiles.businessName,
+        businessPhone: businessProfiles.phone,
+        businessAddress: sql`CONCAT(${businessProfiles.city}, ', ', ${businessProfiles.state})`,
+        customerName: users.name,
+        customerPhone: users.phone,
+        customerAvatar: users.avatar,
+        slotStartTime: slots.startTime,
+      })
+      .from(bookings)
+      .leftJoin(services, eq(bookings.serviceId, services.id))
+      .leftJoin(
+        businessProfiles,
+        eq(bookings.businessProfileId, businessProfiles.id),
+      )
+      .leftJoin(users, eq(bookings.customerId, users.id))
+      .leftJoin(slots, eq(bookings.slotId, slots.id))
+      .where(eq(bookings.assignedStaffId, staffMember.id));
+
+    // Apply status filter
+    if (status && status !== "all") {
+      query = query.where(eq(bookings.status, status));
+    }
+
+    // Apply date filter
+    if (date) {
+      query = query.where(sql`DATE(${bookings.bookingDate}) = ${date}`);
+    }
+
+    const assignedBookings = await query.orderBy(desc(bookings.bookingDate));
+
+    res.json({
+      message: "Staff bookings retrieved successfully",
+      data: assignedBookings,
+    });
+  } catch (error) {
+    console.error("Error fetching staff bookings:", error);
+    res.status(500).json({ message: "Server error", error: error.message });
+  }
+};
+
+/**
+ * Update completion handler to create staff payout
+ */
+const completeBookingWithPayout = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { otp, beforePhotoUrl, afterPhotoUrl, notes } = req.body;
+    const userId = req.token.id;
+
+    // First verify the booking and OTP (existing logic)
+    const [booking] = await db
+      .select({
+        id: bookings.id,
+        customerId: bookings.customerId,
+        businessProfileId: bookings.businessProfileId,
+        serviceId: bookings.serviceId,
+        slotId: bookings.slotId,
+        addressId: bookings.addressId,
+        bookingDate: bookings.bookingDate,
+        status: bookings.status,
+        totalPrice: bookings.totalPrice,
+        providerEarning: bookings.providerEarning,
+        completionOtp: bookings.completionOtp,
+        completionOtpExpiry: bookings.completionOtpExpiry,
+        beforePhotoUrl: bookings.beforePhotoUrl,
+        afterPhotoUrl: bookings.afterPhotoUrl,
+        assignedStaffId: bookings.assignedStaffId,
+        staffAssignedAt: bookings.staffAssignedAt,
+        staffCompletedAt: bookings.staffCompletedAt,
+        staffEarning: bookings.staffEarning,
+        staffEarningType: bookings.staffEarningType,
+        staffCommissionPercent: bookings.staffCommissionPercent,
+        staffFixedAmount: bookings.staffFixedAmount,
+        completionNotes: bookings.completionNotes,
+      })
+      .from(bookings)
+      .where(eq(bookings.id, parseInt(id)));
+
+    if (!booking) {
+      return res.status(404).json({ message: "Booking not found" });
+    }
+
+    // Check if booking was cancelled
+    if (booking.status === "cancelled") {
+      return res.status(400).json({
+        message: "This booking has been cancelled. Cannot complete.",
+      });
+    }
+
+    // Check if staff assigned
+    if (!booking.assignedStaffId) {
+      // For provider-completed bookings without staff
+      // Call the existing completeBooking logic
+      // (This would need to be refactored in a real scenario)
+    }
+
+    // Verify OTP
+    if (booking.completionOtp !== otp) {
+      return res.status(400).json({ message: "Invalid OTP" });
+    }
+
+    // Check OTP expiry
+    if (
+      booking.completionOtpExpiry &&
+      new Date() > new Date(booking.completionOtpExpiry)
+    ) {
+      return res.status(400).json({ message: "OTP has expired" });
+    }
+
+    // Get staff details for payout calculation
+    const [staffMember] = await db
+      .select()
+      .from(staff)
+      .where(eq(staff.id, booking.assignedStaffId));
+
+    if (!staffMember) {
+      return res.status(400).json({ message: "Staff not found" });
+    }
+
+    // Calculate staff earning
+    const staffEarning = calculateStaffEarning(booking);
+
+    // Update booking as completed
+    const [updatedBooking] = await db
+      .update(bookings)
+      .set({
+        status: "completed",
+        completionOtpVerifiedAt: new Date(),
+        beforePhotoUrl: beforePhotoUrl || booking.beforePhotoUrl,
+        afterPhotoUrl: afterPhotoUrl || booking.afterPhotoUrl,
+        completionNotes: notes || booking.completionNotes,
+        actualCompletionTime: new Date(),
+        staffCompletedAt: new Date(),
+        staffEarning: staffEarning,
+      })
+      .where(eq(bookings.id, parseInt(id)))
+      .returning();
+
+    // Create staff payout record
+    await createStaffPayout(
+      parseInt(id),
+      booking.assignedStaffId,
+      staffEarning,
+    );
+
+    // Log history
+    await logBookingHistory(
+      id,
+      "completed",
+      "Booking completed by staff",
+      "staff",
+      staffMember.userId,
+    );
+
+    return res.status(200).json({
+      message: "Booking completed successfully",
+      booking: updatedBooking,
+      staffEarning,
+    });
+  } catch (error) {
+    console.error("Error completing booking:", error);
+    return res
+      .status(500)
+      .json({ message: "Server error", error: error.message });
+  }
+};
+
 module.exports = {
   getBookingById,
   getCustomerBookings,
@@ -3354,6 +4273,10 @@ module.exports = {
   resendCompletionOTP,
   uploadCompletionPhotos,
   getBookingHistory,
+  // Staff assignment functions
+  assignBookingToStaff,
+  getAvailableStaffForBooking,
+  unassignBookingFromStaff,
+  getStaffAssignedBookings,
+  completeBookingWithPayout,
 };
-
-

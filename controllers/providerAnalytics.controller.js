@@ -200,6 +200,9 @@ const getRevenueAnalytics = async (req, res) => {
         totalPrice: bookings.totalPrice,
         status: bookings.status,
         providerPayoutAmount: bookings.providerPayoutAmount,
+        providerEarning: bookings.providerEarning,
+        staffEarning: bookings.staffEarning,
+        assignedStaffId: bookings.assignedStaffId,
       })
       .from(bookings)
       .where(
@@ -264,9 +267,12 @@ const getRevenueAnalytics = async (req, res) => {
       "for bookings",
     );
 
-    // Platform fee percentage (default 5%)
-    const platformFeePercentage = 5;
-    const providerSharePercentage = 100 - platformFeePercentage; // 95%
+    // Get provider's subscription plan for correct platform fee percentage
+    let providerSharePercentage = 95; // Default fallback
+    if (subscription && subscription.planPlatformFeePercentage !== undefined) {
+      providerSharePercentage = 100 - subscription.planPlatformFeePercentage;
+    }
+    console.log("[Analytics] Provider share percentage:", providerSharePercentage);
 
     // Group data by appropriate interval
     const groupedData = new Map();
@@ -280,7 +286,8 @@ const getRevenueAnalytics = async (req, res) => {
         bookings: 0,
         grossTotal: 0,
         providerPayout: 0, // Track actual payouts (including from cancellations)
-        rescheduleRevenue: 0, 
+        staffDeduction: 0, // Total amount paid to staff (to be subtracted from provider earnings)
+        rescheduleRevenue: 0,
         completed: 0,
       });
 
@@ -309,20 +316,31 @@ const getRevenueAnalytics = async (req, res) => {
 
           // Calculate provider share for this booking
           let bookingProviderPayout = 0;
-          
-          if (item.providerPayoutAmount) {
-            // Use the stored payout amount if available (covers cancellations, etc.)
+
+          // Use providerEarning if available (backend-calculated based on subscription plan)
+          if (item.providerEarning !== null && item.providerEarning !== undefined) {
+            bookingProviderPayout = Number(item.providerEarning) / 100; // Convert paise to rupees
+          }
+          // Use providerPayoutAmount for cancellations with specific payouts
+          else if (item.providerPayoutAmount) {
             bookingProviderPayout = Number(item.providerPayoutAmount);
-          } else if (
+          }
+          // Fallback to providerSharePercentage for old bookings without providerEarning
+          else if (
             item.status !== "cancelled" &&
             item.status !== "rejected" &&
             item.status !== "refunded"
           ) {
-            // Fallback to 95% for confirmed/completed bookings without explicit payout set
             bookingProviderPayout = Math.round(((item.totalPrice || 0) * providerSharePercentage) / 100);
           }
 
-          existing.providerPayout += bookingProviderPayout;
+          // Subtract staff earning if staff is assigned (staffEarning is in paise)
+          const staffEarningPaise = item.staffEarning || 0;
+          const staffEarningRupees = staffEarningPaise / 100;
+          const netProviderPayout = Math.max(0, bookingProviderPayout - staffEarningRupees);
+
+          existing.providerPayout += netProviderPayout;
+          existing.staffDeduction += staffEarningRupees;
 
           // For backward compatibility and gross calculations
           if (
@@ -374,19 +392,38 @@ const getRevenueAnalytics = async (req, res) => {
 
     // Calculate totals
     const totalBookings = allBookings.length;
+
+    // Calculate total staff deduction across all bookings
+    const totalStaffDeduction = allBookings.reduce((sum, item) => {
+      const staffEarning = item.staffEarning || 0;
+      return sum + staffEarning;
+    }, 0);
+
     const totalProviderPayout = allBookings.reduce((sum, item) => {
-      if (item.providerPayoutAmount) {
-        return sum + Number(item.providerPayoutAmount);
-      } else if (
+      let bookingPayout = 0;
+
+      // Use providerEarning if available (backend-calculated based on subscription plan)
+      if (item.providerEarning !== null && item.providerEarning !== undefined) {
+        bookingPayout = Number(item.providerEarning) / 100; // Convert paise to rupees
+      }
+      // Use providerPayoutAmount for cancellations with specific payouts
+      else if (item.providerPayoutAmount) {
+        bookingPayout = Number(item.providerPayoutAmount);
+      }
+      // Fallback to providerSharePercentage for old bookings without providerEarning
+      else if (
         item.status !== "cancelled" &&
         item.status !== "rejected" &&
         item.status !== "refunded"
       ) {
-        return sum + Math.round(((item.totalPrice || 0) * providerSharePercentage) / 100);
+        bookingPayout = Math.round(((item.totalPrice || 0) * providerSharePercentage) / 100);
       }
-      return sum;
+
+      // Subtract staff earning from provider payout
+      const staffEarning = item.staffEarning || 0;
+      return sum + Math.max(0, bookingPayout - (staffEarning / 100));
     }, 0);
-    
+
     const baseTotalRevenue = totalProviderPayout;
     
     // Add ALL reschedule fees from paidPayments to total revenue
@@ -547,6 +584,10 @@ const getServiceAnalytics = async (req, res) => {
         serviceRating: services.rating,
         totalPrice: bookings.totalPrice,
         status: bookings.status,
+        providerEarning: bookings.providerEarning,
+        staffEarning: bookings.staffEarning,
+        assignedStaffId: bookings.assignedStaffId,
+        providerPayoutAmount: bookings.providerPayoutAmount,
       })
       .from(bookings)
       .innerJoin(services, eq(bookings.serviceId, services.id))
@@ -570,9 +611,11 @@ const getServiceAnalytics = async (req, res) => {
     // Group by service
     const serviceMap = new Map();
 
-    // Platform fee percentage (default 5%)
-    const platformFeePercentage = 5;
-    const providerSharePercentage = 100 - platformFeePercentage; // 95%
+    // Get provider's subscription plan for correct platform fee percentage
+    let providerSharePercentage = 95; // Default fallback
+    if (subscription && subscription.planPlatformFeePercentage !== undefined) {
+      providerSharePercentage = 100 - subscription.planPlatformFeePercentage;
+    }
 
     allBookings.forEach((item) => {
       if (!item.serviceId) return;
@@ -583,6 +626,7 @@ const getServiceAnalytics = async (req, res) => {
           serviceName: item.serviceName || "Unknown Service",
           bookingCount: 0,
           totalRevenue: 0,
+          staffDeduction: 0,
           completedCount: 0,
         });
       }
@@ -595,12 +639,27 @@ const getServiceAnalytics = async (req, res) => {
 
       const service = serviceMap.get(item.serviceId);
       service.bookingCount += 1;
-      // Calculate provider's 95% share only for eligible bookings
+      // Calculate provider's share only for eligible bookings
       if (isEligible) {
-        const providerShare = Math.round(
-          ((item.totalPrice || 0) * providerSharePercentage) / 100,
-        );
-        service.totalRevenue += providerShare;
+        let providerShare = 0;
+
+        // Use providerEarning if available (backend-calculated based on subscription plan)
+        if (item.providerEarning !== null && item.providerEarning !== undefined) {
+          providerShare = Number(item.providerEarning) / 100; // Convert paise to rupees
+        }
+        // Fallback to providerSharePercentage for old bookings
+        else {
+          providerShare = Math.round(
+            ((item.totalPrice || 0) * providerSharePercentage) / 100,
+          );
+        }
+
+        // Subtract staff earning if assigned (staffEarning is in paise)
+        const staffEarningPaise = item.staffEarning || 0;
+        const staffEarningRupees = staffEarningPaise / 100;
+        const netRevenue = Math.max(0, providerShare - staffEarningRupees);
+        service.totalRevenue += netRevenue;
+        service.staffDeduction = (service.staffDeduction || 0) + staffEarningRupees;
       }
       if (item.status === "completed") {
         service.completedCount += 1;
@@ -625,7 +684,8 @@ const getServiceAnalytics = async (req, res) => {
     servicesList.sort((a, b) => b.bookingCount - a.bookingCount);
 
     const totalBookings = allBookings.length;
-    // Provider's 95% share of ELIGIBLE bookings (excluding cancelled/rejected/refunded)
+    // Provider's share of ELIGIBLE bookings (excluding cancelled/rejected/refunded)
+    // MINUS staff deductions
     const eligibleBookings = allBookings.filter(
       (item) =>
         item.status !== "cancelled" &&
@@ -633,7 +693,18 @@ const getServiceAnalytics = async (req, res) => {
         item.status !== "refunded",
     );
     const totalRevenue = eligibleBookings.reduce(
-      (sum, item) => sum + Math.round(((item.totalPrice || 0) * 95) / 100),
+      (sum, item) => {
+        let providerShare = 0;
+        // Use providerEarning if available
+        if (item.providerEarning !== null && item.providerEarning !== undefined) {
+          providerShare = Number(item.providerEarning) / 100;
+        } else {
+          providerShare = Math.round(((item.totalPrice || 0) * providerSharePercentage) / 100);
+        }
+        const staffEarningPaise = item.staffEarning || 0;
+        const staffEarningRupees = staffEarningPaise / 100;
+        return sum + Math.max(0, providerShare - staffEarningRupees);
+      },
       0,
     );
 
@@ -751,6 +822,10 @@ const getStatusAnalytics = async (req, res) => {
       .select({
         status: bookings.status,
         totalPrice: bookings.totalPrice,
+        providerEarning: bookings.providerEarning,
+        staffEarning: bookings.staffEarning,
+        assignedStaffId: bookings.assignedStaffId,
+        providerPayoutAmount: bookings.providerPayoutAmount,
       })
       .from(bookings)
       .where(
@@ -773,9 +848,11 @@ const getStatusAnalytics = async (req, res) => {
     // Group by status
     const statusMap = new Map();
 
-    // Platform fee percentage (default 5%)
-    const platformFeePercentage = 5;
-    const providerSharePercentage = 100 - platformFeePercentage; // 95%
+    // Get provider's subscription plan for correct platform fee percentage
+    let providerSharePercentage = 95; // Default fallback
+    if (subscription && subscription.planPlatformFeePercentage !== undefined) {
+      providerSharePercentage = 100 - subscription.planPlatformFeePercentage;
+    }
 
     allBookings.forEach((item) => {
       const status = item.status || "unknown";
@@ -784,17 +861,26 @@ const getStatusAnalytics = async (req, res) => {
       }
       const s = statusMap.get(status);
       s.count += 1;
-      // Calculate provider's 95% share only for eligible statuses
+      // Calculate provider's share only for eligible statuses
       // For cancelled/rejected/refunded, show revenue as 0 since it was refunded
+      // Subtract staff earning if staff is assigned
       if (
         status !== "cancelled" &&
         status !== "rejected" &&
         status !== "refunded"
       ) {
-        const providerShare = Math.round(
-          ((item.totalPrice || 0) * providerSharePercentage) / 100,
-        );
-        s.revenue += providerShare;
+        let providerShare = 0;
+        // Use providerEarning if available
+        if (item.providerEarning !== null && item.providerEarning !== undefined) {
+          providerShare = Number(item.providerEarning) / 100;
+        } else {
+          providerShare = Math.round(
+            ((item.totalPrice || 0) * providerSharePercentage) / 100,
+          );
+        }
+        const staffEarningPaise = item.staffEarning || 0;
+        const staffEarningRupees = staffEarningPaise / 100;
+        s.revenue += Math.max(0, providerShare - staffEarningRupees);
       }
     });
 
@@ -829,10 +915,25 @@ const getStatusAnalytics = async (req, res) => {
       period,
       totalBookings,
       statusBreakdown,
-      totalRevenue: allBookings.reduce(
-        (sum, item) => sum + Math.round(((item.totalPrice || 0) * 95) / 100),
-        0,
-      ),
+      totalRevenue: allBookings.reduce((sum, item) => {
+        if (
+          item.status !== "cancelled" &&
+          item.status !== "rejected" &&
+          item.status !== "refunded"
+        ) {
+          let providerShare = 0;
+          // Use providerEarning if available
+          if (item.providerEarning !== null && item.providerEarning !== undefined) {
+            providerShare = Number(item.providerEarning) / 100;
+          } else {
+            providerShare = Math.round(((item.totalPrice || 0) * providerSharePercentage) / 100);
+          }
+          const staffEarningPaise = item.staffEarning || 0;
+          const staffEarningRupees = staffEarningPaise / 100;
+          return sum + Math.max(0, providerShare - staffEarningRupees);
+        }
+        return sum;
+      }, 0),
     });
   } catch (error) {
     console.error("Error fetching status analytics:", error);

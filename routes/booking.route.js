@@ -25,12 +25,20 @@ const {
   resendCompletionOTP,
   uploadCompletionPhotos,
   getBookingHistory,
-} = require("../controllers/booking.controller");
+  // Staff assignment functions
+  assignBookingToStaff,
+  getAvailableStaffForBooking,
+  unassignBookingFromStaff,
+  getStaffAssignedBookings,
+  completeBookingWithPayout,
+} = require("../controllers/booking.controller.js");
 const authorizeRole = require("../middleware/roleBasedRoutes");
-const { CUSTOMER, PROVIDER, ADMIN } = require("../config/roles");
+const { CUSTOMER, PROVIDER, ADMIN, STAFF } = require("../config/roles");
 const validate = require("../middleware/validate");
 const { bookingSchema } = require("../helper/validation");
 
+// IMPORTANT: More specific routes must come before parameterized routes
+router.get("/booking/available-staff", authorizeRole(PROVIDER), getAvailableStaffForBooking);
 router.get("/booking/:id", getBookingById);
 router.get("/booking/:id/history", getBookingHistory);
 router.get("/bookings/customer", authorizeRole(CUSTOMER), getCustomerBookings);
@@ -80,15 +88,15 @@ router.put(
   providerReschedule,
 );
 
-// OTP-based completion verification (provider only)
+// OTP-based completion verification (provider and assigned staff)
 router.post(
   "/booking/:id/complete-initiate",
-  authorizeRole(PROVIDER),
+  authorizeRole(PROVIDER, STAFF),
   initiateCompletion,
 );
 router.post(
   "/booking/:id/complete-verify",
-  authorizeRole(PROVIDER),
+  authorizeRole(PROVIDER, STAFF),
   verifyCompletionOTP,
 );
 router.post(
@@ -100,6 +108,32 @@ router.post(
   "/booking/:id/completion-photos",
   authorizeRole(PROVIDER),
   uploadCompletionPhotos,
+);
+
+// Staff assignment routes (Provider only)
+router.post(
+  "/booking/:id/assign-staff",
+  authorizeRole(PROVIDER),
+  assignBookingToStaff,
+);
+router.post(
+  "/booking/:id/unassign-staff",
+  authorizeRole(PROVIDER),
+  unassignBookingFromStaff,
+);
+
+// Staff assigned bookings (Staff only)
+router.get(
+  "/bookings/staff/my-bookings",
+  authorizeRole(STAFF),
+  getStaffAssignedBookings,
+);
+
+// Staff completion with payout (Staff or Provider)
+router.post(
+  "/booking/:id/complete-with-payout",
+  authorizeRole(PROVIDER), // For now, provider can also complete
+  completeBookingWithPayout,
 );
 
 module.exports = router;

@@ -988,9 +988,10 @@ const fetchRazorpaySubscription = async (subscriptionId) => {
  * Razorpay handles proration automatically based on daily usage
  * @param {string} subscriptionId - Current Razorpay subscription ID
  * @param {string} newPlanId - New Razorpay plan ID to upgrade to
+ * @param {boolean} immediate - Whether to execute the change immediately (default: true)
  * @returns {Promise<object>} Updated subscription details
  */
-const upgradeRazorpaySubscription = async (subscriptionId, newPlanId) => {
+const upgradeRazorpaySubscription = async (subscriptionId, newPlanId, immediate = true) => {
   try {
     // Check if Razorpay is configured
     if (
@@ -1007,157 +1008,79 @@ const upgradeRazorpaySubscription = async (subscriptionId, newPlanId) => {
       };
     }
 
-    // Use Razorpay's subscription edit API to change the plan
-    // Razorpay automatically handles proration based on remaining days in the cycle
-    const updatedSubscription = await razorpay.subscriptions.edit(
-      subscriptionId,
-      {
-        plan_id: newPlanId,
-        // Razorpay calculates prorated amount automatically
-        // No need to manually calculate proration
-      },
-    );
+    // Build the payload for subscription edit
+    const payload = {
+      plan_id: newPlanId,
+      // Razorpay calculates prorated amount automatically
+      // No need to manually calculate proration
+    };
 
-    return updatedSubscription;
+    // change_at: "now" executes the change immediately and charges prorated amount instantly
+    // This is the parameter that triggers immediate charging
+    if (immediate) {
+      payload.change_at = "now";
+    }
+
+    // Try using the edit method if available
+    if (typeof razorpay.subscriptions.edit === "function") {
+      console.log("✅ Using razorpay.subscriptions.edit()");
+      const updatedSubscription = await razorpay.subscriptions.edit(
+        subscriptionId,
+        payload,
+      );
+      return updatedSubscription;
+    }
+
+    // Fallback: Use REST API directly via http request
+    console.log("⚠️ edit() not available, using REST API directly");
+
+    const https = require("https");
+    const auth = Buffer.from(
+      `${process.env.RAZORPAY_KEY_ID}:${process.env.RAZORPAY_KEY_SECRET}`
+    ).toString("base64");
+
+    const options = {
+      hostname: "api.razorpay.com",
+      path: `/v1/subscriptions/${subscriptionId}`,
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Basic ${auth}`,
+      },
+    };
+
+    return new Promise((resolve, reject) => {
+      const req = https.request(options, (res) => {
+        let data = "";
+
+        res.on("data", (chunk) => {
+          data += chunk;
+        });
+
+        res.on("end", () => {
+          try {
+            if (res.statusCode === 200 || res.statusCode === 201) {
+              resolve(JSON.parse(data));
+            } else {
+              reject(new Error(`Razorpay API returned ${res.statusCode}: ${data}`));
+            }
+          } catch (e) {
+            reject(e);
+          }
+        });
+      });
+
+      req.on("error", reject);
+
+      req.write(JSON.stringify(payload));
+      req.end();
+    });
   } catch (error) {
     console.error("Error upgrading Razorpay subscription:", error);
     throw new Error(`Failed to upgrade subscription: ${error.message}`);
   }
 };
 
-// ============================================
-// PAYMENT LINK FUNCTIONS
-// ============================================
-
-/**
- * Create a Razorpay payment link for subscriptions
- * Payment links always have working checkout pages (unlike subscription short_urls)
- * @param {number} amount - Amount in paise
- * @param {object} options - Additional options
- * @param {string} options.description - Payment description
- * @param {string} options.customer_id - Razorpay customer ID
- * @param {object} options.notes - Additional notes
- * @param {number} options.expire_by - Unix timestamp for link expiration
- * @param {string} options.callback_url - URL to redirect after payment
- * @param {string} options.callback_method - HTTP method for callback (get only)
- * @returns {Promise<object>} Payment link details with short_url
- */
-const createPaymentLink = async (amount, options = {}) => {
-  const {
-    description = "Subscription Payment",
-    customer_id,
-    notes = {},
-    expire_by,
-    callback_url,
-    callback_method = "redirect",
-  } = options;
-
-  try {
-    if (
-      !razorpay ||
-      !process.env.RAZORPAY_KEY_ID ||
-      !process.env.RAZORPAY_KEY_SECRET
-    ) {
-      console.warn("⚠️ Razorpay not configured, returning mock payment link");
-      return {
-        id: `mock_plink_${Date.now()}`,
-        short_url: "http://localhost:3000/provider/subscription?success=mock",
-        amount: amount,
-        currency: "INR",
-        status: "created",
-      };
-    }
-
-    const payload = {
-      amount: amount,
-      currency: "INR",
-      accept_partial: false,
-      description: description,
-      expire_by: expire_by || Math.floor(Date.now() / 1000) + 1800, // Default 30 min
-      customer_id: customer_id,
-      notes: notes,
-      reference_id: notes.subscription_id || `sub_${Date.now()}`,
-      notify: {
-        email: true,
-        sms: true,
-      },
-      reminder_enable: true,
-    };
-
-    // Add callback URL if provided (redirects user after payment)
-    if (callback_url) {
-      payload.callback_url = callback_url;
-      payload.callback_method = callback_method;
-    }
-
-    console.log(
-      "📝 Creating Razorpay payment link with payload:",
-      JSON.stringify(payload, null, 2),
-    );
-    const paymentLink = await razorpay.paymentLink.create(payload);
-
-    console.log("✅ Razorpay payment link created:", {
-      id: paymentLink.id,
-      short_url: paymentLink.short_url,
-      amount: paymentLink.amount,
-      currency: paymentLink.currency,
-    });
-
-    return paymentLink;
-  } catch (error) {
-    console.error("Error creating Razorpay payment link:", error);
-    if (
-      error.message?.includes("key_id") ||
-      error.message?.includes("credentials")
-    ) {
-      console.warn("⚠️ Razorpay credentials not configured, using mock data");
-      return {
-        id: `mock_plink_${Date.now()}`,
-        short_url: "http://localhost:3000/provider/subscription?success=mock",
-        amount: amount,
-        currency: "INR",
-        status: "created",
-      };
-    }
-    throw new Error(`Failed to create payment link: ${error.message}`);
-  }
-};
-
-/**
- * Fetch payment link details
- * @param {string} paymentLinkId - Razorpay payment link ID
- * @returns {Promise<object>} Payment link details
- */
-const fetchPaymentLink = async (paymentLinkId) => {
-  try {
-    if (paymentLinkId.startsWith("mock_plink_")) {
-      return {
-        id: paymentLinkId,
-        status: "paid",
-        amount: 0,
-        currency: "INR",
-      };
-    }
-
-    if (
-      !razorpay ||
-      !process.env.RAZORPAY_KEY_ID ||
-      !process.env.RAZORPAY_KEY_SECRET
-    ) {
-      console.warn("⚠️ Razorpay not configured");
-      return {
-        id: paymentLinkId,
-        status: "created",
-      };
-    }
-
-    const paymentLink = await razorpay.paymentLink.fetch(paymentLinkId);
-    return paymentLink;
-  } catch (error) {
-    console.error("Error fetching payment link:", error);
-    throw new Error(`Failed to fetch payment link: ${error.message}`);
-  }
-};
 /**
  * Create a Subscription Link for Razorpay Subscriptions API
  * This generates a link that takes customers to a hosted Razorpay page
@@ -1317,12 +1240,9 @@ module.exports = {
   createRazorpayCustomer,
   createRazorpaySubscriptionPlan,
   createRazorpaySubscription,
+  createSubscriptionLink,
   cancelRazorpaySubscription,
   fetchRazorpaySubscription,
   fetchRazorpayCustomerByEmail,
   upgradeRazorpaySubscription,
-  // Payment link functions
-  createPaymentLink,
-  fetchPaymentLink,
-  createSubscriptionLink,
 };

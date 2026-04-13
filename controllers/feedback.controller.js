@@ -19,6 +19,7 @@ const {
   inArray,
 } = require("drizzle-orm");
 const { initiateRefund, paiseToRupees } = require("../utils/razorpay");
+const { sanitizeString } = require("../helper/sanitize");
 
 // Get feedback by business ID (customer facing - only visible reviews)
 const getFeedbackByBusiness = async (req, res) => {
@@ -173,6 +174,11 @@ const addFeedback = async (req, res) => {
         .json({ message: "Feedback already exists for this booking" });
     }
 
+    // Sanitize comments to prevent XSS
+    const sanitizedComments = comments
+      ? sanitizeString(comments, { maxLength: 500 })
+      : null;
+
     const [newFeedback] = await db
       .insert(feedback)
       .values({
@@ -180,7 +186,7 @@ const addFeedback = async (req, res) => {
         serviceId: booking[0].serviceId,
         customerId: booking[0].customerId,
         rating,
-        comments,
+        comments: sanitizedComments,
       })
       .returning();
 
@@ -355,11 +361,17 @@ const addProviderReply = async (req, res) => {
         .json({ message: "Only the provider can reply to reviews" });
     }
 
+    // Sanitize reply to prevent XSS
+    const sanitizedReply = sanitizeString(reply, {
+      maxLength: 1000,
+      trim: true,
+    });
+
     // Update with reply
     const updatedRecords = await db
       .update(feedback)
       .set({
-        providerReply: reply.trim(),
+        providerReply: sanitizedReply,
         repliedAt: new Date(),
       })
       .where(eq(feedback.id, feedbackId))

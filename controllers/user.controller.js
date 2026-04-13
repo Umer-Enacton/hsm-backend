@@ -2,6 +2,12 @@ const db = require("../config/db");
 const { users } = require("../models/schema");
 const { eq, desc } = require("drizzle-orm");
 const bcrypt = require("bcryptjs");
+const {
+  sanitizeName,
+  sanitizeEmail,
+  sanitizePhone,
+  sanitizeString,
+} = require("../helper/sanitize");
 
 // Get all users (ADMIN ONLY)
 const getAllUsers = async (req, res) => {
@@ -62,11 +68,20 @@ const updateUserProfile = async (req, res) => {
     const { name, email, phone, avatar } = req.body;
 
     // Build update object dynamically based on provided fields
+    // Sanitize all string inputs to prevent XSS
     const updateData = {};
-    if (name !== undefined) updateData.name = name;
-    if (email !== undefined) updateData.email = email;
-    if (phone !== undefined) updateData.phone = phone;
-    if (avatar !== undefined) updateData.avatar = avatar;
+    if (name !== undefined) updateData.name = sanitizeName(name);
+    if (email !== undefined) updateData.email = sanitizeEmail(email);
+    if (phone !== undefined) updateData.phone = sanitizePhone(phone);
+    if (avatar !== undefined) {
+      // Validate URL format for avatar
+      try {
+        new URL(avatar);
+        updateData.avatar = avatar;
+      } catch {
+        // Invalid URL, skip avatar update
+      }
+    }
 
     const [updatedUser] = await db
       .update(users)

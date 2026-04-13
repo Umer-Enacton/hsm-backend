@@ -3,6 +3,8 @@ const router = express.Router();
 const {
   getPlatformSettings,
   updatePlatformSettings,
+  getCancellationPolicySettings,
+  updateCancellationPolicySettings,
   getRevenueStats,
   getDashboardStats,
   getPayouts,
@@ -68,6 +70,20 @@ router.get("/settings", getPlatformSettings);
  * @access  Private (Admin only)
  */
 router.put("/settings", updatePlatformSettings);
+
+/**
+ * @route   GET /admin/settings/cancellation-policy
+ * @desc    Get cancellation policy settings
+ * @access  Private (Admin only)
+ */
+router.get("/settings/cancellation-policy", getCancellationPolicySettings);
+
+/**
+ * @route   PUT /admin/settings/cancellation-policy
+ * @desc    Update cancellation policy settings
+ * @access  Private (Admin only)
+ */
+router.put("/settings/cancellation-policy", updateCancellationPolicySettings);
 
 /**
  * @route   GET /admin/revenue

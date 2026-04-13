@@ -1,5 +1,5 @@
 const db = require('../config/db');
-const { notifications, users, bookings, services, businessProfiles } = require('../models/schema');
+const { notifications, users, bookings, services, businessProfiles, slots } = require('../models/schema');
 const { eq, and, desc, sql } = require('drizzle-orm');
 const { sendPushNotification } = require('../services/fcm.service');
 
@@ -54,6 +54,7 @@ async function createNotification({
 
 /**
  * Helper to get booking details for notifications
+ * Includes slot information for accurate time display
  */
 async function getBookingDetails(bookingId) {
   const [booking] = await db.select()
@@ -70,7 +71,11 @@ async function getBookingDetails(bookingId) {
     .from(businessProfiles)
     .where(eq(businessProfiles.id, booking.businessProfileId));
 
-  return { booking, service, business };
+  const [slot] = await db.select()
+    .from(slots)
+    .where(eq(slots.id, booking.slotId));
+
+  return { booking, service, business, slot };
 }
 
 /**
@@ -267,23 +272,38 @@ const notificationTemplates = {
 
   /**
    * Upcoming service reminder - Notify customer
+   * Uses slot time for accurate scheduling
    */
   async upcomingService(bookingId) {
     const details = await getBookingDetails(bookingId);
     if (!details) return null;
 
-    const { booking, service } = details;
+    const { booking, service, slot } = details;
 
-    // Format booking date
+    // Combine booking date with slot time for accurate datetime
     const bookingDate = new Date(booking.bookingDate);
-    const dateStr = bookingDate.toLocaleDateString('en-US', {
+    const [hours, minutes, seconds] = slot.startTime.split(':').map(Number);
+
+    // Create a date in the local timezone by combining date and time
+    const bookingDateTime = new Date(
+      bookingDate.getFullYear(),
+      bookingDate.getMonth(),
+      bookingDate.getDate(),
+      hours,
+      minutes,
+      seconds || 0
+    );
+
+    const dateStr = bookingDateTime.toLocaleDateString('en-US', {
       weekday: 'long',
       month: 'short',
       day: 'numeric',
+      timeZone: 'Asia/Kolkata', // IST timezone
     });
-    const timeStr = bookingDate.toLocaleTimeString('en-US', {
+    const timeStr = bookingDateTime.toLocaleTimeString('en-US', {
       hour: 'numeric',
       minute: '2-digit',
+      timeZone: 'Asia/Kolkata',
     });
 
     return createNotification({
@@ -296,17 +316,78 @@ const notificationTemplates = {
   },
 
   /**
+   * Upcoming service reminder - Notify provider
+   * Uses slot time for accurate scheduling
+   */
+  async providerUpcomingService(bookingId) {
+    const details = await getBookingDetails(bookingId);
+    if (!details) return null;
+
+    const { booking, service, slot, business } = details;
+
+    // Combine booking date with slot time for accurate datetime
+    const bookingDate = new Date(booking.bookingDate);
+    const [hours, minutes, seconds] = slot.startTime.split(':').map(Number);
+
+    // Create a date in the local timezone by combining date and time
+    const bookingDateTime = new Date(
+      bookingDate.getFullYear(),
+      bookingDate.getMonth(),
+      bookingDate.getDate(),
+      hours,
+      minutes,
+      seconds || 0
+    );
+
+    const dateStr = bookingDateTime.toLocaleDateString('en-US', {
+      weekday: 'long',
+      month: 'short',
+      day: 'numeric',
+      timeZone: 'Asia/Kolkata',
+    });
+    const timeStr = bookingDateTime.toLocaleTimeString('en-US', {
+      hour: 'numeric',
+      minute: '2-digit',
+      timeZone: 'Asia/Kolkata',
+    });
+
+    return createNotification({
+      userId: business.providerId,
+      type: 'reminder_upcoming_provider',
+      title: 'Upcoming Service',
+      message: `Reminder: You have a ${service.name} scheduled for ${dateStr} at ${timeStr}`,
+      data: { bookingId: bookingId.toString(), actionUrl: `/provider/bookings` },
+    });
+  },
+
+  /**
    * Day-of service reminder - Notify customer
+   * Uses slot time for accurate time display
    */
   async dayOfReminderCustomer(bookingId) {
     const details = await getBookingDetails(bookingId);
     if (!details) return null;
 
-    const { booking, service } = details;
+    const { booking, service, slot } = details;
+
+    // Combine booking date with slot time for accurate datetime
     const bookingDate = new Date(booking.bookingDate);
-    const timeStr = bookingDate.toLocaleTimeString('en-US', {
+    const [hours, minutes, seconds] = slot.startTime.split(':').map(Number);
+
+    // Create a date in the local timezone by combining date and time
+    const bookingDateTime = new Date(
+      bookingDate.getFullYear(),
+      bookingDate.getMonth(),
+      bookingDate.getDate(),
+      hours,
+      minutes,
+      seconds || 0
+    );
+
+    const timeStr = bookingDateTime.toLocaleTimeString('en-US', {
       hour: 'numeric',
       minute: '2-digit',
+      timeZone: 'Asia/Kolkata',
     });
 
     return createNotification({
@@ -320,25 +401,39 @@ const notificationTemplates = {
 
   /**
    * Day-of service reminder - Notify provider
+   * Uses slot time for accurate time display
    */
   async dayOfReminderProvider(bookingId) {
     const details = await getBookingDetails(bookingId);
     if (!details) return null;
 
-    const { business, service } = details;
-    // For Provider, we also extract the time from slots. Wait, slot details are not fetched in getBookingDetails by default (it fetches booking, service, business profiles).
-    // Let's rely on bookingDate just in case. Note: getBookingDetails doesn't join slots, but bookingDate might have the time component.
-    const bookingDate = new Date(details.booking.bookingDate);
-    const timeStr = bookingDate.toLocaleTimeString('en-US', {
+    const { business, service, slot } = details;
+
+    // Combine booking date with slot time for accurate datetime
+    const bookingDate = new Date(booking.bookingDate);
+    const [hours, minutes, seconds] = slot.startTime.split(':').map(Number);
+
+    // Create a date in the local timezone by combining date and time
+    const bookingDateTime = new Date(
+      bookingDate.getFullYear(),
+      bookingDate.getMonth(),
+      bookingDate.getDate(),
+      hours,
+      minutes,
+      seconds || 0
+    );
+
+    const timeStr = bookingDateTime.toLocaleTimeString('en-US', {
       hour: 'numeric',
       minute: '2-digit',
+      timeZone: 'Asia/Kolkata',
     });
 
     return createNotification({
       userId: business.providerId,
-      type: 'reminder_day_of',
-      title: 'Upcoming Service Today',
-      message: `Reminder: You have a booking today for ${service.name} at ${timeStr}`,
+      type: 'reminder_day_of_provider',
+      title: 'Service Today',
+      message: `Reminder: You have a ${service.name} scheduled for today at ${timeStr}`,
       data: { bookingId: bookingId.toString(), actionUrl: `/provider/bookings` },
     });
   },
@@ -528,6 +623,22 @@ const notificationTemplates = {
   },
 
   /**
+   * Trial ended (via cron) - Notify provider
+   * Called when cron job marks trial as expired
+   */
+  async trialEnded(providerId) {
+    return createNotification({
+      userId: providerId,
+      type: 'trial_ended',
+      title: 'Your Free Trial Has Ended',
+      message: 'Your 7-day free trial has ended. You\'ve been downgraded to the Free plan. Upgrade anytime to regain access to premium features.',
+      data: {
+        actionUrl: `/provider/subscription`,
+      },
+    });
+  },
+
+  /**
    * Plan upgraded - Notify provider
    */
   async planUpgraded(providerId, newPlanName) {
@@ -539,6 +650,133 @@ const notificationTemplates = {
       data: {
         newPlanName,
         actionUrl: `/provider/subscription`,
+      },
+    });
+  },
+
+  /**
+   * Notify provider that no staff is available for auto-assign
+   */
+  async noStaffAvailableForBooking(providerId, details) {
+    const { bookingId, serviceName, bookingDate, slotTime, reason } = details;
+
+    return createNotification({
+      userId: providerId,
+      type: "no_staff_available",
+      title: "Staff Assignment Required",
+      message: `Booking #${bookingId} for ${serviceName} on ${new Date(bookingDate).toLocaleDateString()} at ${slotTime} could not be auto-assigned: ${reason}. Please assign manually.`,
+      data: {
+        bookingId,
+        reason,
+        actionUrl: `/provider/bookings?booking=${bookingId}`,
+      },
+    });
+  },
+
+  /**
+   * Notify staff about new booking assignment
+   */
+  async staffBookingAssigned(staffUserId, details) {
+    const { bookingId, serviceName, bookingDate, slotTime, earningType, commissionPercent, fixedAmount } = details;
+
+    let earningInfo = "";
+    if (earningType === "commission") {
+      earningInfo = `Earning: ${commissionPercent}% commission`;
+    } else if (earningType === "fixed") {
+      earningInfo = `Earning: ₹${(fixedAmount / 100).toFixed(2)} fixed`;
+    }
+
+    return createNotification({
+      userId: staffUserId,
+      type: "booking_assigned",
+      title: "New Booking Assigned",
+      message: `You have been assigned a new booking: ${serviceName} on ${new Date(bookingDate).toLocaleDateString()} at ${slotTime}. ${earningInfo}`,
+      data: {
+        bookingId,
+        actionUrl: "/staff/bookings",
+      },
+    });
+  },
+
+  /**
+   * Notify provider when staff requests leave
+   */
+  async staffLeaveRequested(providerId, details) {
+    const { staffName, leaveType, startDate, endDate, reason, leaveId } = details;
+
+    return createNotification({
+      userId: providerId,
+      type: "staff_leave_request",
+      title: "Staff Leave Request",
+      message: `${staffName} has requested ${leaveType} leave from ${new Date(startDate).toLocaleDateString()} to ${new Date(endDate).toLocaleDateString()}. Reason: ${reason || "No reason provided"}`,
+      data: {
+        leaveId,
+        actionUrl: "/provider/staff/leave",
+      },
+    });
+  },
+
+  /**
+   * Notify staff when leave is approved
+   */
+  async staffLeaveApproved(staffUserId, details) {
+    const { startDate, endDate } = details;
+
+    return createNotification({
+      userId: staffUserId,
+      type: "leave_approved",
+      title: "Leave Approved",
+      message: `Your leave request from ${new Date(startDate).toLocaleDateString()} to ${new Date(endDate).toLocaleDateString()} has been approved.`,
+      data: {},
+    });
+  },
+
+  /**
+   * Notify staff when leave is rejected
+   */
+  async staffLeaveRejected(staffUserId, details) {
+    const { rejectionReason } = details;
+
+    return createNotification({
+      userId: staffUserId,
+      type: "leave_rejected",
+      title: "Leave Request Rejected",
+      message: `Your leave request has been rejected. Reason: ${rejectionReason || "No reason provided"}`,
+      data: {},
+    });
+  },
+
+  /**
+   * Notify staff about upcoming booking reminder (day before)
+   */
+  async staffBookingReminder(staffUserId, details) {
+    const { serviceName, bookingDate, slotTime, address, customerName } = details;
+
+    return createNotification({
+      userId: staffUserId,
+      type: "staff_booking_reminder",
+      title: "Upcoming Booking Tomorrow",
+      message: `Reminder: You have a booking for ${serviceName} tomorrow at ${slotTime}. Customer: ${customerName}. Address: ${address}`,
+      data: {
+        actionUrl: "/staff/bookings",
+      },
+    });
+  },
+
+  /**
+   * Notify staff about payout received
+   */
+  async staffPayoutReceived(staffUserId, details) {
+    const { amount, payoutId, bookingCount } = details;
+
+    return createNotification({
+      userId: staffUserId,
+      type: "payout_received",
+      title: "Payout Received",
+      message: `You have received a payout of ₹${(amount / 100).toFixed(2)} for ${bookingCount} booking(s). Ref: ${payoutId}`,
+      data: {
+        amount,
+        payoutId,
       },
     });
   },

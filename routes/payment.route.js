@@ -65,14 +65,6 @@ router.get("/:id", paymentController.getPaymentById);
 router.post("/refund/:id", paymentController.processRefund);
 
 /**
- * POST /payment/webhook
- * Handle Razorpay webhook events
- * Public: Razorpay sends webhooks without auth
- * Note: Signature verification is done in controller
- */
-router.post("/webhook", paymentController.handleWebhook);
-
-/**
  * GET /payment/slot-lock-status
  * DEBUG: Check if a slot is currently locked
  * Protected: All authenticated users
