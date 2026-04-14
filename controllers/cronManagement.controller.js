@@ -902,6 +902,272 @@ async function executeJobFunction(jobName, logId) {
         };
         break;
       }
+      case "check_missed_bookings": {
+        // Mark confirmed bookings as "missed" if 2+ hours have passed since scheduled time
+        const TWO_HOURS_AGO = sql`NOW() - INTERVAL '2 hours'`;
+        const bookingDateTime = sql`CAST(${bookings.bookingDate} AS date) + ${slots.startTime}`;
+
+        const overdueBookings = await db
+          .select({
+            bookingId: bookings.id,
+            customerId: bookings.customerId,
+            businessProfileId: bookings.businessProfileId,
+            providerId: businessProfiles.providerId,
+            serviceName: services.name,
+            bookingDate: bookings.bookingDate,
+            slotStartTime: slots.startTime,
+          })
+          .from(bookings)
+          .innerJoin(slots, eq(bookings.slotId, slots.id))
+          .innerJoin(
+            businessProfiles,
+            eq(bookings.businessProfileId, businessProfiles.id),
+          )
+          .innerJoin(services, eq(bookings.serviceId, services.id))
+          .where(
+            and(
+              eq(bookings.status, "confirmed"),
+              sql`${bookingDateTime} < ${TWO_HOURS_AGO}`,
+            ),
+          );
+
+        const results = {
+          processed: overdueBookings.length,
+          markedMissed: 0,
+          notified: [],
+          errors: [],
+          dataCount: 0,
+        };
+
+        for (const booking of overdueBookings) {
+          try {
+            await db
+              .update(bookings)
+              .set({
+                status: "missed",
+                missedAt: new Date(),
+              })
+              .where(eq(bookings.id, booking.bookingId));
+
+            results.markedMissed++;
+
+            // Notify customer (delayed — booking was missed)
+            try {
+              await notificationTemplates.sendNotification(booking.customerId, {
+                type: "booking_missed",
+                title: "Booking Missed",
+                message: `Your booking for ${booking.serviceName} was missed. Please contact the provider or rebook.`,
+                data: JSON.stringify({
+                  bookingId: booking.bookingId,
+                  actionUrl: `/customer/bookings`,
+                }),
+              });
+            } catch (notifErr) {
+              console.error(
+                "Failed to notify customer about missed booking:",
+                notifErr,
+              );
+            }
+
+            // Notify provider
+            try {
+              await notificationTemplates.sendNotification(booking.providerId, {
+                type: "booking_missed",
+                title: "Booking Marked as Missed",
+                message: `Booking #${booking.bookingId} for ${booking.serviceName} on ${new Date(booking.bookingDate).toLocaleDateString()} at ${booking.slotStartTime} was marked as missed.`,
+                data: JSON.stringify({
+                  bookingId: booking.bookingId,
+                  actionUrl: `/provider/bookings`,
+                }),
+              });
+            } catch (notifErr) {
+              console.error(
+                "Failed to notify provider about missed booking:",
+                notifErr,
+              );
+            }
+
+            results.notified.push({
+              bookingId: booking.bookingId,
+              serviceName: booking.serviceName,
+              customer: { id: booking.customerId, role: "customer" },
+              provider: { id: booking.providerId, role: "provider" },
+              staffAssigned: false,
+            });
+          } catch (error) {
+            console.error(
+              `Error marking booking ${booking.bookingId} as missed:`,
+              error,
+            );
+            results.errors.push({
+              bookingId: booking.bookingId,
+              error: error.message,
+            });
+          }
+        }
+
+        response = {
+          success: true,
+          message: "Missed bookings check completed",
+          ...results,
+        };
+        break;
+      }
+      case "auto_cancel_missed_bookings": {
+        // Cancel bookings that have been in "missed" status for 2+ days and refund customer
+        const TWO_DAYS_AGO = sql`NOW() - INTERVAL '2 days'`;
+
+        const { initiateRefund } = require("../utils/razorpay");
+        const { payments } = require("../models/schema");
+
+        const missedBookings = await db
+          .select({
+            bookingId: bookings.id,
+            customerId: bookings.customerId,
+            businessProfileId: bookings.businessProfileId,
+            providerId: businessProfiles.providerId,
+            serviceName: services.name,
+            bookingDate: bookings.bookingDate,
+            missedAt: bookings.missedAt,
+          })
+          .from(bookings)
+          .innerJoin(
+            businessProfiles,
+            eq(bookings.businessProfileId, businessProfiles.id),
+          )
+          .innerJoin(services, eq(bookings.serviceId, services.id))
+          .where(
+            and(
+              eq(bookings.status, "missed"),
+              sql`${bookings.missedAt} < ${TWO_DAYS_AGO}`,
+            ),
+          );
+
+        const results = {
+          processed: missedBookings.length,
+          cancelled: 0,
+          refunded: 0,
+          notified: [],
+          errors: [],
+        };
+
+        for (const booking of missedBookings) {
+          try {
+            // Find the paid payment for this booking
+            const [payment] = await db
+              .select()
+              .from(payments)
+              .where(
+                and(
+                  eq(payments.bookingId, booking.bookingId),
+                  eq(payments.status, "paid"),
+                ),
+              )
+              .limit(1);
+
+            // Cancel the booking
+            await db
+              .update(bookings)
+              .set({
+                status: "cancelled",
+                isRefunded: payment ? true : false,
+                refundAmount: payment ? payment.amount : null,
+              })
+              .where(eq(bookings.id, booking.bookingId));
+
+            results.cancelled++;
+
+            // Process full refund if payment exists
+            if (payment && payment.razorpayPaymentId) {
+              try {
+                const refund = await initiateRefund(
+                  payment.razorpayPaymentId,
+                  payment.amount,
+                  `Auto-cancelled missed booking #${booking.bookingId} - full refund`,
+                );
+
+                await db
+                  .update(payments)
+                  .set({
+                    status: "refunded",
+                    refundId: refund.id,
+                    refundAmount: payment.amount,
+                    refundReason:
+                      "Auto-cancelled after 2 days in missed status",
+                    refundedAt: new Date(),
+                  })
+                  .where(eq(payments.id, payment.id));
+
+                results.refunded++;
+              } catch (refundErr) {
+                console.error(
+                  `Failed to process refund for booking ${booking.bookingId}:`,
+                  refundErr,
+                );
+              }
+            }
+
+            // Notify customer
+            try {
+              await notificationTemplates.sendNotification(booking.customerId, {
+                type: "booking_cancelled",
+                title: "Booking Auto-Cancelled & Refunded",
+                message: `Your missed booking for ${booking.serviceName} has been automatically cancelled and a full refund has been initiated.`,
+                data: JSON.stringify({
+                  bookingId: booking.bookingId,
+                  actionUrl: `/customer/bookings`,
+                }),
+              });
+            } catch (notifErr) {
+              console.error(
+                "Failed to notify customer about auto-cancel:",
+                notifErr,
+              );
+            }
+
+            // Notify provider
+            try {
+              await notificationTemplates.sendNotification(booking.providerId, {
+                type: "booking_cancelled",
+                title: "Missed Booking Auto-Cancelled",
+                message: `Booking #${booking.bookingId} for ${booking.serviceName} has been automatically cancelled after 2 days in missed status.`,
+                data: JSON.stringify({
+                  bookingId: booking.bookingId,
+                  actionUrl: `/provider/bookings`,
+                }),
+              });
+            } catch (notifErr) {
+              console.error(
+                "Failed to notify provider about auto-cancel:",
+                notifErr,
+              );
+            }
+
+            results.notified.push({
+              bookingId: booking.bookingId,
+              serviceName: booking.serviceName,
+              customer: { id: booking.customerId, role: "customer" },
+              provider: { id: booking.providerId, role: "provider" },
+            });
+          } catch (error) {
+            console.error(
+              `Error auto-cancelling missed booking ${booking.bookingId}:`,
+              error,
+            );
+            results.errors.push({
+              bookingId: booking.bookingId,
+              error: error.message,
+            });
+          }
+        }
+
+        response = {
+          success: true,
+          message: "Auto-cancel missed bookings completed",
+          ...results,
+        };
+        break;
+      }
       default:
         throw new Error(`Unknown job function: ${jobName}`);
     }
