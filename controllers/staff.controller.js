@@ -6,6 +6,7 @@ const {
   businessProfiles,
   bookings,
   staffPayouts,
+  paymentDetails,
 } = require("../models/schema");
 const {
   eq,
@@ -724,6 +725,135 @@ const getAvailableStaff = async (req, res) => {
   }
 };
 
+// ============================================
+// STAFF PAYMENT DETAILS CONTROLLERS
+// ============================================
+
+/**
+ * Get staff payment details
+ * GET /api/staff/payment-details
+ */
+const getStaffPaymentDetails = async (req, res) => {
+  try {
+    const userId = req.token.id;
+
+    // Get staff record for this user
+    const [staffMember] = await db
+      .select()
+      .from(staff)
+      .where(eq(staff.userId, userId));
+
+    if (!staffMember) {
+      return res.status(404).json({ message: "Staff record not found" });
+    }
+
+    // Get payment details for this staff
+    const details = await db
+      .select()
+      .from(paymentDetails)
+      .where(eq(paymentDetails.userId, userId));
+
+    // Map to expected format for frontend
+    const formattedDetails = details.map((detail) => ({
+      id: detail.id,
+      paymentType: detail.paymentType,
+      upiId: detail.upiId,
+      bankAccount: detail.bankAccount,
+      ifscCode: detail.ifscCode,
+      accountHolderName: detail.accountHolderName,
+      isActive: detail.isActive,
+      createdAt: detail.createdAt,
+    }));
+
+    res.json({
+      message: "Payment details retrieved successfully",
+      data: formattedDetails,
+    });
+  } catch (error) {
+    console.error("Error fetching staff payment details:", error);
+    res.status(500).json({ message: "Server error", error: error.message });
+  }
+};
+
+/**
+ * Save/update staff payment details
+ * POST /api/staff/payment-details
+ */
+const saveStaffPaymentDetails = async (req, res) => {
+  try {
+    const { paymentType, upiId, bankAccountNumber, bankIfsc, bankAccountHolder } =
+      req.body;
+    const userId = req.token.id;
+
+    // Get staff record for this user
+    const [staffMember] = await db
+      .select()
+      .from(staff)
+      .where(eq(staff.userId, userId));
+
+    if (!staffMember) {
+      return res.status(404).json({ message: "Staff record not found" });
+    }
+
+    // Validate based on payment type
+    if (paymentType === "upi" && !upiId) {
+      return res
+        .status(400)
+        .json({ message: "UPI ID is required for UPI type" });
+    }
+    if (
+      paymentType === "bank" &&
+      (!bankAccountNumber || !bankIfsc || !bankAccountHolder)
+    ) {
+      return res
+        .status(400)
+        .json({
+          message:
+            "Bank account, IFSC code, and account holder name are required for bank type",
+        });
+    }
+
+    // Deactivate all existing payment details for this user
+    await db
+      .update(paymentDetails)
+      .set({ isActive: false })
+      .where(eq(paymentDetails.userId, userId));
+
+    // Save new payment details
+    const [saved] = await db
+      .insert(paymentDetails)
+      .values({
+        userId,
+        paymentType,
+        upiId: paymentType === "upi" ? upiId : null,
+        bankAccount: paymentType === "bank" ? bankAccountNumber : null,
+        ifscCode: paymentType === "bank" ? bankIfsc : null,
+        accountHolderName: paymentType === "bank" ? bankAccountHolder : null,
+        isActive: true,
+      })
+      .returning();
+
+    res.status(201).json({
+      message: "Payment details saved successfully",
+      data: {
+        id: saved.id,
+        paymentType: saved.paymentType,
+        upiId: saved.upiId,
+        bankAccount: saved.bankAccount,
+        ifscCode: saved.ifscCode,
+        accountHolderName: saved.accountHolderName,
+        isActive: saved.isActive,
+      },
+    });
+  } catch (error) {
+    console.error("Error saving staff payment details:", error);
+    res.status(500).json({
+      message: "Server error",
+      error: error.message,
+    });
+  }
+};
+
 module.exports = {
   addStaff,
   getProviderStaff,
@@ -733,4 +863,6 @@ module.exports = {
   updateStaffStatus,
   deleteStaff,
   getAvailableStaff,
+  getStaffPaymentDetails,
+  saveStaffPaymentDetails,
 };

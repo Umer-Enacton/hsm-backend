@@ -9,6 +9,8 @@ const {
   updateStaffStatus,
   deleteStaff,
   getAvailableStaff,
+  getStaffPaymentDetails,
+  saveStaffPaymentDetails,
 } = require("../controllers/staff.controller");
 
 // Staff routes - Protected by auth middleware
@@ -40,6 +42,20 @@ router.get("/me", getStaffMe);
  * @access  Private (Provider)
  */
 router.get("/available", getAvailableStaff);
+
+/**
+ * @route   GET /api/staff/payment-details
+ * @desc    Get staff member's payment details (Staff only)
+ * @access  Private (Staff)
+ */
+router.get("/payment-details", getStaffPaymentDetails);
+
+/**
+ * @route   POST /api/staff/payment-details
+ * @desc    Save/update staff member's payment details (Staff only)
+ * @access  Private (Staff)
+ */
+router.post("/payment-details", saveStaffPaymentDetails);
 
 /**
  * @route   GET /api/staff/:id

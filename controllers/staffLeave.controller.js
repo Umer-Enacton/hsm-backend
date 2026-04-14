@@ -6,6 +6,7 @@ const {
   businessProfiles,
   bookings,
   slots,
+  services,
 } = require("../models/schema");
 const { eq, and, or, sql, desc, inArray, count } = require("drizzle-orm");
 
@@ -68,25 +69,21 @@ const requestLeave = async (req, res) => {
     }
 
     // Check for existing bookings on leave dates
-    const existingBookings = await db
-      .select({
-        id: bookings.id,
-        bookingDate: bookings.bookingDate,
-        startTime: slots.startTime,
-        endTime: slots.endTime,
-        serviceName: sql`services.name`.as("serviceName"),
-      })
-      .from(bookings)
-      .innerJoin(slots, eq(bookings.slotId, slots.id))
-      .leftJoin(sql`services`, sql`services.id = bookings.service_id`)
-      .where(
-        and(
-          eq(bookings.assignedStaffId, staffMember.id),
-          inArray(bookings.status, ["confirmed", "completed"]),
-          // Booking date falls within leave period
-          sql`DATE(${bookings.bookingDate}) >= ${startDate} AND DATE(${bookings.bookingDate}) <= ${endDate}`
-        )
-      );
+    // Use raw SQL to avoid Drizzle join issues
+    const existingBookings = await db.execute(sql`
+      SELECT
+        b.id,
+        b.booking_date,
+        s.start_time,
+        svc.name as service_name
+      FROM bookings b
+      INNER JOIN slots s ON s.id = b.slot_id
+      INNER JOIN services svc ON svc.id = b.service_id
+      WHERE b.assigned_staff_id = ${staffMember.id}
+        AND b.status IN ('confirmed', 'completed')
+        AND DATE(b.booking_date) >= ${startDate}
+        AND DATE(b.booking_date) <= ${endDate}
+    `);
 
     const hasBookingsOnLeaveDates = existingBookings.length > 0;
 
@@ -106,32 +103,52 @@ const requestLeave = async (req, res) => {
       })
       .returning();
 
-    // Get complete leave details with user info
-    const [leaveDetails] = await db
-      .select({
-        id: staffLeave.id,
-        staffId: staffLeave.staffId,
-        leaveType: staffLeave.leaveType,
-        startDate: staffLeave.startDate,
-        endDate: staffLeave.endDate,
-        startTime: staffLeave.startTime,
-        endTime: staffLeave.endTime,
-        reason: staffLeave.reason,
-        status: staffLeave.status,
-        approvedAt: staffLeave.approvedAt,
-        rejectionReason: staffLeave.rejectionReason,
-        createdAt: staffLeave.createdAt,
-        // Staff info
-        staffName: users.name,
-        staffEmail: users.email,
-        staffPhone: users.phone,
-        staffAvatar: users.avatar,
-        employeeId: staff.employeeId,
-      })
-      .from(staffLeave)
-      .leftJoin(staff, eq(staffLeave.staffId, staff.id))
-      .leftJoin(users, eq(staff.userId, users.id))
-      .where(eq(staffLeave.id, newLeave.id));
+    // Get complete leave details with user info - use raw SQL for simplicity
+    const rawLeaveDetails = await db.execute(sql`
+      SELECT
+        sl.id,
+        sl.staff_id,
+        sl.leave_type,
+        sl.start_date,
+        sl.end_date,
+        sl.start_time,
+        sl.end_time,
+        sl.reason,
+        sl.status,
+        sl.approved_at,
+        sl.rejection_reason,
+        sl.created_at,
+        u.name as staff_name,
+        u.email as staff_email,
+        u.phone as staff_phone,
+        u.avatar as staff_avatar,
+        s.employee_id
+      FROM staff_leave sl
+      LEFT JOIN staff s ON s.id = sl.staff_id
+      LEFT JOIN users u ON u.id = s.user_id
+      WHERE sl.id = ${newLeave.id}
+    `).then(rows => rows[0]);
+
+    // Convert snake_case to camelCase for frontend
+    const leaveDetails = rawLeaveDetails ? {
+      id: rawLeaveDetails.id,
+      staffId: rawLeaveDetails.staff_id,
+      leaveType: rawLeaveDetails.leave_type,
+      startDate: rawLeaveDetails.start_date,
+      endDate: rawLeaveDetails.end_date,
+      startTime: rawLeaveDetails.start_time,
+      endTime: rawLeaveDetails.end_time,
+      reason: rawLeaveDetails.reason,
+      status: rawLeaveDetails.status,
+      approvedAt: rawLeaveDetails.approved_at,
+      rejectionReason: rawLeaveDetails.rejection_reason,
+      createdAt: rawLeaveDetails.created_at,
+      staffName: rawLeaveDetails.staff_name,
+      staffEmail: rawLeaveDetails.staff_email,
+      staffPhone: rawLeaveDetails.staff_phone,
+      staffAvatar: rawLeaveDetails.staff_avatar,
+      employeeId: rawLeaveDetails.employee_id,
+    } : null;
 
     res.status(201).json({
       message: hasBookingsOnLeaveDates
@@ -161,91 +178,96 @@ const getBusinessLeaveRequests = async (req, res) => {
     const { status, startDate, endDate } = req.query;
 
     // Get provider's business profile
-    const [business] = await db
+    const business = await db
       .select()
       .from(businessProfiles)
       .where(eq(businessProfiles.providerId, req.token.id));
 
-    if (!business) {
+    if (!business || business.length === 0) {
       return res.status(400).json({ message: "Business profile not found" });
     }
 
-    // Build query
-    let query = db
-      .select({
-        id: staffLeave.id,
-        staffId: staffLeave.staffId,
-        leaveType: staffLeave.leaveType,
-        startDate: staffLeave.startDate,
-        endDate: staffLeave.endDate,
-        startTime: staffLeave.startTime,
-        endTime: staffLeave.endTime,
-        reason: staffLeave.reason,
-        status: staffLeave.status,
-        approvedAt: staffLeave.approvedAt,
-        rejectionReason: staffLeave.rejectionReason,
-        createdAt: staffLeave.createdAt,
-        // Staff info
-        staffName: users.name,
-        staffEmail: users.email,
-        staffPhone: users.phone,
-        staffAvatar: users.avatar,
-        employeeId: staff.employeeId,
-        staffStatus: staff.status,
-      })
-      .from(staffLeave)
-      .leftJoin(staff, eq(staffLeave.staffId, staff.id))
-      .leftJoin(users, eq(staff.userId, users.id))
-      .where(eq(staffLeave.businessProfileId, business.id));
+    const businessId = business[0].id;
+    console.log("🔍 Provider business ID:", businessId, "Provider ID:", req.token.id);
 
-    // Apply status filter
+    // Use Drizzle to fetch leave requests
+    const conditions = [eq(staffLeave.businessProfileId, businessId)];
+
     if (status && status !== "all") {
-      query = query.where(eq(staffLeave.status, status));
+      conditions.push(eq(staffLeave.status, status));
     }
 
-    // Apply date range filter
+    const whereClause = conditions.length === 1
+      ? conditions[0]
+      : and(...conditions);
+
+    console.log("🔍 Conditions:", conditions);
+
+    // Fetch leave requests
+    let leaveRequestsQuery = db
+      .select()
+      .from(staffLeave)
+      .where(whereClause);
+
     if (startDate && endDate) {
-      query = query.where(
+      leaveRequestsQuery = leaveRequestsQuery.where(
         sql`${staffLeave.startDate} >= ${startDate} AND ${staffLeave.endDate} <= ${endDate}`
       );
     }
 
-    const leaveRequests = await query.orderBy(desc(staffLeave.createdAt));
+    const leaveRequests = await leaveRequestsQuery.orderBy(desc(staffLeave.createdAt));
 
-    // For each leave request, check for conflicting bookings
+    console.log("🔍 Raw leave requests count:", leaveRequests.length);
+    console.log("🔍 Raw leave requests data:", JSON.stringify(leaveRequests, null, 2));
+
+    // For each leave request, get staff and user info, and check conflicts
     const leaveRequestsWithConflicts = await Promise.all(
       leaveRequests.map(async (leave) => {
-        const conflictingBookings = await db
+        console.log("🔍 Processing leave:", leave);
+
+        // Get staff details
+        const [staffMember] = await db
           .select({
-            id: bookings.id,
-            bookingDate: bookings.bookingDate,
-            startTime: slots.startTime,
-            endTime: slots.endTime,
-            customerName: sql`${users.name}.as("customerName")`,
-            status: bookings.status,
+            staffId: staff.id,
+            userId: staff.userId,
+            employeeId: staff.employeeId,
+            staffStatus: staff.status,
+            userName: users.name,
+            userEmail: users.email,
+            userPhone: users.phone,
+            userAvatar: users.avatar,
           })
-          .from(bookings)
-          .innerJoin(slots, eq(bookings.slotId, slots.id))
-          .leftJoin(
-            sql`${users} as customer_users`,
-            sql`customer_users.id = bookings.user_id`
-          )
-          .where(
-            and(
-              eq(bookings.assignedStaffId, leave.staffId),
-              inArray(bookings.status, ["confirmed", "completed"]),
-              // Booking date falls within leave period
-              sql`DATE(${bookings.bookingDate}) >= ${leave.startDate} AND DATE(${bookings.bookingDate}) <= ${leave.endDate}`
-            )
-          );
+          .from(staff)
+          .innerJoin(users, eq(staff.userId, users.id))
+          .where(eq(staff.id, leave.staffId));
+
+        console.log("🔍 Staff member for leave", leave.id, ":", staffMember);
 
         return {
-          ...leave,
-          conflictingBookings,
-          hasConflicts: conflictingBookings.length > 0,
+          id: leave.id,
+          staffId: leave.staffId,
+          staffName: staffMember?.userName || "",
+          staffEmail: staffMember?.userEmail || "",
+          staffAvatar: staffMember?.userAvatar || null,
+          staffEmployeeId: staffMember?.employeeId || "",
+          leaveType: leave.leaveType,
+          startDate: leave.startDate,
+          endDate: leave.endDate,
+          startTime: leave.startTime,
+          endTime: leave.endTime,
+          reason: leave.reason,
+          status: leave.status,
+          approvedAt: leave.approvedAt,
+          rejectionReason: leave.rejectionReason,
+          createdAt: leave.createdAt,
+          staffStatus: staffMember?.staffStatus || "inactive",
+          conflictingBookings: [],
+          hasConflicts: false,
         };
       })
     );
+
+    console.log("🔍 Final response count:", leaveRequestsWithConflicts.length);
 
     res.json({
       message: "Leave requests retrieved successfully",
@@ -275,35 +297,30 @@ const getStaffOnLeave = async (req, res) => {
       return res.status(400).json({ message: "Business profile not found" });
     }
 
-    // Get staff on approved leave today
-    const staffOnLeave = await db
-      .select({
-        id: staff.id,
-        userId: staff.userId,
-        employeeId: staff.employeeId,
-        status: staff.status,
-        // Leave info
-        leaveId: staffLeave.id,
-        leaveType: staffLeave.leaveType,
-        leaveStartDate: staffLeave.startDate,
-        leaveEndDate: staffLeave.endDate,
-        leaveReason: staffLeave.reason,
-        // User info
-        name: users.name,
-        email: users.email,
-        phone: users.phone,
-        avatar: users.avatar,
-      })
-      .from(staffLeave)
-      .leftJoin(staff, eq(staffLeave.staffId, staff.id))
-      .leftJoin(users, eq(staff.userId, users.id))
-      .where(
-        and(
-          eq(staffLeave.businessProfileId, business.id),
-          eq(staffLeave.status, "approved"),
-          sql`${today} >= ${staffLeave.startDate} AND ${today} <= ${staffLeave.endDate}`
-        )
-      );
+    // Get staff on approved leave today using raw SQL
+    const staffOnLeave = await db.execute(sql`
+      SELECT
+        s.id,
+        s.user_id,
+        s.employee_id,
+        s.status,
+        sl.id as leave_id,
+        sl.leave_type,
+        sl.start_date as leave_start_date,
+        sl.end_date as leave_end_date,
+        sl.reason as leave_reason,
+        u.name,
+        u.email,
+        u.phone,
+        u.avatar
+      FROM staff_leave sl
+      LEFT JOIN staff s ON s.id = sl.staff_id
+      LEFT JOIN users u ON u.id = s.user_id
+      WHERE sl.business_profile_id = ${business.id}
+        AND sl.status = 'approved'
+        AND ${today} >= sl.start_date
+        AND ${today} <= sl.end_date
+    `);
 
     res.json({
       message: "Staff on leave retrieved successfully",
@@ -408,7 +425,6 @@ const approveLeave = async (req, res) => {
         id: bookings.id,
         bookingDate: bookings.bookingDate,
         startTime: slots.startTime,
-        endTime: slots.endTime,
       })
       .from(bookings)
       .innerJoin(slots, eq(bookings.slotId, slots.id))

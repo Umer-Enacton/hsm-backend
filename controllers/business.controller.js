@@ -33,8 +33,8 @@ const getAllBusinesses = async (req, res) => {
       conditions.push(
         and(
           eq(businessProfiles.isVerified, false),
-          eq(businessProfiles.isBlocked, false)
-        )
+          eq(businessProfiles.isBlocked, false),
+        ),
       );
     } else if (status === "blocked") {
       conditions.push(eq(businessProfiles.isBlocked, true));
@@ -48,15 +48,18 @@ const getAllBusinesses = async (req, res) => {
           ilike(businessProfiles.businessName, searchTerm),
           ilike(Category.name, searchTerm),
           ilike(businessProfiles.city, searchTerm),
-          ilike(users.name, searchTerm)
-        )
+          ilike(users.name, searchTerm),
+        ),
       );
     }
 
     // Combine conditions
-    const whereClause = conditions.length > 0
-      ? conditions.length === 1 ? conditions[0] : and(...conditions)
-      : undefined;
+    const whereClause =
+      conditions.length > 0
+        ? conditions.length === 1
+          ? conditions[0]
+          : and(...conditions)
+        : undefined;
 
     // Get total count for pagination (with filters applied)
     let countQuery = db
@@ -99,6 +102,7 @@ const getAllBusinesses = async (req, res) => {
         providerName: users.name,
         providerEmail: users.email,
         providerPhone: users.phone,
+        providerAvatar: users.avatar,
       })
       .from(businessProfiles)
       .leftJoin(users, eq(businessProfiles.providerId, users.id))
@@ -109,9 +113,7 @@ const getAllBusinesses = async (req, res) => {
       businessesQuery = businessesQuery.where(whereClause);
     }
 
-    const businesses = await businessesQuery
-      .limit(limit)
-      .offset(offset);
+    const businesses = await businessesQuery.limit(limit).offset(offset);
 
     if (businesses.length === 0) {
       return res.status(200).json({
@@ -128,7 +130,10 @@ const getAllBusinesses = async (req, res) => {
     // OPTIMIZED: Fetch all services for these businesses in one query
     const businessIds = businesses.map((b) => b.id);
     const allServices = await db
-      .select({ id: services.id, businessProfileId: services.businessProfileId })
+      .select({
+        id: services.id,
+        businessProfileId: services.businessProfileId,
+      })
       .from(services)
       .where(inArray(services.businessProfileId, businessIds));
 
@@ -189,7 +194,10 @@ const getAllBusinesses = async (req, res) => {
 
     // Map businesses with their stats
     const businessesWithStats = businesses.map((business) => {
-      const stats = businessRatings.get(business.id) || { rating: 0, totalReviews: 0 };
+      const stats = businessRatings.get(business.id) || {
+        rating: 0,
+        totalReviews: 0,
+      };
       return {
         ...business,
         status: business.isVerified ? "active" : "pending",
@@ -262,7 +270,7 @@ const getBusinessByProviderId = async (req, res) => {
     }
 
     const business = result[0];
-    
+
     // Add computed fields
     business.status = business.isVerified ? "active" : "pending";
     business.email = business.providerEmail;
@@ -272,18 +280,18 @@ const getBusinessByProviderId = async (req, res) => {
       .select({ id: services.id })
       .from(services)
       .where(eq(services.businessProfileId, business.id));
-    
-    const serviceIds = serviceData.map(s => s.id);
-    
+
+    const serviceIds = serviceData.map((s) => s.id);
+
     if (serviceIds.length > 0) {
       const [stats] = await db
         .select({
           avgRating: sql`avg(${feedbackTable.rating})`,
-          count: sql`count(*)`
+          count: sql`count(*)`,
         })
         .from(feedbackTable)
         .where(inArray(feedbackTable.serviceId, serviceIds));
-      
+
       business.rating = Number(stats?.avgRating) || 0;
       business.totalReviews = Number(stats?.count) || 0;
     } else {
@@ -354,18 +362,18 @@ const getBusinessById = async (req, res) => {
       .select({ id: services.id })
       .from(services)
       .where(eq(services.businessProfileId, business.id));
-    
-    const serviceIds = serviceData.map(s => s.id);
-    
+
+    const serviceIds = serviceData.map((s) => s.id);
+
     if (serviceIds.length > 0) {
       const [stats] = await db
         .select({
           avgRating: sql`avg(${feedbackTable.rating})`,
-          count: sql`count(*)`
+          count: sql`count(*)`,
         })
         .from(feedbackTable)
         .where(inArray(feedbackTable.serviceId, serviceIds));
-      
+
       business.rating = Number(stats?.avgRating) || 0;
       business.totalReviews = Number(stats?.count) || 0;
     } else {
@@ -428,17 +436,17 @@ const addBusiness = async (req, res) => {
     } = req.body;
 
     if (!name || !description || !categoryId || !state || !city) {
-      return res
-        .status(400)
-        .json({
-          message:
-            "All fields are required (name, description, category, state, city)",
-        });
+      return res.status(400).json({
+        message:
+          "All fields are required (name, description, category, state, city)",
+      });
     }
 
     // Sanitize inputs to prevent XSS
     const sanitizedName = sanitizeName(name);
-    const sanitizedDescription = sanitizeString(description, { maxLength: 500 });
+    const sanitizedDescription = sanitizeString(description, {
+      maxLength: 500,
+    });
     const sanitizedState = sanitizeString(state, { maxLength: 100 });
     const sanitizedCity = sanitizeString(city, { maxLength: 100 });
 
@@ -594,14 +602,17 @@ const updateBusiness = async (req, res) => {
     // Build update object dynamically with sanitization
     const updateData = {};
     if (name !== undefined) updateData.businessName = sanitizeName(name);
-    if (description !== undefined) updateData.description = sanitizeString(description, { maxLength: 500 });
+    if (description !== undefined)
+      updateData.description = sanitizeString(description, { maxLength: 500 });
     if (categoryId !== undefined) updateData.categoryId = categoryId;
     if (logo !== undefined) updateData.logo = logo;
     if (coverImage !== undefined) updateData.coverImage = coverImage;
     if (website !== undefined) updateData.website = website;
     if (phone !== undefined) updateData.phone = phone; // Business phone update
-    if (state !== undefined) updateData.state = sanitizeString(state, { maxLength: 100 }); // State update
-    if (city !== undefined) updateData.city = sanitizeString(city, { maxLength: 100 }); // City update
+    if (state !== undefined)
+      updateData.state = sanitizeString(state, { maxLength: 100 }); // State update
+    if (city !== undefined)
+      updateData.city = sanitizeString(city, { maxLength: 100 }); // City update
 
     // Verify business exists and belongs to user
     const existingBusiness = await db
@@ -674,18 +685,18 @@ const updateBusiness = async (req, res) => {
       .select({ id: services.id })
       .from(services)
       .where(eq(services.businessProfileId, businessData.id));
-    
-    const serviceIds = serviceData.map(s => s.id);
-    
+
+    const serviceIds = serviceData.map((s) => s.id);
+
     if (serviceIds.length > 0) {
       const [stats] = await db
         .select({
           avgRating: sql`avg(${feedbackTable.rating})`,
-          count: sql`count(*)`
+          count: sql`count(*)`,
         })
         .from(feedbackTable)
         .where(inArray(feedbackTable.serviceId, serviceIds));
-      
+
       businessData.rating = Number(stats?.avgRating) || 0;
       businessData.totalReviews = Number(stats?.count) || 0;
     } else {
