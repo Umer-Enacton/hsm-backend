@@ -4,6 +4,8 @@ const {
   staff,
   users,
   businessProfiles,
+  bookings,
+  slots,
 } = require("../models/schema");
 const { eq, and, or, sql, desc, inArray, count } = require("drizzle-orm");
 
@@ -65,6 +67,29 @@ const requestLeave = async (req, res) => {
         .json({ message: "You already have approved leave for this period" });
     }
 
+    // Check for existing bookings on leave dates
+    const existingBookings = await db
+      .select({
+        id: bookings.id,
+        bookingDate: bookings.bookingDate,
+        startTime: slots.startTime,
+        endTime: slots.endTime,
+        serviceName: sql`services.name`.as("serviceName"),
+      })
+      .from(bookings)
+      .innerJoin(slots, eq(bookings.slotId, slots.id))
+      .leftJoin(sql`services`, sql`services.id = bookings.service_id`)
+      .where(
+        and(
+          eq(bookings.assignedStaffId, staffMember.id),
+          inArray(bookings.status, ["confirmed", "completed"]),
+          // Booking date falls within leave period
+          sql`DATE(${bookings.bookingDate}) >= ${startDate} AND DATE(${bookings.bookingDate}) <= ${endDate}`
+        )
+      );
+
+    const hasBookingsOnLeaveDates = existingBookings.length > 0;
+
     // Create leave request
     const [newLeave] = await db
       .insert(staffLeave)
@@ -109,8 +134,17 @@ const requestLeave = async (req, res) => {
       .where(eq(staffLeave.id, newLeave.id));
 
     res.status(201).json({
-      message: "Leave request submitted successfully",
+      message: hasBookingsOnLeaveDates
+        ? "Leave request submitted but you have bookings on these dates. Provider will need to reassign you from those bookings if leave is approved."
+        : "Leave request submitted successfully",
       data: leaveDetails,
+      warning: hasBookingsOnLeaveDates
+        ? {
+            type: "existing_bookings",
+            message: `You have ${existingBookings.length} booking(s) on these dates. Provider will be notified and must reassign if leave is approved.`,
+            bookings: existingBookings,
+          }
+        : null,
     });
   } catch (error) {
     console.error("Error requesting leave:", error);
@@ -178,9 +212,44 @@ const getBusinessLeaveRequests = async (req, res) => {
 
     const leaveRequests = await query.orderBy(desc(staffLeave.createdAt));
 
+    // For each leave request, check for conflicting bookings
+    const leaveRequestsWithConflicts = await Promise.all(
+      leaveRequests.map(async (leave) => {
+        const conflictingBookings = await db
+          .select({
+            id: bookings.id,
+            bookingDate: bookings.bookingDate,
+            startTime: slots.startTime,
+            endTime: slots.endTime,
+            customerName: sql`${users.name}.as("customerName")`,
+            status: bookings.status,
+          })
+          .from(bookings)
+          .innerJoin(slots, eq(bookings.slotId, slots.id))
+          .leftJoin(
+            sql`${users} as customer_users`,
+            sql`customer_users.id = bookings.user_id`
+          )
+          .where(
+            and(
+              eq(bookings.assignedStaffId, leave.staffId),
+              inArray(bookings.status, ["confirmed", "completed"]),
+              // Booking date falls within leave period
+              sql`DATE(${bookings.bookingDate}) >= ${leave.startDate} AND DATE(${bookings.bookingDate}) <= ${leave.endDate}`
+            )
+          );
+
+        return {
+          ...leave,
+          conflictingBookings,
+          hasConflicts: conflictingBookings.length > 0,
+        };
+      })
+    );
+
     res.json({
       message: "Leave requests retrieved successfully",
-      data: leaveRequests,
+      data: leaveRequestsWithConflicts,
     });
   } catch (error) {
     console.error("Error fetching leave requests:", error);
@@ -333,6 +402,46 @@ const approveLeave = async (req, res) => {
         .json({ message: `Leave already ${leave.status}` });
     }
 
+    // Find conflicting bookings BEFORE approving leave
+    const conflictingBookings = await db
+      .select({
+        id: bookings.id,
+        bookingDate: bookings.bookingDate,
+        startTime: slots.startTime,
+        endTime: slots.endTime,
+      })
+      .from(bookings)
+      .innerJoin(slots, eq(bookings.slotId, slots.id))
+      .where(
+        and(
+          eq(bookings.assignedStaffId, leave.staffId),
+          inArray(bookings.status, ["confirmed", "completed"]),
+          // Booking date falls within leave period
+          sql`DATE(${bookings.bookingDate}) >= ${leave.startDate} AND DATE(${bookings.bookingDate}) <= ${leave.endDate}`
+        )
+      );
+
+    // Auto-unassign staff from conflicting bookings
+    let unassignedBookings = [];
+    if (conflictingBookings.length > 0) {
+      const bookingIds = conflictingBookings.map((b) => b.id);
+      await db
+        .update(bookings)
+        .set({
+          assignedStaffId: null,
+          staffAssignedAt: null,
+          staffEarningType: null,
+          staffCommissionPercent: null,
+          staffFixedAmount: null,
+        })
+        .where(inArray(bookings.id, bookingIds));
+
+      unassignedBookings = bookingIds;
+      console.log(
+        `Auto-unassigned staff ${leave.staffId} from ${bookingIds.length} booking(s) due to approved leave`
+      );
+    }
+
     // Update leave status to approved
     const [updatedLeave] = await db
       .update(staffLeave)
@@ -351,8 +460,12 @@ const approveLeave = async (req, res) => {
       .where(eq(staff.id, leave.staffId));
 
     res.json({
-      message: "Leave approved successfully",
+      message: unassignedBookings.length > 0
+        ? `Leave approved. Staff has been unassigned from ${unassignedBookings.length} booking(s). Please reassign to another staff.`
+        : "Leave approved successfully",
       data: updatedLeave,
+      unassignedBookings,
+      needsReassignment: unassignedBookings.length > 0,
     });
   } catch (error) {
     console.error("Error approving leave:", error);

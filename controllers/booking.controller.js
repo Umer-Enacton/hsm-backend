@@ -3763,6 +3763,39 @@ const assignBookingToStaff = async (req, res) => {
       });
     }
 
+    // Auto-reject pending leave requests for this staff on this booking date
+    // (bookingDate is already declared above on line 3691)
+    const rejectedLeaveIds = [];
+    const pendingLeaveRequests = await db
+      .select({ id: staffLeave.id })
+      .from(staffLeave)
+      .where(
+        and(
+          eq(staffLeave.staffId, parseInt(staffId)),
+          eq(staffLeave.status, "pending"),
+          // Leave period overlaps with booking date
+          sql`${bookingDate} >= ${staffLeave.startDate} AND ${bookingDate} <= ${staffLeave.endDate}`
+        )
+      );
+
+    if (pendingLeaveRequests.length > 0) {
+      const leaveIds = pendingLeaveRequests.map((l) => l.id);
+      await db
+        .update(staffLeave)
+        .set({
+          status: "rejected",
+          approvedBy: userId,
+          approvedAt: new Date(),
+          rejectionReason: "Automatically rejected: Staff was assigned to a booking on this date",
+        })
+        .where(inArray(staffLeave.id, leaveIds));
+
+      rejectedLeaveIds.push(...leaveIds);
+      console.log(
+        `Auto-rejected ${leaveIds.length} pending leave request(s) for staff ${staffId} due to booking assignment on ${bookingDate}`
+      );
+    }
+
     // Prepare assignment data
     const assignmentData = {
       assignedStaffId: parseInt(staffId),
@@ -3811,8 +3844,11 @@ const assignBookingToStaff = async (req, res) => {
     }
 
     return res.status(200).json({
-      message: "Booking assigned to staff successfully",
+      message: rejectedLeaveIds.length > 0
+        ? `Booking assigned. ${rejectedLeaveIds.length} pending leave request(s) for this date were automatically rejected.`
+        : "Booking assigned to staff successfully",
       booking: updatedBooking,
+      rejectedLeaveRequests: rejectedLeaveIds,
     });
   } catch (error) {
     console.error("Error assigning booking to staff:", error);
