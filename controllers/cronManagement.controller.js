@@ -1,10 +1,6 @@
 const db = require("../config/db");
 const { eq, and, desc, sql, asc, isNull, or } = require("drizzle-orm");
-const {
-  cronJobs,
-  cronJobLogs,
-  users,
-} = require("../models/schema");
+const { cronJobs, cronJobLogs, users } = require("../models/schema");
 const {
   createPgCronJob,
   updatePgCronJob,
@@ -36,6 +32,10 @@ const getAllJobs = async (req, res) => {
         nextRunAt: cronJobs.nextRunAt,
         createdAt: cronJobs.createdAt,
         updatedAt: cronJobs.updatedAt,
+        syncStatus: cronJobs.syncStatus,
+        syncError: cronJobs.syncError,
+        lastSyncedAt: cronJobs.lastSyncedAt,
+        pgCronJobname: cronJobs.pgCronJobname,
       })
       .from(cronJobs)
       .orderBy(asc(cronJobs.category), asc(cronJobs.displayName));
@@ -60,7 +60,7 @@ const getAllJobs = async (req, res) => {
           .limit(10);
 
         const successCount = recentLogs.filter(
-          (log) => log.status === "success"
+          (log) => log.status === "success",
         ).length;
         const successRate =
           recentLogs.length > 0
@@ -72,7 +72,7 @@ const getAllJobs = async (req, res) => {
           latestLog: latestLog[0] || null,
           successRate,
         };
-      })
+      }),
     );
 
     res.status(200).json({
@@ -125,8 +125,9 @@ const getJobById = async (req, res) => {
       .from(cronJobLogs)
       .where(eq(cronJobLogs.jobId, job.id));
 
-    const successCount = allLogs.filter((log) => log.status === "success")
-      .length;
+    const successCount = allLogs.filter(
+      (log) => log.status === "success",
+    ).length;
     const failedCount = allLogs.filter((log) => log.status === "failed").length;
     const successRate =
       allLogs.length > 0
@@ -195,7 +196,8 @@ const createJob = async (req, res) => {
     }
 
     // Generate cron expression from interval if not provided
-    const finalCronExpression = cronExpression || intervalToCron(intervalMinutes);
+    const finalCronExpression =
+      cronExpression || intervalToCron(intervalMinutes);
 
     // All jobs use the centralized execute endpoint
     const endpoint = "/cron/execute";
@@ -224,14 +226,21 @@ const createJob = async (req, res) => {
       try {
         // The pg_cron will call the centralized endpoint with function name
         const payload = JSON.stringify({ function: name });
-        await createPgCronJob(name, finalCronExpression, endpoint, method, payload);
+        await createPgCronJob(
+          name,
+          finalCronExpression,
+          endpoint,
+          method,
+          payload,
+        );
         console.log(`✅ pg_cron job created: ${name}`);
       } catch (pgCronError) {
         console.error(`⚠️  Failed to create pg_cron job: ${name}`, pgCronError);
         // Still save the job but warn the user
         return res.status(201).json({
           success: true,
-          message: "Cron job created but pg_cron schedule failed. Please check Supabase.",
+          message:
+            "Cron job created but pg_cron schedule failed. Please check Supabase.",
           data: newJob,
           warning: "pg_cron schedule failed",
         });
@@ -287,7 +296,8 @@ const updateJob = async (req, res) => {
     const updateData = {};
     if (displayName !== undefined) updateData.displayName = displayName;
     if (description !== undefined) updateData.description = description;
-    if (cronExpression !== undefined) updateData.cronExpression = cronExpression;
+    if (cronExpression !== undefined)
+      updateData.cronExpression = cronExpression;
     if (intervalMinutes !== undefined) {
       updateData.intervalMinutes = intervalMinutes;
       // Also update cron expression if interval changed
@@ -317,7 +327,7 @@ const updateJob = async (req, res) => {
 
     if (needsPgCronUpdate) {
       try {
-        if (updateData.isEnabled === false || (isEnabled === false)) {
+        if (updateData.isEnabled === false || isEnabled === false) {
           // Disable = delete pg_cron job
           await deletePgCronJob(existing.name);
           console.log(`🗑️  pg_cron job disabled: ${existing.name}`);
@@ -331,15 +341,19 @@ const updateJob = async (req, res) => {
             finalCronExpression,
             existing.endpoint,
             existing.method,
-            payload
+            payload,
           );
           console.log(`✅ pg_cron job updated: ${existing.name}`);
         }
       } catch (pgCronError) {
-        console.error(`⚠️  Failed to update pg_cron job: ${existing.name}`, pgCronError);
+        console.error(
+          `⚠️  Failed to update pg_cron job: ${existing.name}`,
+          pgCronError,
+        );
         return res.status(200).json({
           success: true,
-          message: "Job updated but pg_cron schedule failed. Please check Supabase.",
+          message:
+            "Job updated but pg_cron schedule failed. Please check Supabase.",
           data: updated,
           warning: "pg_cron schedule update failed",
         });
@@ -386,7 +400,10 @@ const deleteJob = async (req, res) => {
       await deletePgCronJob(existing.name);
       console.log(`🗑️  pg_cron job deleted: ${existing.name}`);
     } catch (pgCronError) {
-      console.warn(`⚠️  Failed to delete pg_cron job: ${existing.name}`, pgCronError);
+      console.warn(
+        `⚠️  Failed to delete pg_cron job: ${existing.name}`,
+        pgCronError,
+      );
       // Continue with database deletion
     }
 
@@ -510,7 +527,12 @@ async function executeJobFunction(jobName, logId) {
       cronJobs,
       cronJobLogs,
     } = require("../models/schema");
-    const { sendAcceptReminders, sendUpcomingServiceReminders, sendDayOfReminders, sendPendingBookingReminders } = require("../utils/reminderService");
+    const {
+      sendAcceptReminders,
+      sendUpcomingServiceReminders,
+      sendDayOfReminders,
+      sendPendingBookingReminders,
+    } = require("../utils/reminderService");
     const notificationTemplates = require("../utils/notificationHelper");
 
     // Execute the appropriate job function based on name
@@ -541,8 +563,8 @@ async function executeJobFunction(jobName, logId) {
           .where(
             and(
               eq(providerSubscriptions.status, "trial"),
-              lt(providerSubscriptions.trialEndDate, now)
-            )
+              lt(providerSubscriptions.trialEndDate, now),
+            ),
           );
 
         const results = {
@@ -581,12 +603,19 @@ async function executeJobFunction(jobName, logId) {
             try {
               await notificationTemplates.trialEnded(trial.providerId);
             } catch (notifError) {
-              console.error("Failed to send trial ended notification:", notifError);
+              console.error(
+                "Failed to send trial ended notification:",
+                notifError,
+              );
             }
 
             results.updated++;
           } catch (error) {
-            console.error("Error ending trial for provider:", trial.providerId, error);
+            console.error(
+              "Error ending trial for provider:",
+              trial.providerId,
+              error,
+            );
             results.errors.push({
               providerId: trial.providerId,
               subscriptionId: trial.id,
@@ -619,15 +648,18 @@ async function executeJobFunction(jobName, logId) {
           })
           .from(bookings)
           .innerJoin(slots, eq(bookings.slotId, slots.id))
-          .innerJoin(businessProfiles, eq(bookings.businessProfileId, businessProfiles.id))
+          .innerJoin(
+            businessProfiles,
+            eq(bookings.businessProfileId, businessProfiles.id),
+          )
           .innerJoin(users, eq(businessProfiles.providerId, users.id))
           .innerJoin(services, eq(bookings.serviceId, services.id))
           .where(
             and(
               eq(bookings.status, "confirmed"),
               isNull(bookings.assignedStaffId),
-              sql`ABS(EXTRACT(EPOCH FROM (${bookingDateTime} - ${ONE_HOUR_FROM_NOW}))) < 300`
-            )
+              sql`ABS(EXTRACT(EPOCH FROM (${bookingDateTime} - ${ONE_HOUR_FROM_NOW}))) < 300`,
+            ),
           );
 
         const results = {
@@ -645,8 +677,8 @@ async function executeJobFunction(jobName, logId) {
               .where(
                 and(
                   eq(staff.businessProfileId, booking.businessProfileId),
-                  eq(staff.status, "active")
-                )
+                  eq(staff.status, "active"),
+                ),
               );
 
             if (activeStaff.length === 0) {
@@ -662,12 +694,14 @@ async function executeJobFunction(jobName, logId) {
                 and(
                   eq(staffLeave.businessProfileId, booking.businessProfileId),
                   eq(staffLeave.status, "approved"),
-                  sql`${staffLeave.startDate} <= ${bookingDate} AND ${staffLeave.endDate} >= ${bookingDate}`
-                )
+                  sql`${staffLeave.startDate} <= ${bookingDate} AND ${staffLeave.endDate} >= ${bookingDate}`,
+                ),
               );
 
             const leaveStaffIds = new Set(staffOnLeave.map((l) => l.staffId));
-            const availableStaff = activeStaff.filter((s) => !leaveStaffIds.has(s.id));
+            const availableStaff = activeStaff.filter(
+              (s) => !leaveStaffIds.has(s.id),
+            );
 
             if (availableStaff.length === 0) {
               results.skipped++;
@@ -683,8 +717,11 @@ async function executeJobFunction(jobName, logId) {
                   and(
                     eq(bookings.assignedStaffId, s.id),
                     eq(bookings.bookingDate, bookingDate),
-                    inArray(bookings.status, ["confirmed", "reschedule_pending"])
-                  )
+                    inArray(bookings.status, [
+                      "confirmed",
+                      "reschedule_pending",
+                    ]),
+                  ),
                 );
               staffBookingCounts.push({
                 staffId: s.id,
@@ -692,8 +729,12 @@ async function executeJobFunction(jobName, logId) {
               });
             }
 
-            const minCount = Math.min(...staffBookingCounts.map((s) => s.count));
-            const leastBusyStaff = staffBookingCounts.filter((s) => s.count === minCount);
+            const minCount = Math.min(
+              ...staffBookingCounts.map((s) => s.count),
+            );
+            const leastBusyStaff = staffBookingCounts.filter(
+              (s) => s.count === minCount,
+            );
 
             let selectedStaffId;
 
@@ -701,7 +742,10 @@ async function executeJobFunction(jobName, logId) {
               selectedStaffId = leastBusyStaff[0].staffId;
             } else {
               // Random selection among tied staff
-              selectedStaffId = leastBusyStaff[Math.floor(Math.random() * leastBusyStaff.length)].staffId;
+              selectedStaffId =
+                leastBusyStaff[
+                  Math.floor(Math.random() * leastBusyStaff.length)
+                ].staffId;
             }
 
             await db
@@ -714,7 +758,10 @@ async function executeJobFunction(jobName, logId) {
 
             results.assigned++;
           } catch (error) {
-            console.error(`Error auto-assigning booking ${booking.bookingId}:`, error);
+            console.error(
+              `Error auto-assigning booking ${booking.bookingId}:`,
+              error,
+            );
             results.errors.push({
               bookingId: booking.bookingId,
               error: error.message,
@@ -749,8 +796,8 @@ async function executeJobFunction(jobName, logId) {
           .where(
             and(
               eq(bookings.status, "confirmed"),
-              sql`CAST(${bookings.bookingDate} AS date) = ${TOMORROW}`
-            )
+              sql`CAST(${bookings.bookingDate} AS date) = ${TOMORROW}`,
+            ),
           );
 
         const results = {
@@ -772,7 +819,10 @@ async function executeJobFunction(jobName, logId) {
             });
             results.reminded++;
           } catch (error) {
-            console.error(`Error sending reminder to staff ${booking.staffUserId}:`, error);
+            console.error(
+              `Error sending reminder to staff ${booking.staffUserId}:`,
+              error,
+            );
             results.errors.push({
               bookingId: booking.bookingId,
               error: error.message,
@@ -802,14 +852,17 @@ async function executeJobFunction(jobName, logId) {
           })
           .from(bookings)
           .innerJoin(slots, eq(bookings.slotId, slots.id))
-          .innerJoin(businessProfiles, eq(bookings.businessProfileId, businessProfiles.id))
+          .innerJoin(
+            businessProfiles,
+            eq(bookings.businessProfileId, businessProfiles.id),
+          )
           .innerJoin(services, eq(bookings.serviceId, services.id))
           .where(
             and(
               eq(bookings.status, "confirmed"),
               isNull(bookings.assignedStaffId),
-              sql`ABS(EXTRACT(EPOCH FROM (${bookingDateTime} - ${THREE_HOURS_FROM_NOW}))) < 300`
-            )
+              sql`ABS(EXTRACT(EPOCH FROM (${bookingDateTime} - ${THREE_HOURS_FROM_NOW}))) < 300`,
+            ),
           );
 
         const results = {
@@ -831,7 +884,10 @@ async function executeJobFunction(jobName, logId) {
             });
             results.reminded++;
           } catch (error) {
-            console.error(`Error sending reminder for booking ${booking.bookingId}:`, error);
+            console.error(
+              `Error sending reminder for booking ${booking.bookingId}:`,
+              error,
+            );
             results.errors.push({
               bookingId: booking.bookingId,
               error: error.message,
@@ -878,7 +934,10 @@ async function executeJobFunction(jobName, logId) {
     .where(eq(cronJobLogs.id, logId));
 
   // Update job's last run info
-  const [jobData] = await db.select().from(cronJobs).where(eq(cronJobs.name, jobName));
+  const [jobData] = await db
+    .select()
+    .from(cronJobs)
+    .where(eq(cronJobs.name, jobName));
   if (jobData) {
     await db
       .update(cronJobs)
@@ -934,13 +993,13 @@ const getJobLogs = async (req, res) => {
 
     if (startDate) {
       conditions.push(
-        sql`${cronJobLogs.startedAt} >= ${new Date(startDate).toISOString()}::timestamp`
+        sql`${cronJobLogs.startedAt} >= ${new Date(startDate).toISOString()}::timestamp`,
       );
     }
 
     if (endDate) {
       conditions.push(
-        sql`${cronJobLogs.startedAt} <= ${new Date(endDate).toISOString()}::timestamp`
+        sql`${cronJobLogs.startedAt} <= ${new Date(endDate).toISOString()}::timestamp`,
       );
     }
 
@@ -1022,8 +1081,8 @@ const getJobStats = async (req, res) => {
       .where(
         and(
           sql`${cronJobLogs.startedAt} >= ${yesterdayStr}::timestamp`,
-          eq(cronJobLogs.status, "success")
-        )
+          eq(cronJobLogs.status, "success"),
+        ),
       );
 
     const [{ total: recentFailed }] = await db
@@ -1032,8 +1091,8 @@ const getJobStats = async (req, res) => {
       .where(
         and(
           sql`${cronJobLogs.startedAt} >= ${yesterdayStr}::timestamp`,
-          eq(cronJobLogs.status, "failed")
-        )
+          eq(cronJobLogs.status, "failed"),
+        ),
       );
 
     // Get jobs by category
@@ -1065,8 +1124,8 @@ const getJobStats = async (req, res) => {
         and(
           eq(cronJobs.isEnabled, true),
           eq(cronJobs.lastRunStatus, "failed"),
-          sql`${cronJobs.lastRunAt} >= ${yesterdayStr}::timestamp`
-        )
+          sql`${cronJobs.lastRunAt} >= ${yesterdayStr}::timestamp`,
+        ),
       )
       .orderBy(desc(cronJobs.lastRunAt))
       .limit(5);
