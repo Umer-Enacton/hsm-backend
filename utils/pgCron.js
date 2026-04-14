@@ -20,40 +20,54 @@ const { eq } = require("drizzle-orm");
  * @param {string} bodyPayload - JSON payload to send in request body
  * @returns {Promise<object>} Result of pg_cron schedule creation with sync status
  */
-async function createPgCronJob(jobId, cronExpression, endpoint, method = "POST", bodyPayload = null) {
+async function createPgCronJob(
+  jobId,
+  cronExpression,
+  endpoint,
+  method = "POST",
+  bodyPayload = null,
+) {
   try {
     const secret = process.env.CRON_SECRET;
+
+    // Resolve base URL and strip trailing slash to prevent double-slash URLs
+    const apiBaseUrl = (
+      process.env.API_BASE_URL || "https://homefixcare-backend.vercel.app"
+    ).replace(/\/+$/, "");
+
+    if (!process.env.API_BASE_URL) {
+      console.warn(
+        `⚠️  API_BASE_URL is not set. Falling back to ${apiBaseUrl}. Set API_BASE_URL in your environment variables.`,
+      );
+    }
 
     // Build the request body with function name for centralized execution
     const body = bodyPayload || JSON.stringify({ function: jobId });
 
-    // Build the HTTP POST call that pg_cron will execute
-    // Using PostgreSQL's net.http_post function (available in Supabase)
-    const httpCall = `
-      SELECT net.http_post(
-        '${process.env.API_BASE_URL || 'http://localhost:8000'}${endpoint}',
-        headers: jsonb_build_object(
-          'Content-Type', 'application/json',
-          'x-cron-secret', '${secret}'
-        ),
-        body := '${body}'::jsonb,
-        timeout_milliseconds := 30000
-      )
-    `.replace(/\s+/g, ' ').trim();
+    // Ensure endpoint has exactly one leading slash
+    const normalizedEndpoint = "/" + endpoint.replace(/^\/+/, "");
 
-    // Create the pg_cron job
-    const result = await db.execute(sql`
-      SELECT cron.schedule(
-        ${jobId},
-        ${cronExpression},
-        $$${httpCall}$$
-      )
-    `);
+    // Build the HTTP POST call that pg_cron will execute.
+    // Use headers := (not headers:) for valid PostgreSQL named-argument syntax.
+    const httpCall = `SELECT net.http_post( '${apiBaseUrl}${normalizedEndpoint}', headers := jsonb_build_object( 'Content-Type', 'application/json', 'x-cron-secret', '${secret}' ), body := '${body}'::jsonb, timeout_milliseconds := 30000 )`;
+
+    // IMPORTANT: Do NOT use Drizzle's sql`` template for cron.schedule.
+    // Drizzle converts every ${...} expression into a bind parameter ($1, $2, $3…),
+    // which turns the dollar-quoted command string into $$$3$$ — invalid SQL.
+    // sql.raw() sends the statement as a literal string without parameterization.
+    const safeJobId = jobId.replace(/'/g, "''");
+    const safeCron = cronExpression.replace(/'/g, "''");
+    const result = await db.execute(
+      sql.raw(
+        `SELECT cron.schedule('${safeJobId}', '${safeCron}', $$${httpCall}$$)`,
+      ),
+    );
 
     console.log(`✅ Created pg_cron job: ${jobId} (${cronExpression})`);
 
     // Update sync status in cron_jobs table
-    await db.update(cronJobs)
+    await db
+      .update(cronJobs)
       .set({
         syncStatus: "synced",
         lastSyncedAt: new Date(),
@@ -68,7 +82,8 @@ async function createPgCronJob(jobId, cronExpression, endpoint, method = "POST",
 
     // Update sync status to failed
     try {
-      await db.update(cronJobs)
+      await db
+        .update(cronJobs)
         .set({
           syncStatus: "sync_failed",
           syncError: error.message,
@@ -78,7 +93,12 @@ async function createPgCronJob(jobId, cronExpression, endpoint, method = "POST",
       console.error("Failed to update sync status:", updateError);
     }
 
-    return { success: false, jobId, error: error.message, syncStatus: "sync_failed" };
+    return {
+      success: false,
+      jobId,
+      error: error.message,
+      syncStatus: "sync_failed",
+    };
   }
 }
 
@@ -92,19 +112,32 @@ async function createPgCronJob(jobId, cronExpression, endpoint, method = "POST",
  * @param {string} bodyPayload - JSON payload to send in request body
  * @returns {Promise<object>} Result of pg_cron job update with sync status
  */
-async function updatePgCronJob(jobId, cronExpression, endpoint, method = "POST", bodyPayload = null) {
+async function updatePgCronJob(
+  jobId,
+  cronExpression,
+  endpoint,
+  method = "POST",
+  bodyPayload = null,
+) {
   try {
     // First, delete the existing job
     await deletePgCronJob(jobId);
 
     // Then create a new one with updated settings
-    return await createPgCronJob(jobId, cronExpression, endpoint, method, bodyPayload);
+    return await createPgCronJob(
+      jobId,
+      cronExpression,
+      endpoint,
+      method,
+      bodyPayload,
+    );
   } catch (error) {
     console.error(`❌ Error updating pg_cron job ${jobId}:`, error);
 
     // Update sync status to failed
     try {
-      await db.update(cronJobs)
+      await db
+        .update(cronJobs)
         .set({
           syncStatus: "sync_failed",
           syncError: error.message,
@@ -114,7 +147,12 @@ async function updatePgCronJob(jobId, cronExpression, endpoint, method = "POST",
       console.error("Failed to update sync status:", updateError);
     }
 
-    return { success: false, jobId, error: error.message, syncStatus: "sync_failed" };
+    return {
+      success: false,
+      jobId,
+      error: error.message,
+      syncStatus: "sync_failed",
+    };
   }
 }
 
@@ -190,14 +228,18 @@ async function getAllPgCronJobs() {
 async function syncJobToPgCron(jobId) {
   try {
     // Fetch job from cron_jobs table
-    const [job] = await db.select().from(cronJobs).where(eq(cronJobs.id, jobId));
+    const [job] = await db
+      .select()
+      .from(cronJobs)
+      .where(eq(cronJobs.id, jobId));
 
     if (!job) {
       return { success: false, error: "Job not found in database" };
     }
 
     // Set status to pending
-    await db.update(cronJobs)
+    await db
+      .update(cronJobs)
       .set({ syncStatus: "sync_pending" })
       .where(eq(cronJobs.id, jobId));
 
@@ -205,15 +247,26 @@ async function syncJobToPgCron(jobId) {
     const exists = await pgCronJobExists(job.name);
 
     // Use cronExpression if available, otherwise convert intervalMinutes
-    const cronExpression = job.cronExpression || intervalToCron(job.intervalMinutes);
+    const cronExpression =
+      job.cronExpression || intervalToCron(job.intervalMinutes);
 
     let result;
     if (exists) {
       // Update existing job
-      result = await updatePgCronJob(job.name, cronExpression, job.endpoint, job.method);
+      result = await updatePgCronJob(
+        job.name,
+        cronExpression,
+        job.endpoint,
+        job.method,
+      );
     } else {
       // Create new job
-      result = await createPgCronJob(job.name, cronExpression, job.endpoint, job.method);
+      result = await createPgCronJob(
+        job.name,
+        cronExpression,
+        job.endpoint,
+        job.method,
+      );
     }
 
     return result;
@@ -222,7 +275,8 @@ async function syncJobToPgCron(jobId) {
 
     // Update sync status to failed
     try {
-      await db.update(cronJobs)
+      await db
+        .update(cronJobs)
         .set({
           syncStatus: "sync_failed",
           syncError: error.message,
@@ -243,7 +297,10 @@ async function syncJobToPgCron(jobId) {
 async function syncAllJobsToPgCron() {
   try {
     // Fetch all enabled jobs
-    const jobs = await db.select().from(cronJobs).where(eq(cronJobs.isEnabled, true));
+    const jobs = await db
+      .select()
+      .from(cronJobs)
+      .where(eq(cronJobs.isEnabled, true));
 
     const results = {
       total: jobs.length,
@@ -260,11 +317,19 @@ async function syncAllJobsToPgCron() {
           results.synced++;
         } else {
           results.failed++;
-          results.errors.push({ jobId: job.id, name: job.name, error: result.error });
+          results.errors.push({
+            jobId: job.id,
+            name: job.name,
+            error: result.error,
+          });
         }
       } catch (error) {
         results.failed++;
-        results.errors.push({ jobId: job.id, name: job.name, error: error.message });
+        results.errors.push({
+          jobId: job.id,
+          name: job.name,
+          error: error.message,
+        });
       }
     }
 
@@ -282,13 +347,15 @@ async function syncAllJobsToPgCron() {
 async function getSyncStatus() {
   try {
     // Get all jobs from cron_jobs table
-    const dbJobs = await db.select({
-      id: cronJobs.id,
-      name: cronJobs.name,
-      isEnabled: cronJobs.isEnabled,
-      syncStatus: cronJobs.syncStatus,
-      pgCronJobname: cronJobs.pgCronJobname,
-    }).from(cronJobs);
+    const dbJobs = await db
+      .select({
+        id: cronJobs.id,
+        name: cronJobs.name,
+        isEnabled: cronJobs.isEnabled,
+        syncStatus: cronJobs.syncStatus,
+        pgCronJobname: cronJobs.pgCronJobname,
+      })
+      .from(cronJobs);
 
     // Get all jobs from pg_cron
     const pgCronJobs = await getAllPgCronJobs();
