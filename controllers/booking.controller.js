@@ -851,6 +851,7 @@ const addBooking = async (req, res) => {
         slotId,
         addressId,
         bookingDate: bookingDateObj,
+        status: "confirmed", // Set to confirmed immediately
         totalPrice: service[0].price,
       })
       .returning();
@@ -999,11 +1000,11 @@ const acceptBooking = async (req, res) => {
       return res.status(404).json({ message: "Booking not found" });
     }
 
-    // 2. Check booking status
-    if (booking[0].status !== "pending") {
+    // 2. Check booking status - No longer checking for 'pending' as all are confirmed
+    if (booking[0].status === "completed" || booking[0].status === "cancelled") {
       return res
         .status(400)
-        .json({ message: "Only pending bookings can be accepted" });
+        .json({ message: "Completed or cancelled bookings cannot be confirmed again" });
     }
 
     // 3. Fetch business profile
@@ -1072,19 +1073,10 @@ const rejectBooking = async (req, res) => {
       return res.status(404).json({ message: "Booking not found" });
     }
 
-    // 2. Check booking status - providers can only reject PENDING bookings
-    // For confirmed bookings, providers must reschedule instead
-    if (booking[0].status !== "pending") {
-      if (booking[0].status === "confirmed") {
-        return res.status(400).json({
-          message:
-            "Cannot reject confirmed bookings. Please use the reschedule option instead.",
-          currentStatus: booking[0].status,
-          bookingId: bookingId,
-        });
-      }
+    // 2. Check booking status - In the simplified model, providers can cancel any non-completed booking
+    if (booking[0].status === "completed" || booking[0].status === "cancelled") {
       return res.status(400).json({
-        message: `This booking cannot be rejected. Current status: ${booking[0].status}. Only pending bookings can be rejected.`,
+        message: `This booking cannot be cancelled. Current status: ${booking[0].status}.`,
         currentStatus: booking[0].status,
         bookingId: bookingId,
       });
@@ -1555,10 +1547,10 @@ const cancelRescheduleRequest = async (req, res) => {
       });
     }
 
-    // Check if booking is in reschedule_pending status
-    if (booking.status !== "reschedule_pending") {
+    // Check if booking is in confirmed status (since reschedule_pending is removed)
+    if (booking.status !== "confirmed") {
       return res.status(400).json({
-        message: `No pending reschedule request to cancel. Current status: ${booking.status}`,
+        message: "Booking is not in a state where a reschedule can be cancelled.",
       });
     }
 
@@ -1994,10 +1986,10 @@ const approveReschedule = async (req, res) => {
         .json({ message: "Only the provider can approve reschedule requests" });
     }
 
-    // Check if booking is in reschedule_pending status
-    if (booking.status !== "reschedule_pending") {
+    // Check if booking is in confirmed status
+    if (booking.status !== "confirmed") {
       return res.status(400).json({
-        message: `Cannot approve reschedule. Booking status is ${booking.status}, expected reschedule_pending.`,
+        message: `Cannot approve reschedule. Booking status is ${booking.status}.`,
       });
     }
 

@@ -190,10 +190,9 @@ const createPaymentOrder = async (req, res) => {
       }
 
       // Check if booking is in a reschedule-eligible status
-      const eligibleStatuses = ["confirmed", "pending"];
-      if (!eligibleStatuses.includes(existingBooking.status)) {
+      if (existingBooking.status !== "confirmed") {
         return res.status(400).json({
-          message: `Cannot reschedule booking with status "${existingBooking.status}". Only confirmed or pending bookings can be rescheduled.`
+          message: `Cannot reschedule booking with status "${existingBooking.status}". Only confirmed bookings can be rescheduled.`
         });
       }
 
@@ -849,10 +848,7 @@ const verifyPayment = async (req, res) => {
               gte(bookings.bookingDate, startOfDay),
               lte(bookings.bookingDate, endOfDay)
             ),
-            or(
-              eq(bookings.status, "pending"),
-              eq(bookings.status, "confirmed")
-            ),
+            eq(bookings.status, "confirmed"),
             // For reschedule: exclude the current booking being rescheduled
             ...(isReschedule ? [ne(bookings.id, rescheduleBookingId)] : [])
           )
@@ -1149,7 +1145,7 @@ const verifyPayment = async (req, res) => {
     res.status(200).json({
       message: isReschedule
         ? "Reschedule fee paid successfully! Your booking has been rescheduled and is awaiting approval from the service provider."
-        : "Payment verified successfully! Your booking is pending confirmation from the service provider.",
+        : "Payment verified successfully! Your booking is confirmed.",
       bookingId: bookingId,
       isReschedule: isReschedule,
     });

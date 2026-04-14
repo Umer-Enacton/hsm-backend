@@ -19,7 +19,6 @@ const { sql } = require("drizzle-orm");
 const roleEnum = pgEnum("role_type", ["customer", "provider", "admin", "staff"]);
 
 const bookingStatusEnum = pgEnum("booking_status", [
-  "pending",
   "confirmed",
   "completed",
   "cancelled",
@@ -269,7 +268,7 @@ const bookings = pgTable(
       .notNull()
       .references(() => Address.id, { onDelete: "cascade" }),
     bookingDate: timestamp("booking_date").defaultNow().notNull(),
-    status: bookingStatusEnum("status").default("pending").notNull(),
+    status: bookingStatusEnum("status").default("confirmed").notNull(),
     totalPrice: integer("total_price").notNull(),
     // Provider earning tracking
     providerEarning: integer("provider_earning"), // Amount provider earns after platform fee (in paise)

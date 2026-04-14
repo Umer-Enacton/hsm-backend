@@ -14,7 +14,7 @@ const { initiateRefund } = require("./razorpay");
  */
 async function autoRejectExpiredBookings() {
   try {
-    console.log("Checking for expired pending bookings...");
+    console.log("Checking for expired bookings...");
 
     // Combine booking date with slot time using PostgreSQL date arithmetic
     const bookingDateTime = sql`CAST(${bookings.bookingDate} AS date) + ${slots.startTime}`;
@@ -54,7 +54,7 @@ async function autoRejectExpiredBookings() {
 
     const results = {
       processed: 0,
-      rejected: 0,
+      cancelled: 0,
       refunded: 0,
       errors: [],
     };
@@ -65,12 +65,12 @@ async function autoRejectExpiredBookings() {
         await db
           .update(bookings)
           .set({
-            status: "rejected",
+            status: "cancelled",
             // Optionally add a note about auto-rejection
           })
           .where(eq(bookings.id, booking.bookingId));
 
-        console.log(`Booking ${booking.bookingId} marked as rejected`);
+        console.log(`Booking ${booking.bookingId} marked as cancelled`);
 
         // Initiate refund if payment was made
         if (booking.razorpayPaymentId) {

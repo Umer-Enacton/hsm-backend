@@ -1,5 +1,5 @@
 const db = require("../config/db");
-const { eq, and, desc, sql, asc, isNull, or } = require("drizzle-orm");
+const { eq, and, desc, sql, asc, isNull, or, inArray, count } = require("drizzle-orm");
 const { cronJobs, cronJobLogs, users } = require("../models/schema");
 const {
   createPgCronJob,
@@ -510,7 +510,7 @@ async function executeJobFunction(jobName, logId) {
   try {
     let response;
     const db = require("../config/db");
-    const { eq, and, sql, lt, isNull } = require("drizzle-orm");
+    const { eq, and, sql, lt, isNull, inArray, count: sqlCount } = require("drizzle-orm");
     const {
       bookings,
       payments,
@@ -711,21 +711,18 @@ async function executeJobFunction(jobName, logId) {
             const staffBookingCounts = [];
             for (const s of availableStaff) {
               const [countResult] = await db
-                .select({ count: require("drizzle-orm").count() })
+                .select({ count: sqlCount() })
                 .from(bookings)
                 .where(
                   and(
                     eq(bookings.assignedStaffId, s.id),
                     eq(bookings.bookingDate, bookingDate),
-                    inArray(bookings.status, [
-                      "confirmed",
-                      "reschedule_pending",
-                    ]),
+                    eq(bookings.status, "confirmed"),
                   ),
                 );
               staffBookingCounts.push({
                 staffId: s.id,
-                count: countResult.count || 0,
+                count: (countResult && countResult.count) || 0,
               });
             }
 

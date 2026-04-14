@@ -13,7 +13,7 @@ const {
   staffLeave,
   staffAssignmentTracking,
   businessProfiles,
-  address,
+  Address,
   cronJobs,
   cronJobLogs,
 } = require("../models/schema");
@@ -29,10 +29,8 @@ const {
 } = require("drizzle-orm");
 const { initiateRefund } = require("../utils/razorpay");
 const {
-  sendAcceptReminders,
   sendUpcomingServiceReminders,
   sendDayOfReminders,
-  sendPendingBookingReminders,
 } = require("../utils/reminderService");
 const {
   createNotification,
@@ -260,10 +258,14 @@ const autoAssignStaffHandler = async (req, res) => {
         const availableStaff = await db
           .select({
             staffId: staff.id,
-            staffName: staff.name,
           })
           .from(staff)
-          .where(eq(staff.businessProfileId, booking.businessProfileId));
+          .where(
+            and(
+              eq(staff.businessProfileId, booking.businessProfileId),
+              eq(staff.status, "active"),
+            ),
+          );
 
         if (availableStaff.length === 0) {
           results.errors.push({
@@ -584,335 +586,6 @@ const sendNoStaffRemindersHandler = async (req, res) => {
 };
 
 /**
- * POST /cron/auto-reject-bookings
- * Internal endpoint for cron jobs to process expired bookings
- * Protected by CRON_SECRET
- */
-router.post(
-  "/auto-reject-bookings",
-  verifyCronSecret,
-  cronLogger("auto_reject_bookings"),
-  async (req, res) => {
-    console.log("Cron job: Processing expired bookings...");
-
-    try {
-      // Combine booking date with slot time using PostgreSQL date arithmetic
-      const bookingDateTime = sql`CAST(${bookings.bookingDate} AS date) + ${slots.startTime}`;
-
-      // Get pending bookings where scheduled time has passed
-      // Need to join with slots to get the time for accurate comparison
-      const expiredBookings = await db
-        .select({
-          bookingId: bookings.id,
-          customerId: bookings.customerId,
-          bookingDate: bookings.bookingDate,
-          slotId: bookings.slotId,
-          totalPrice: bookings.totalPrice,
-          paymentId: payments.id,
-          razorpayPaymentId: payments.razorpayPaymentId,
-          customerName: users.name,
-          customerEmail: users.email,
-          serviceName: services.name,
-        })
-        .from(bookings)
-        .innerJoin(slots, eq(bookings.slotId, slots.id))
-        .innerJoin(services, eq(bookings.serviceId, services.id))
-        .innerJoin(payments, eq(bookings.id, payments.bookingId))
-        .innerJoin(users, eq(bookings.customerId, users.id))
-        .where(
-          and(
-            eq(bookings.status, "pending"),
-            // Compare actual booking time (date + slot time) - reject exactly when slot starts
-            sql`${bookingDateTime} < NOW()`,
-          ),
-        );
-
-      console.log(`Found ${expiredBookings.length} expired pending bookings`);
-
-      const results = {
-        processed: 0,
-        rejected: 0,
-        refunded: 0,
-        errors: [],
-      };
-
-      for (const booking of expiredBookings) {
-        try {
-          // Update booking status to rejected
-          await db
-            .update(bookings)
-            .set({
-              status: "rejected",
-              isRefunded: sql`CASE WHEN ${booking.razorpayPaymentId} IS NOT NULL THEN true ELSE false END`,
-              cancelledAt: new Date(),
-              cancellationReason:
-                "Auto-rejected: Booking time expired - Provider did not respond",
-              cancelledBy: "system",
-            })
-            .where(eq(bookings.id, booking.bookingId));
-
-          console.log(`Booking ${booking.bookingId} marked as rejected`);
-
-          // Initiate refund if payment exists
-          if (booking.razorpayPaymentId) {
-            try {
-              const refundResult = await initiateRefund(
-                booking.razorpayPaymentId,
-                booking.totalPrice,
-                "Auto-refund: Booking time expired",
-              );
-
-              // Update payment status
-              await db
-                .update(payments)
-                .set({
-                  status: "refunded",
-                  refundId: refundResult.id,
-                  refundAmount: booking.totalPrice,
-                  refundReason:
-                    "Auto-refund: Booking time expired - Provider did not respond",
-                  refundedAt: new Date(),
-                })
-                .where(eq(payments.id, booking.paymentId));
-
-              console.log(`Refund initiated for booking ${booking.bookingId}`);
-              results.refunded++;
-            } catch (refundError) {
-              console.error(
-                `Refund failed for booking ${booking.bookingId}:`,
-                refundError,
-              );
-              results.errors.push({
-                bookingId: booking.bookingId,
-                error: "Refund failed",
-                details: refundError.message,
-              });
-            }
-          }
-
-          results.rejected++;
-          results.processed++;
-        } catch (error) {
-          console.error(
-            `Error processing booking ${booking.bookingId}:`,
-            error,
-          );
-          results.errors.push({
-            bookingId: booking.bookingId,
-            error: "Processing failed",
-            details: error.message,
-          });
-        }
-      }
-
-      console.log("Cron job completed:", results);
-      res.status(200).json({
-        message: "Auto-reject completed",
-        ...results,
-      });
-    } catch (error) {
-      console.error("Cron job error:", error);
-      res.status(500).json({
-        message: "Server error",
-        error: error.message,
-      });
-    }
-  },
-);
-
-/**
- * POST /cron/auto-handle-reschedule-requests
- * Internal endpoint for cron jobs to auto-revert expired reschedule requests
- * If provider doesn't respond to reschedule request within 30 minutes, revert to original slot
- * Protected by CRON_SECRET
- */
-router.post(
-  "/auto-handle-reschedule-requests",
-  verifyCronSecret,
-  cronLogger("auto_handle_reschedule"),
-  async (req, res) => {
-    console.log("Cron job: Processing expired reschedule requests...");
-
-    try {
-      // Get reschedule_pending bookings where rescheduledAt is older than 30 minutes
-      const THIRTY_MINUTES_AGO = sql`NOW() - INTERVAL '30 minutes'`;
-
-      const expiredRescheduleRequests = await db
-        .select({
-          bookingId: bookings.id,
-          customerId: bookings.customerId,
-          customerName: users.name,
-          customerEmail: users.email,
-          serviceName: services.name,
-          currentSlotId: bookings.slotId,
-          currentBookingDate: bookings.bookingDate,
-          previousSlotId: bookings.previousSlotId,
-          previousBookingDate: bookings.previousBookingDate,
-          rescheduleReason: bookings.rescheduleReason,
-          rescheduledAt: bookings.rescheduledAt,
-          paymentId: payments.id,
-          razorpayPaymentId: payments.razorpayPaymentId,
-          amount: payments.amount,
-        })
-        .from(bookings)
-        .innerJoin(users, eq(bookings.customerId, users.id))
-        .innerJoin(services, eq(bookings.serviceId, services.id))
-        .leftJoin(payments, eq(bookings.id, payments.bookingId))
-        .where(
-          and(
-            eq(bookings.status, "reschedule_pending"),
-            lt(bookings.rescheduledAt, THIRTY_MINUTES_AGO),
-          ),
-        );
-
-      console.log(
-        `Found ${expiredRescheduleRequests.length} expired reschedule requests`,
-      );
-
-      const results = {
-        processed: 0,
-        reverted: 0,
-        refunded: 0,
-        errors: [],
-      };
-
-      for (const booking of expiredRescheduleRequests) {
-        try {
-          // Validate that we have previous slot info to restore
-          if (!booking.previousSlotId || !booking.previousBookingDate) {
-            console.error(
-              `Booking ${booking.bookingId} has no previous slot info, skipping`,
-            );
-            results.errors.push({
-              bookingId: booking.bookingId,
-              error: "No previous slot info available",
-              details: "Cannot revert reschedule request",
-            });
-            continue;
-          }
-
-          // Revert booking to original slot
-          const [updatedBooking] = await db
-            .update(bookings)
-            .set({
-              slotId: booking.previousSlotId,
-              bookingDate: booking.previousBookingDate,
-              status: "confirmed",
-              // Clear reschedule tracking fields
-              previousSlotId: null,
-              previousBookingDate: null,
-              rescheduleReason: null,
-              rescheduledBy: null,
-              rescheduledAt: null,
-            })
-            .where(eq(bookings.id, booking.bookingId))
-            .returning();
-
-          console.log(
-            `Booking ${booking.bookingId} reverted to original slot (slot ${booking.previousSlotId} → ${booking.currentSlotId})`,
-          );
-
-          // Refund reschedule fee if there's a separate payment for it
-          // Look for payments where is_reschedule = true (reschedule fee)
-          if (booking.paymentId && booking.razorpayPaymentId) {
-            try {
-              const refundResult = await initiateRefund(
-                booking.razorpayPaymentId,
-                booking.amount,
-                "Auto-refund: Reschedule request expired - Provider did not respond",
-              );
-
-              // Update payment status
-              await db
-                .update(payments)
-                .set({
-                  status: "refunded",
-                  refundId: refundResult.id,
-                  refundAmount: booking.amount,
-                  refundReason:
-                    "Auto-refund: Reschedule request expired - Provider did not respond in time",
-                  refundedAt: new Date(),
-                })
-                .where(eq(payments.id, booking.paymentId));
-
-              console.log(
-                `Refund processed for reschedule fee of booking ${booking.bookingId}`,
-              );
-              results.refunded++;
-            } catch (refundError) {
-              console.error(
-                `Refund failed for booking ${booking.bookingId}:`,
-                refundError,
-              );
-              results.errors.push({
-                bookingId: booking.bookingId,
-                error: "Refund failed",
-                details: refundError.message,
-              });
-            }
-          }
-
-          results.reverted++;
-          results.processed++;
-        } catch (error) {
-          console.error(
-            `Error processing booking ${booking.bookingId}:`,
-            error,
-          );
-          results.errors.push({
-            bookingId: booking.bookingId,
-            error: "Processing failed",
-            details: error.message,
-          });
-        }
-      }
-
-      console.log("Cron job completed:", results);
-      res.status(200).json({
-        message: "Auto-handle reschedule requests completed",
-        ...results,
-      });
-    } catch (error) {
-      console.error("Cron job error:", error);
-      res.status(500).json({
-        message: "Server error",
-        error: error.message,
-      });
-    }
-  },
-);
-
-/**
- * POST /cron/send-accept-reminders
- * Internal endpoint for cron jobs to send accept reminders to providers
- * Protected by CRON_SECRET
- */
-router.post(
-  "/send-accept-reminders",
-  verifyCronSecret,
-  cronLogger("send_accept_reminders"),
-  async (req, res) => {
-    console.log("Cron job: Sending accept reminders...");
-
-    try {
-      const result = await sendAcceptReminders();
-
-      console.log("Cron job completed:", result);
-      res.status(200).json({
-        message: "Accept reminders completed",
-        ...result,
-      });
-    } catch (error) {
-      console.error("Cron job error:", error);
-      res.status(500).json({
-        message: "Server error",
-        error: error.message,
-      });
-    }
-  },
-);
-
-/**
  * POST /cron/send-upcoming-reminders
  * Internal endpoint for cron jobs to send upcoming service reminders to customers
  * Protected by CRON_SECRET
@@ -934,36 +607,6 @@ router.post(
   verifyCronSecret,
   cronLogger("send_day_of_reminders"),
   sendDayOfRemindersHandler,
-);
-
-/**
- * POST /cron/send-pending-reminders
- * Internal endpoint for cron jobs to send repeated pending action reminders to providers
- * Protected by CRON_SECRET
- */
-router.post(
-  "/send-pending-reminders",
-  verifyCronSecret,
-  cronLogger("send_pending_reminders"),
-  async (req, res) => {
-    console.log("Cron job: Sending pending action reminders...");
-
-    try {
-      const result = await sendPendingBookingReminders();
-
-      console.log("Cron job completed:", result);
-      res.status(200).json({
-        message: "Pending action reminders completed",
-        ...result,
-      });
-    } catch (error) {
-      console.error("Cron job error:", error);
-      res.status(500).json({
-        message: "Server error",
-        error: error.message,
-      });
-    }
-  },
 );
 
 /**
@@ -1134,7 +777,7 @@ router.post(
                 and(
                   eq(bookings.assignedStaffId, s.id),
                   eq(bookings.bookingDate, bookingDate),
-                  inArray(bookings.status, ["confirmed", "reschedule_pending"]),
+                  eq(bookings.status, "confirmed"),
                 ),
               );
             staffBookingCounts.push({
@@ -1218,14 +861,15 @@ router.post(
           // Send notification to staff
           if (staffMember) {
             try {
-              await notificationTemplates.sendNotification(staffMember.userId, {
+              await createNotification({
+                userId: staffMember.staff.userId,
                 type: "booking_assigned",
                 title: "New Booking Assigned",
                 message: `You have been auto-assigned a booking: ${booking.serviceName} on ${booking.bookingDate.toISOString().split("T")[0]} at ${booking.slotStartTime}. Earning: 10% commission.`,
-                data: JSON.stringify({
+                data: {
                   bookingId: booking.bookingId,
                   actionUrl: "/staff/bookings",
-                }),
+                },
               });
             } catch (notifError) {
               console.error("Failed to send staff notification:", notifError);
@@ -1908,7 +1552,7 @@ router.post("/execute", verifyCronSecret, async (req, res) => {
     }
 
     // Store result data (sanitize large objects)
-    if (responseData) {
+    if (responseData && typeof responseData === "object") {
       const { data, ...rest } = responseData;
       result = JSON.stringify({
         ...rest,

@@ -85,7 +85,7 @@ const cronLogger = (jobName) => {
         }
 
         // Store result data (sanitize large objects)
-        if (responseData) {
+        if (responseData && typeof responseData === "object") {
           const { data, ...rest } = responseData;
           result = JSON.stringify({
             ...rest,
