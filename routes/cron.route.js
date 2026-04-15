@@ -1522,45 +1522,100 @@ router.post("/execute", verifyCronSecret, async (req, res) => {
     .returning();
 
   const logId = log.id;
-  let responseData = null;
 
-  // Intercept res.json to capture response
-  const originalJson = res.json.bind(res);
-  res.json = function (data) {
-    responseData = data;
-    return originalJson(data);
+  // ─── Response capture proxy ────────────────────────────────────────────────
+  // Handlers call captureRes.json() / captureRes.status().json() instead of
+  // the real Express res.  This lets us finish ALL DB writes BEFORE we send the
+  // actual HTTP response, so Vercel never kills the function mid-update.
+  let capturedStatus = 200;
+  let capturedData = null;
+  const captureRes = {
+    status(code) {
+      capturedStatus = code;
+      return this;
+    },
+    json(data) {
+      capturedData = data;
+      return this;
+    },
+    send(data) {
+      if (data && typeof data === "object") capturedData = data;
+      return this;
+    },
   };
+  // ──────────────────────────────────────────────────────────────────────────
 
-  // Handle response finish
-  res.on("finish", async () => {
-    const durationMs = Date.now() - startTime;
-    const completedAt = new Date();
-
-    let status = "success";
-    let errorMessage = null;
-    let errorDetails = null;
-    let result = null;
-
-    // Determine status based on response
-    if (res.statusCode >= 400) {
-      status = "failed";
-      errorMessage = responseData?.message || `HTTP ${res.statusCode}`;
-      errorDetails = JSON.stringify(responseData || {});
-    } else if (responseData?.success === false) {
-      status = "partial_success";
-      errorMessage = responseData?.message;
+  try {
+    // Await every handler so we know it has fully completed before touching DB
+    switch (funcName) {
+      case "send_upcoming_reminders":
+        await sendUpcomingRemindersHandler(req, captureRes);
+        break;
+      case "send_day_of_reminders":
+        await sendDayOfRemindersHandler(req, captureRes);
+        break;
+      case "check_trials":
+        await checkTrialsHandler(req, captureRes);
+        break;
+      case "auto_assign_staff":
+        await autoAssignStaffHandler(req, captureRes);
+        break;
+      case "send_staff_reminders":
+        await sendStaffRemindersHandler(req, captureRes);
+        break;
+      case "send_no_staff_reminders":
+        await sendNoStaffRemindersHandler(req, captureRes);
+        break;
+      case "check_missed_bookings":
+        await checkMissedBookingsHandler(req, captureRes);
+        break;
+      case "auto_cancel_missed_bookings":
+        await autoCancelMissedBookingsHandler(req, captureRes);
+        break;
+      default:
+        capturedStatus = 404;
+        capturedData = {
+          success: false,
+          message: `Unknown cron function: ${funcName}`,
+        };
     }
+  } catch (error) {
+    console.error(`Cron execute error for '${funcName}':`, error);
+    capturedStatus = 500;
+    capturedData = {
+      success: false,
+      message: "Server error",
+      error: error.message,
+    };
+  }
 
-    // Store result data (sanitize large objects)
-    if (responseData && typeof responseData === "object") {
-      const { data, ...rest } = responseData;
-      result = JSON.stringify({
-        ...rest,
-        dataCount: Array.isArray(data) ? data.length : data ? 1 : 0,
-      });
-    }
+  // ─── DB updates (before response — guaranteed to run on Vercel) ───────────
+  const durationMs = Date.now() - startTime;
+  const completedAt = new Date();
 
-    // Update log entry
+  let status = "success";
+  let errorMessage = null;
+  let errorDetails = null;
+  let result = null;
+
+  if (capturedStatus >= 400) {
+    status = "failed";
+    errorMessage = capturedData?.message || `HTTP ${capturedStatus}`;
+    errorDetails = JSON.stringify(capturedData || {});
+  } else if (capturedData?.success === false) {
+    status = "partial_success";
+    errorMessage = capturedData?.message;
+  }
+
+  if (capturedData && typeof capturedData === "object") {
+    const { data, ...rest } = capturedData;
+    result = JSON.stringify({
+      ...rest,
+      dataCount: Array.isArray(data) ? data.length : data ? 1 : 0,
+    });
+  }
+
+  try {
     await db
       .update(cronJobLogs)
       .set({
@@ -1573,7 +1628,6 @@ router.post("/execute", verifyCronSecret, async (req, res) => {
       })
       .where(eq(cronJobLogs.id, logId));
 
-    // Update job's last run info
     await db
       .update(cronJobs)
       .set({
@@ -1584,57 +1638,13 @@ router.post("/execute", verifyCronSecret, async (req, res) => {
           : null,
       })
       .where(eq(cronJobs.id, job.id));
-  });
-
-  try {
-    // Route to the appropriate handler based on function name
-    switch (funcName) {
-      case "send_upcoming_reminders":
-        return sendUpcomingRemindersHandler(req, res);
-      case "send_day_of_reminders":
-        return sendDayOfRemindersHandler(req, res);
-      case "check_trials":
-        return checkTrialsHandler(req, res);
-      case "auto_assign_staff":
-        return autoAssignStaffHandler(req, res);
-      case "send_staff_reminders":
-        return sendStaffRemindersHandler(req, res);
-      case "send_no_staff_reminders":
-        return sendNoStaffRemindersHandler(req, res);
-      case "check_missed_bookings":
-        return checkMissedBookingsHandler(req, res);
-      case "auto_cancel_missed_bookings":
-        return autoCancelMissedBookingsHandler(req, res);
-      default:
-        return res.status(404).json({
-          success: false,
-          message: `Unknown cron function: ${funcName}`,
-        });
-    }
-  } catch (error) {
-    console.error(`Cron execute error for '${funcName}':`, error);
-
-    // Update log with error
-    await db
-      .update(cronJobLogs)
-      .set({
-        completedAt: new Date(),
-        status: "failed",
-        errorMessage: error.message,
-        errorDetails: JSON.stringify({
-          stack: error.stack,
-          message: error.message,
-        }),
-        durationMs: Date.now() - startTime,
-      })
-      .where(eq(cronJobLogs.id, logId));
-
-    res.status(500).json({
-      success: false,
-      message: "Cron execution failed",
-      error: error.message,
-    });
+  } catch (dbError) {
+    console.error("Failed to update cron log/job after execution:", dbError);
   }
+  // ──────────────────────────────────────────────────────────────────────────
+
+  // Send response only AFTER all DB writes are complete
+  return res.status(capturedStatus).json(capturedData);
 });
 
 module.exports = router;
