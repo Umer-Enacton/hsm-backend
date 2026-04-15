@@ -228,7 +228,7 @@ const autoAssignStaffHandler = async (req, res) => {
         bookingDate: bookings.bookingDate,
         serviceName: services.name,
         slotStartTime: slots.startTime,
-        serviceDuration: services.duration,
+        serviceDuration: services.EstimateDuration,
       })
       .from(bookings)
       .innerJoin(slots, eq(bookings.slotId, slots.id))
@@ -416,7 +416,7 @@ const sendStaffRemindersHandler = async (req, res) => {
         slotStartTime: slots.startTime,
         serviceName: services.name,
         staffId: staff.id,
-        staffName: staff.name,
+        staffName: users.name,
         staffUserId: staff.userId,
         staffEmail: users.email,
       })
