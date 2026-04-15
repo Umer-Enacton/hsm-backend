@@ -111,7 +111,7 @@ const getSlotsPublic = async (req, res) => {
         gte(bookings.bookingDate, startOfDay),
         lte(bookings.bookingDate, endOfDay),
       ),
-      or(eq(bookings.status, "pending"), eq(bookings.status, "confirmed")),
+      eq(bookings.status, "confirmed"),
     ];
 
     // If serviceId provided, only check bookings for that service
