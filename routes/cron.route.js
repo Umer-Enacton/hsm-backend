@@ -304,29 +304,30 @@ const autoAssignStaffHandler = async (req, res) => {
           continue;
         }
 
-        // Get current assignment counts for load balancing
+        // Get current assignment counts from bookings table for load balancing
         const assignmentCounts = await db
           .select({
-            staffId: staffAssignmentTracking.staffId,
+            staffId: bookings.assignedStaffId,
             count: count(),
           })
-          .from(staffAssignmentTracking)
+          .from(bookings)
           .where(
             and(
               inArray(
-                staffAssignmentTracking.staffId,
+                bookings.assignedStaffId,
                 availableStaffList.map((s) => s.staffId),
               ),
-              sql`${staffAssignmentTracking.date} = ${booking.bookingDate}::date`,
+              sql`${bookings.bookingDate}::date = ${booking.bookingDate}::date`,
+              inArray(bookings.status, ["confirmed", "completed"]),
             ),
           )
-          .groupBy(staffAssignmentTracking.staffId);
+          .groupBy(bookings.assignedStaffId);
 
         const countMap = new Map(
-          assignmentCounts.map((c) => [c.staffId, c.count]),
+          assignmentCounts.map((c) => [c.staffId, Number(c.count)]),
         );
 
-        // Select staff with least assignments (round-robin load balancing)
+        // Select staff with least assignments (load balancing)
         let selectedStaff = availableStaffList[0];
         let minAssignments = countMap.get(selectedStaff.staffId) || 0;
 
@@ -344,15 +345,12 @@ const autoAssignStaffHandler = async (req, res) => {
           .set({ assignedStaffId: selectedStaff.staffId })
           .where(eq(bookings.id, booking.bookingId));
 
-        // Update or insert assignment tracking
+        // Update assignment tracking for this business
         const existingTracking = await db
           .select()
           .from(staffAssignmentTracking)
           .where(
-            and(
-              eq(staffAssignmentTracking.staffId, selectedStaff.staffId),
-              sql`${staffAssignmentTracking.date} = ${booking.bookingDate}::date`,
-            ),
+            eq(staffAssignmentTracking.businessProfileId, booking.businessProfileId),
           )
           .limit(1);
 
@@ -360,14 +358,14 @@ const autoAssignStaffHandler = async (req, res) => {
           await db
             .update(staffAssignmentTracking)
             .set({
-              assignmentsCount: existingTracking[0].assignmentsCount + 1,
+              lastAssignedStaffId: selectedStaff.staffId,
+              assignedAt: new Date(),
             })
             .where(eq(staffAssignmentTracking.id, existingTracking[0].id));
         } else {
           await db.insert(staffAssignmentTracking).values({
-            staffId: selectedStaff.staffId,
-            date: booking.bookingDate,
-            assignmentsCount: 1,
+            businessProfileId: booking.businessProfileId,
+            lastAssignedStaffId: selectedStaff.staffId,
           });
         }
 
