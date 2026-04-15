@@ -836,6 +836,7 @@ const privacyPolicyNotifications = pgTable("privacy_policy_notifications", {
   policyId: integer("policy_id")
     .notNull()
     .references(() => privacyPolicies.id, { onDelete: "cascade" }),
+  version: varchar("version", { length: 20 }).notNull(),
   sentAt: timestamp("sent_at").defaultNow().notNull(),
   recipientCount: integer("recipient_count").notNull(), // Count of users notified
 });
@@ -858,6 +859,7 @@ const termsConditionNotifications = pgTable("terms_condition_notifications", {
   termsId: integer("terms_id")
     .notNull()
     .references(() => termsConditions.id, { onDelete: "cascade" }),
+  version: varchar("version", { length: 20 }).notNull(),
   sentAt: timestamp("sent_at").defaultNow().notNull(),
   recipientCount: integer("recipient_count").notNull(), // Count of users notified
 });

@@ -186,6 +186,7 @@ const activatePolicy = async (req, res) => {
       .insert(privacyPolicyNotifications)
       .values({
         policyId: activated.id,
+        version: activated.version,
         recipientCount: allUsers.length,
       })
       .returning();

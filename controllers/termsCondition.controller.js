@@ -206,6 +206,7 @@ const activateTerms = async (req, res) => {
     // 4. Log the notification
     await db.insert(termsConditionNotifications).values({
       termsId: activated.id,
+      version: activated.version,
       recipientCount: notificationCount,
     });
 
