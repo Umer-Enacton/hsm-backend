@@ -1303,8 +1303,8 @@ const autoCancelMissedBookingsHandler = async (req, res) => {
         slotTime: slots.startTime,
         totalPrice: bookings.totalPrice,
         missedAt: bookings.missedAt,
-        razorpayPaymentId: paymentDetails.razorpayPaymentId,
-        paymentId: paymentDetails.id,
+        razorpayPaymentId: payments.razorpayPaymentId,
+        paymentId: payments.id,
       })
       .from(bookings)
       .innerJoin(slots, eq(bookings.slotId, slots.id))
@@ -1313,7 +1313,7 @@ const autoCancelMissedBookingsHandler = async (req, res) => {
         businessProfilesTable,
         eq(bookings.businessProfileId, businessProfilesTable.id),
       )
-      .innerJoin(paymentDetails, eq(bookings.id, paymentDetails.bookingId))
+      .innerJoin(payments, eq(bookings.id, payments.bookingId))
       .innerJoin(
         sql`${users} AS customer_users`,
         eq(bookings.customerId, sql`customer_users.id`),
