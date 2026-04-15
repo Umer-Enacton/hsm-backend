@@ -216,6 +216,7 @@ const activatePolicy = async (req, res) => {
           route: privacyRoute,
           policyId: activated.id,
           version: activated.version,
+          policyType: "privacy",
         },
       });
 

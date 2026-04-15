@@ -198,6 +198,7 @@ const activateTerms = async (req, res) => {
           route: termsRoute,
           termsId: activated.id,
           version: activated.version,
+          policyType: "terms",
         }),
       });
       notificationCount++;
