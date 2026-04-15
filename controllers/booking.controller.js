@@ -1001,10 +1001,13 @@ const acceptBooking = async (req, res) => {
     }
 
     // 2. Check booking status - No longer checking for 'pending' as all are confirmed
-    if (booking[0].status === "completed" || booking[0].status === "cancelled") {
-      return res
-        .status(400)
-        .json({ message: "Completed or cancelled bookings cannot be confirmed again" });
+    if (
+      booking[0].status === "completed" ||
+      booking[0].status === "cancelled"
+    ) {
+      return res.status(400).json({
+        message: "Completed or cancelled bookings cannot be confirmed again",
+      });
     }
 
     // 3. Fetch business profile
@@ -1074,7 +1077,10 @@ const rejectBooking = async (req, res) => {
     }
 
     // 2. Check booking status - In the simplified model, providers can cancel any non-completed booking
-    if (booking[0].status === "completed" || booking[0].status === "cancelled") {
+    if (
+      booking[0].status === "completed" ||
+      booking[0].status === "cancelled"
+    ) {
       return res.status(400).json({
         message: `This booking cannot be cancelled. Current status: ${booking[0].status}.`,
         currentStatus: booking[0].status,
@@ -1431,7 +1437,7 @@ const requestReschedule = async (req, res) => {
           eq(bookings.serviceId, booking.serviceId), // Only check same service
           gte(bookings.bookingDate, startOfDay),
           lte(bookings.bookingDate, endOfDay),
-          or(eq(bookings.status, "pending"), eq(bookings.status, "confirmed")),
+          eq(bookings.status, "confirmed"),
           ne(bookings.id, bookingId), // Exclude the current booking itself
         ),
       )
@@ -1550,7 +1556,8 @@ const cancelRescheduleRequest = async (req, res) => {
     // Check if booking is in confirmed status (since reschedule_pending is removed)
     if (booking.status !== "confirmed") {
       return res.status(400).json({
-        message: "Booking is not in a state where a reschedule can be cancelled.",
+        message:
+          "Booking is not in a state where a reschedule can be cancelled.",
       });
     }
 
@@ -2567,7 +2574,7 @@ const providerReschedule = async (req, res) => {
           eq(bookings.serviceId, booking.serviceId), // Only check same service
           gte(bookings.bookingDate, startOfDay),
           lte(bookings.bookingDate, endOfDay),
-          or(eq(bookings.status, "pending"), eq(bookings.status, "confirmed")),
+          eq(bookings.status, "confirmed"),
           ne(bookings.id, bookingId), // Exclude the current booking itself
         ),
       )
@@ -3766,8 +3773,8 @@ const assignBookingToStaff = async (req, res) => {
           eq(staffLeave.staffId, parseInt(staffId)),
           eq(staffLeave.status, "pending"),
           // Leave period overlaps with booking date
-          sql`${bookingDate} >= ${staffLeave.startDate} AND ${bookingDate} <= ${staffLeave.endDate}`
-        )
+          sql`${bookingDate} >= ${staffLeave.startDate} AND ${bookingDate} <= ${staffLeave.endDate}`,
+        ),
       );
 
     if (pendingLeaveRequests.length > 0) {
@@ -3778,13 +3785,14 @@ const assignBookingToStaff = async (req, res) => {
           status: "rejected",
           approvedBy: userId,
           approvedAt: new Date(),
-          rejectionReason: "Automatically rejected: Staff was assigned to a booking on this date",
+          rejectionReason:
+            "Automatically rejected: Staff was assigned to a booking on this date",
         })
         .where(inArray(staffLeave.id, leaveIds));
 
       rejectedLeaveIds.push(...leaveIds);
       console.log(
-        `Auto-rejected ${leaveIds.length} pending leave request(s) for staff ${staffId} due to booking assignment on ${bookingDate}`
+        `Auto-rejected ${leaveIds.length} pending leave request(s) for staff ${staffId} due to booking assignment on ${bookingDate}`,
       );
     }
 
@@ -3836,9 +3844,10 @@ const assignBookingToStaff = async (req, res) => {
     }
 
     return res.status(200).json({
-      message: rejectedLeaveIds.length > 0
-        ? `Booking assigned. ${rejectedLeaveIds.length} pending leave request(s) for this date were automatically rejected.`
-        : "Booking assigned to staff successfully",
+      message:
+        rejectedLeaveIds.length > 0
+          ? `Booking assigned. ${rejectedLeaveIds.length} pending leave request(s) for this date were automatically rejected.`
+          : "Booking assigned to staff successfully",
       booking: updatedBooking,
       rejectedLeaveRequests: rejectedLeaveIds,
     });
@@ -3916,7 +3925,7 @@ const getAvailableStaffForBooking = async (req, res) => {
       .select({
         assignedStaffId: bookings.assignedStaffId,
         bookingDate: bookings.bookingDate,
-        status: bookings.status
+        status: bookings.status,
       })
       .from(bookings)
       .where(
@@ -3929,7 +3938,7 @@ const getAvailableStaffForBooking = async (req, res) => {
 
     // Filter by date in JavaScript (extract YYYY-MM-DD from timestamp)
     const overlappingBookings = allSlotBookings.filter(
-      b => b.bookingDate && b.bookingDate.toISOString().startsWith(leaveDate)
+      (b) => b.bookingDate && b.bookingDate.toISOString().startsWith(leaveDate),
     );
 
     const busyStaffIds = new Set(
@@ -3952,7 +3961,10 @@ const getAvailableStaffForBooking = async (req, res) => {
       .from(bookings)
       .where(
         and(
-          inArray(bookings.assignedStaffId, availableStaff.map(s => s.id)),
+          inArray(
+            bookings.assignedStaffId,
+            availableStaff.map((s) => s.id),
+          ),
           inArray(bookings.status, ["confirmed", "completed"]),
         ),
       );
@@ -3961,11 +3973,11 @@ const getAvailableStaffForBooking = async (req, res) => {
     const staffBookingCounts = new Map();
     for (const booking of allStaffBookings) {
       if (!booking.assignedStaffId) continue;
-      const bookingDateStr = booking.bookingDate?.toISOString().split('T')[0];
+      const bookingDateStr = booking.bookingDate?.toISOString().split("T")[0];
       if (bookingDateStr === leaveDate) {
         staffBookingCounts.set(
           booking.assignedStaffId,
-          (staffBookingCounts.get(booking.assignedStaffId) || 0) + 1
+          (staffBookingCounts.get(booking.assignedStaffId) || 0) + 1,
         );
       }
     }

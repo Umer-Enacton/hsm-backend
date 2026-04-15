@@ -276,9 +276,8 @@ const createPaymentOrder = async (req, res) => {
           gte(bookings.bookingDate, startOfDay),
           lte(bookings.bookingDate, endOfDay),
           or(
-            eq(bookings.status, "pending"),
-            eq(bookings.status, "payment_pending"),
-            eq(bookings.status, "confirmed")
+            eq(bookings.status, "confirmed"),
+            eq(bookings.status, "completed")
           ),
           // For reschedule: exclude the current booking (user is selecting a NEW slot)
           ...(isReschedule ? [ne(bookings.id, bookingId)] : [])
