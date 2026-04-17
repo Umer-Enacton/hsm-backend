@@ -13,14 +13,35 @@ const {
   providerSubscriptions,
   subscriptionPlans,
 } = require("../models/schema");
-const { eq, and, gte, gt, lte, desc, or, sql, ne, count } = require("drizzle-orm");
-const { createRazorpayOrder, createSplitOrder, verifySignature, initiateRefund, rupeesToPaise, paiseToRupees, createRazorpayCustomer } = require("../utils/razorpay");
+const {
+  eq,
+  and,
+  gte,
+  gt,
+  lte,
+  desc,
+  or,
+  sql,
+  ne,
+  count,
+} = require("drizzle-orm");
+const {
+  createRazorpayOrder,
+  createSplitOrder,
+  verifySignature,
+  initiateRefund,
+  rupeesToPaise,
+  paiseToRupees,
+  createRazorpayCustomer,
+} = require("../utils/razorpay");
 const { notificationTemplates } = require("../utils/notificationHelper");
 const { logBookingHistory } = require("../utils/historyHelper");
-const { getProviderActiveSubscription } = require("../controllers/providerSubscription.controller");
+const {
+  getProviderActiveSubscription,
+} = require("../controllers/providerSubscription.controller");
 
 // STARTUP LOG: Confirm this file is loaded
-console.log('✅ payment.controller.js loaded - version 2026-03-16-v2');
+console.log("✅ payment.controller.js loaded - version 2026-03-16-v2");
 
 // ============================================
 // HELPER FUNCTIONS
@@ -67,33 +88,45 @@ const createPaymentOrder = async (req, res) => {
 
   try {
     const userId = req.token.id;
-    const { serviceId, slotId, addressId, bookingDate, reschedule, bookingId, reason } = req.body;
+    const {
+      serviceId,
+      slotId,
+      addressId,
+      bookingDate,
+      reschedule,
+      bookingId,
+      reason,
+    } = req.body;
 
     // Check if this is a reschedule payment
     const isReschedule = reschedule === true;
 
-    console.log(`💰 Payment order request - ${isReschedule ? 'RESCHEDULE' : 'NEW BOOKING'}`);
+    console.log(
+      `💰 Payment order request - ${isReschedule ? "RESCHEDULE" : "NEW BOOKING"}`,
+    );
     if (isReschedule) {
-      console.log(`📅 Reschedule bookingId: ${bookingId}, newSlotId: ${slotId}`);
+      console.log(
+        `📅 Reschedule bookingId: ${bookingId}, newSlotId: ${slotId}`,
+      );
     }
 
     // Validate required fields
     if (!serviceId || !slotId || !bookingDate) {
       return res.status(400).json({
-        message: "All fields are required: serviceId, slotId, bookingDate"
+        message: "All fields are required: serviceId, slotId, bookingDate",
       });
     }
 
     // For reschedule, bookingId is required; for new booking, addressId is required
     if (isReschedule && !bookingId) {
       return res.status(400).json({
-        message: "bookingId is required for reschedule"
+        message: "bookingId is required for reschedule",
       });
     }
 
     if (!isReschedule && !addressId) {
       return res.status(400).json({
-        message: "addressId is required for new booking"
+        message: "addressId is required for new booking",
       });
     }
 
@@ -105,11 +138,15 @@ const createPaymentOrder = async (req, res) => {
 
     // Check if booking date is in the past
     const now = new Date();
-    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const todayStart = new Date(
+      now.getFullYear(),
+      now.getMonth(),
+      now.getDate(),
+    );
     const bookingDateStart = new Date(
       bookingDateObj.getFullYear(),
       bookingDateObj.getMonth(),
-      bookingDateObj.getDate()
+      bookingDateObj.getDate(),
     );
 
     if (bookingDateStart < todayStart) {
@@ -146,10 +183,7 @@ const createPaymentOrder = async (req, res) => {
     }
 
     // Verify slot exists
-    const [slot] = await db
-      .select()
-      .from(slots)
-      .where(eq(slots.id, slotId));
+    const [slot] = await db.select().from(slots).where(eq(slots.id, slotId));
 
     if (!slot) {
       return res.status(404).json({ message: "Slot not found" });
@@ -183,7 +217,9 @@ const createPaymentOrder = async (req, res) => {
       [existingBooking] = await db
         .select()
         .from(bookings)
-        .where(and(eq(bookings.id, bookingId), eq(bookings.customerId, userId)));
+        .where(
+          and(eq(bookings.id, bookingId), eq(bookings.customerId, userId)),
+        );
 
       if (!existingBooking) {
         return res.status(404).json({ message: "Booking not found" });
@@ -192,7 +228,7 @@ const createPaymentOrder = async (req, res) => {
       // Check if booking is in a reschedule-eligible status
       if (existingBooking.status !== "confirmed") {
         return res.status(400).json({
-          message: `Cannot reschedule booking with status "${existingBooking.status}". Only confirmed bookings can be rescheduled.`
+          message: `Cannot reschedule booking with status "${existingBooking.status}". Only confirmed bookings can be rescheduled.`,
         });
       }
 
@@ -203,7 +239,7 @@ const createPaymentOrder = async (req, res) => {
       console.log(`💰 Reschedule fee calculation:`, {
         feeType: "flat",
         rescheduleFee: `${RESCHEDULE_FEE}₹`,
-        rescheduleFeeInPaise
+        rescheduleFeeInPaise,
       });
 
       // Use existing booking's address (don't need to validate new address)
@@ -230,73 +266,59 @@ const createPaymentOrder = async (req, res) => {
     }
 
     // OPTIMISTIC LOCKING: Try to insert payment_intent directly
-    // Unique constraint prevents duplicate locks for same slot+date+status=pending
-    console.log(`🔒 ATOMIC LOCK: Attempting to lock slot ${slotId} for ${bookingDate}`);
-    console.log(`📍 User ${userId} trying to ${isReschedule ? 'reschedule' : 'book'} slot ${slotId} on ${bookingDate}`);
+    // Unique constraint on (slot_id, booking_date, status='pending') prevents duplicate locks
+    console.log(`🔒 Attempting to lock slot ${slotId} for ${bookingDate}`);
+    console.log(
+      `📍 User ${userId} trying to ${isReschedule ? "reschedule" : "book"} slot ${slotId} on ${bookingDate}`,
+    );
 
-    // Calculate expiry time for payment intent (1 minute from now)
-    const expiresAt = new Date(now.getTime() + 1 * 60 * 1000);
+    // Calculate expiry time for payment intent (90 seconds from now)
+    const expiresAt = new Date(now.getTime() + 90 * 1000);
 
+    // ============================================
+    // CHECK FOR EXISTING BOOKINGS
+    // ============================================
     // Create date range for the selected date
     const startOfDay = new Date(bookingDateObj);
     startOfDay.setHours(0, 0, 0, 0);
     const endOfDay = new Date(bookingDateObj);
     endOfDay.setHours(23, 59, 59, 999);
 
-    // ============================================
-    // ADDITIONAL SAFEGUARD: Explicit check for max booking limits
-    // ============================================
-    console.log(`🔍 PRE-CHECK: Checking for booking limits...`);
-
     const maxBookingLimit = service.maxAllowBooking || 1;
 
-    // Get count of valid, non-expired pending payment intents
-    const pendingIntentsCountResult = await db
-      .select({ count: count() })
-      .from(paymentIntents)
-      .where(
-        and(
-          eq(paymentIntents.slotId, slotId),
-          eq(paymentIntents.serviceId, serviceId), // ✅ Only lock same service
-          eq(paymentIntents.status, "pending"),
-          gt(paymentIntents.expiresAt, now) // Must not be expired
-        )
-      );
-
-    const pendingIntentsCount = Number(pendingIntentsCountResult[0]?.count || 0);
-
-    // Get count of existing bookings
+    // Get count of existing CONFIRMED/COMPLETED bookings for this slot/date
     const bookingsCountResult = await db
       .select({ count: count() })
       .from(bookings)
       .where(
         and(
           eq(bookings.slotId, slotId),
-          eq(bookings.serviceId, serviceId), // ✅ Must match the same service
+          eq(bookings.serviceId, serviceId),
           gte(bookings.bookingDate, startOfDay),
           lte(bookings.bookingDate, endOfDay),
           or(
             eq(bookings.status, "confirmed"),
-            eq(bookings.status, "completed")
+            eq(bookings.status, "completed"),
           ),
-          // For reschedule: exclude the current booking (user is selecting a NEW slot)
-          ...(isReschedule ? [ne(bookings.id, bookingId)] : [])
-        )
+          ...(isReschedule ? [ne(bookings.id, bookingId)] : []),
+        ),
       );
 
     const bookedCount = Number(bookingsCountResult[0]?.count || 0);
-    const totalCurrentBookings = pendingIntentsCount + bookedCount;
-
-    console.log(`📊 Booking stats for service ${serviceId} on slot ${slotId}: active bookings=${bookedCount}, pending intents=${pendingIntentsCount}, total=${totalCurrentBookings}, maxAllowed=${maxBookingLimit}`);
-
-    if (totalCurrentBookings >= maxBookingLimit) {
-      console.log(`❌ Slot ${slotId} reached max capacity (${maxBookingLimit}) for service ${serviceId} on ${bookingDate}`);
+    await new Promise((resolve) => setTimeout(resolve, 5000));
+    if (bookedCount >= maxBookingLimit) {
+      console.log(
+        `❌ Slot ${slotId} already fully booked (${bookedCount}/${maxBookingLimit})`,
+      );
       return res.status(409).json({
-        message: "This slot has already reached its maximum capacity for this service. Please select a different time.",
+        message:
+          "This slot is already fully booked. Please select a different time.",
         code: "SLOT_ALREADY_BOOKED",
-        retryable: true
+        retryable: false,
       });
     }
+
+    console.log(`✅ Slot available, creating payment intent...`);
 
     try {
       // Try to create payment_intent - unique constraint prevents race conditions
@@ -311,15 +333,50 @@ const createPaymentOrder = async (req, res) => {
         status: "pending",
         expiresAt: expiresAt.toISOString(),
         isReschedule: isReschedule,
-        rescheduleBookingId: isReschedule ? bookingId : null
+        rescheduleBookingId: isReschedule ? bookingId : null,
       });
+
+      // Normalize bookingDate to date-only (midnight) for unique constraint to work properly
+      // This ensures two users booking same slot on same date get a conflict
+      const bookingDateOnly = new Date(bookingDateObj);
+      bookingDateOnly.setHours(0, 0, 0, 0);
+      const bookingDateEnd = new Date(bookingDateOnly);
+      bookingDateEnd.setHours(23, 59, 59, 999);
+
+      // Pre-check: Check if there's already a pending payment intent for this slot/date
+      // Use date range to catch any pending intents for that day
+      const existingIntent = await db
+        .select()
+        .from(paymentIntents)
+        .where(
+          and(
+            eq(paymentIntents.slotId, slotId),
+            gte(paymentIntents.bookingDate, bookingDateOnly),
+            lte(paymentIntents.bookingDate, bookingDateEnd),
+            eq(paymentIntents.status, "pending"),
+            gt(paymentIntents.expiresAt, new Date()),
+          ),
+        )
+        .limit(1);
+
+      if (existingIntent.length > 0) {
+        console.log(
+          `⛔ Slot ${slotId} already has pending payment intent ${existingIntent[0].id}`,
+        );
+        return res.status(409).json({
+          message:
+            "This slot is currently being booked by another customer. Please wait a moment and try again.",
+          code: "SLOT_LOCKED",
+          retryable: true,
+        });
+      }
 
       const intentValues = {
         userId: userId,
         serviceId: serviceId,
         slotId: slotId,
         addressId: isReschedule ? existingBooking?.addressId : addressId,
-        bookingDate: bookingDateObj,
+        bookingDate: bookingDateOnly, // Use date-only for unique constraint
         amount: amountInPaise,
         razorpayOrderId: `temp_${userId}_${Date.now()}`, // Temporary, will update after Razorpay order creation
         status: "pending",
@@ -338,29 +395,39 @@ const createPaymentOrder = async (req, res) => {
         .returning();
 
       paymentIntent = newIntent;
-      console.log(`✅ Payment intent ${newIntent.id} created, slot ${slotId} locked for 1 minute`);
+      console.log(
+        `✅ Payment intent ${newIntent.id} created, slot ${slotId} locked for 1 minute`,
+      );
     } catch (insertError) {
       // Check if this is a unique constraint violation (slot already locked)
       const errorCode = insertError.code || insertError.cause?.code;
-      const errorMessage = insertError.message || insertError.cause?.message || '';
+      const errorMessage =
+        insertError.message || insertError.cause?.message || "";
 
       console.log(`❌ Insert failed with error:`, {
         errorCode,
         errorMessage: errorMessage.substring(0, 200),
-        fullError: insertError.toString().substring(0, 300)
+        fullError: insertError.toString().substring(0, 300),
       });
 
-      if (errorCode === '23505' || errorMessage.includes('unique constraint') || errorMessage.includes('duplicate key')) {
-        console.log(`⏳ Slot ${slotId} is already locked by another customer (unique constraint violation)`);
+      if (
+        errorCode === "23505" ||
+        errorMessage.includes("unique constraint") ||
+        errorMessage.includes("duplicate key")
+      ) {
+        console.log(
+          `⏳ Slot ${slotId} is already locked by another customer (unique constraint violation)`,
+        );
         return res.status(409).json({
-          message: "Another customer is currently booking this slot. Please wait a moment and try again, or choose a different slot.",
+          message:
+            "Another customer is currently booking this slot. Please wait a moment and try again, or choose a different slot.",
           code: "SLOT_LOCKED",
           retryable: true,
           debug: {
-            constraint: 'payment_intents_slot_date_pending_unique',
+            constraint: "payment_intents_slot_date_pending_unique",
             errorCode,
-            errorMessage: errorMessage.substring(0, 200)
-          }
+            errorMessage: errorMessage.substring(0, 200),
+          },
         });
       }
 
@@ -397,7 +464,8 @@ const createPaymentOrder = async (req, res) => {
           .where(eq(paymentIntents.id, paymentIntent.id));
 
         return res.status(400).json({
-          message: "Service provider is not accepting bookings at this time. Please try again later.",
+          message:
+            "Service provider is not accepting bookings at this time. Please try again later.",
           code: "PROVIDER_NO_PAYMENT_DETAILS",
         });
       }
@@ -411,7 +479,8 @@ const createPaymentOrder = async (req, res) => {
 
       if (!adminUser) {
         return res.status(500).json({
-          message: "System error: Admin configuration not found. Please contact support.",
+          message:
+            "System error: Admin configuration not found. Please contact support.",
           code: "ADMIN_NOT_FOUND",
         });
       }
@@ -419,12 +488,18 @@ const createPaymentOrder = async (req, res) => {
       adminPayment = await db
         .select()
         .from(paymentDetails)
-        .where(and(eq(paymentDetails.userId, adminUser.id), eq(paymentDetails.isActive, true)))
+        .where(
+          and(
+            eq(paymentDetails.userId, adminUser.id),
+            eq(paymentDetails.isActive, true),
+          ),
+        )
         .limit(1);
 
       if (!adminPayment || adminPayment.length === 0) {
         return res.status(500).json({
-          message: "System error: Payment processing is temporarily unavailable. Please contact support.",
+          message:
+            "System error: Payment processing is temporarily unavailable. Please contact support.",
           code: "ADMIN_NO_PAYMENT_DETAILS",
         });
       }
@@ -435,13 +510,19 @@ const createPaymentOrder = async (req, res) => {
       const providerPaymentResult = await db
         .select()
         .from(paymentDetails)
-        .where(and(eq(paymentDetails.userId, businessProfile.providerId), eq(paymentDetails.isActive, true)))
+        .where(
+          and(
+            eq(paymentDetails.userId, businessProfile.providerId),
+            eq(paymentDetails.isActive, true),
+          ),
+        )
         .limit(1);
 
       if (!providerPaymentResult || providerPaymentResult.length === 0) {
         // This shouldn't happen if hasPaymentDetails is true, but check anyway
         return res.status(500).json({
-          message: "Service provider payment details not found. Please contact support.",
+          message:
+            "Service provider payment details not found. Please contact support.",
           code: "PROVIDER_PAYMENT_DETAILS_MISMATCH",
         });
       }
@@ -469,7 +550,10 @@ const createPaymentOrder = async (req, res) => {
           contact: customerUser.phone,
         });
         razorpayCustomerId = razorpayCustomer.id;
-        console.log("✅ Razorpay customer created/fetched:", razorpayCustomerId);
+        console.log(
+          "✅ Razorpay customer created/fetched:",
+          razorpayCustomerId,
+        );
       }
     } catch (customerError) {
       console.error("⚠️ Failed to create Razorpay customer:", customerError);
@@ -482,12 +566,21 @@ const createPaymentOrder = async (req, res) => {
         // Get provider's subscription to determine platform fee percentage
         let platformFeePercentage = 5; // Default
         try {
-          const providerSubscription = await getProviderActiveSubscription(businessProfile.providerId);
-          if (providerSubscription && providerSubscription.planPlatformFeePercentage !== undefined) {
-            platformFeePercentage = providerSubscription.planPlatformFeePercentage;
+          const providerSubscription = await getProviderActiveSubscription(
+            businessProfile.providerId,
+          );
+          if (
+            providerSubscription &&
+            providerSubscription.planPlatformFeePercentage !== undefined
+          ) {
+            platformFeePercentage =
+              providerSubscription.planPlatformFeePercentage;
           }
         } catch (error) {
-          console.error("Error fetching provider subscription for platform fee:", error);
+          console.error(
+            "Error fetching provider subscription for platform fee:",
+            error,
+          );
         }
 
         razorpayOrder = await createSplitOrder(
@@ -497,12 +590,17 @@ const createPaymentOrder = async (req, res) => {
           adminPayment.razorpayFundAccountId,
           platformFeePercentage,
           notes,
-          razorpayCustomerId // Pass customer ID for tracking
+          razorpayCustomerId, // Pass customer ID for tracking
         );
         console.log(`✅ Razorpay split order created: ${razorpayOrder.id}`);
       } else {
         // Reschedule fees don't use split (they're flat fees to platform)
-        razorpayOrder = await createRazorpayOrder(amountInPaise, tempReceipt, notes, razorpayCustomerId);
+        razorpayOrder = await createRazorpayOrder(
+          amountInPaise,
+          tempReceipt,
+          notes,
+          razorpayCustomerId,
+        );
         console.log(`✅ Razorpay order created: ${razorpayOrder.id}`);
       }
     } catch (razorpayError) {
@@ -514,16 +612,22 @@ const createPaymentOrder = async (req, res) => {
           await db
             .delete(paymentIntents)
             .where(eq(paymentIntents.id, paymentIntent.id));
-          console.log(`🧹 Released slot lock for payment_intent ${paymentIntent.id}`);
+          console.log(
+            `🧹 Released slot lock for payment_intent ${paymentIntent.id}`,
+          );
         } catch (cleanupError) {
           console.error("Error cleaning up payment_intent:", cleanupError);
         }
       }
 
       return res.status(500).json({
-        message: "Payment gateway is temporarily unavailable. Please try again.",
+        message:
+          "Payment gateway is temporarily unavailable. Please try again.",
         code: "RAZORPAY_ERROR",
-        error: process.env.NODE_ENV === 'development' ? razorpayError.message : undefined,
+        error:
+          process.env.NODE_ENV === "development"
+            ? razorpayError.message
+            : undefined,
       });
     }
 
@@ -534,7 +638,9 @@ const createPaymentOrder = async (req, res) => {
       .where(eq(paymentIntents.id, paymentIntent.id))
       .returning();
 
-    console.log(`✅ Payment intent ${updatedIntent.id} updated with Razorpay order ID`);
+    console.log(
+      `✅ Payment intent ${updatedIntent.id} updated with Razorpay order ID`,
+    );
 
     // Return order details to frontend
     res.status(201).json({
@@ -555,7 +661,9 @@ const createPaymentOrder = async (req, res) => {
         await db
           .delete(paymentIntents)
           .where(eq(paymentIntents.id, paymentIntent.id));
-        console.log(`🧹 Cleaned up payment_intent ${paymentIntent.id} due to error`);
+        console.log(
+          `🧹 Cleaned up payment_intent ${paymentIntent.id} due to error`,
+        );
       } catch (cleanupError) {
         console.error("Error cleaning up payment_intent:", cleanupError);
       }
@@ -563,12 +671,17 @@ const createPaymentOrder = async (req, res) => {
 
     // Extract error code and message from error or error.cause
     const errorCode = error.code || error.cause?.code;
-    const errorMessage = error.message || error.cause?.message || '';
+    const errorMessage = error.message || error.cause?.message || "";
 
     // Check for unique constraint violation (slot locked by another customer)
-    if (errorCode === '23505' || errorMessage.includes('unique constraint') || errorMessage.includes('duplicate key')) {
+    if (
+      errorCode === "23505" ||
+      errorMessage.includes("unique constraint") ||
+      errorMessage.includes("duplicate key")
+    ) {
       return res.status(409).json({
-        message: "Another customer is currently booking this slot. Please wait a moment and try again, or choose a different slot.",
+        message:
+          "Another customer is currently booking this slot. Please wait a moment and try again, or choose a different slot.",
         code: "SLOT_LOCKED",
         retryable: true,
       });
@@ -577,7 +690,8 @@ const createPaymentOrder = async (req, res) => {
     // Check for "already booked" error
     if (errorMessage.includes("already booked")) {
       return res.status(409).json({
-        message: "This slot has already been booked. Please select a different time.",
+        message:
+          "This slot has already been booked. Please select a different time.",
         code: "SLOT_ALREADY_BOOKED",
       });
     }
@@ -585,7 +699,7 @@ const createPaymentOrder = async (req, res) => {
     // Generic error response
     res.status(500).json({
       message: "Failed to create payment order. Please try again.",
-      error: process.env.NODE_ENV === 'development' ? errorMessage : undefined,
+      error: process.env.NODE_ENV === "development" ? errorMessage : undefined,
     });
   }
 };
@@ -604,17 +718,19 @@ const createPaymentOrder = async (req, res) => {
  * 7. All in a transaction for atomicity
  */
 const verifyPayment = async (req, res) => {
-  console.log('🚀 ============================================ 🚀');
-  console.log('🚀 verifyPayment FUNCTION CALLED');
-  console.log('🚀 ============================================ 🚀');
+  console.log("🚀 ============================================ 🚀");
+  console.log("🚀 verifyPayment FUNCTION CALLED");
+  console.log("🚀 ============================================ 🚀");
   try {
     const userId = req.token.id;
-    const { razorpayOrderId, razorpayPaymentId, signature, paymentIntentId } = req.body;
+    const { razorpayOrderId, razorpayPaymentId, signature, paymentIntentId } =
+      req.body;
 
     // Validate required fields (signature is optional for v2 checkout)
     if (!razorpayOrderId || !razorpayPaymentId || !paymentIntentId) {
       return res.status(400).json({
-        message: "Required fields: razorpayOrderId, razorpayPaymentId, paymentIntentId"
+        message:
+          "Required fields: razorpayOrderId, razorpayPaymentId, paymentIntentId",
       });
     }
 
@@ -627,7 +743,9 @@ const verifyPayment = async (req, res) => {
 
     // Fetch Razorpay order details to get notes (contains reason for reschedule)
     let reason = null;
-    let isMockOrder = razorpayOrderId?.startsWith("mock_order_") || razorpayPaymentId?.startsWith("mock_payment_");
+    let isMockOrder =
+      razorpayOrderId?.startsWith("mock_order_") ||
+      razorpayPaymentId?.startsWith("mock_payment_");
 
     try {
       const { fetchOrderDetails } = require("../utils/razorpay");
@@ -639,7 +757,10 @@ const verifyPayment = async (req, res) => {
       }
       console.log("📝 Retrieved reason from Razorpay order notes:", reason);
     } catch (orderError) {
-      console.warn("⚠️ Could not fetch Razorpay order details:", orderError.message);
+      console.warn(
+        "⚠️ Could not fetch Razorpay order details:",
+        orderError.message,
+      );
       // Continue without reason - it's optional
     }
 
@@ -650,7 +771,11 @@ const verifyPayment = async (req, res) => {
     }
     // If signature is provided, verify it (only for real orders)
     else if (signature && signature.trim() !== "") {
-      const isValidSignature = verifySignature(razorpayOrderId, razorpayPaymentId, signature);
+      const isValidSignature = verifySignature(
+        razorpayOrderId,
+        razorpayPaymentId,
+        signature,
+      );
 
       if (!isValidSignature) {
         // Update payment_intent as failed
@@ -668,7 +793,9 @@ const verifyPayment = async (req, res) => {
       console.log("✅ Signature verified");
     } else if (!isMockOrder) {
       // Only fetch from Razorpay for real orders, not mock orders
-      console.log("⚠️ No signature provided, fetching payment details from Razorpay...");
+      console.log(
+        "⚠️ No signature provided, fetching payment details from Razorpay...",
+      );
 
       // No signature - fetch payment from Razorpay to verify it exists and matches the order
       try {
@@ -693,7 +820,9 @@ const verifyPayment = async (req, res) => {
             })
             .where(eq(paymentIntents.id, paymentIntentId));
 
-          return res.status(400).json({ message: "Payment does not match the order" });
+          return res
+            .status(400)
+            .json({ message: "Payment does not match the order" });
         }
 
         // Verify payment is captured/authorized (with auto-capture, status should be "captured")
@@ -707,7 +836,9 @@ const verifyPayment = async (req, res) => {
             })
             .where(eq(paymentIntents.id, paymentIntentId));
 
-          return res.status(400).json({ message: `Payment not completed. Status: ${razorpayPayment.status}` });
+          return res.status(400).json({
+            message: `Payment not completed. Status: ${razorpayPayment.status}`,
+          });
         }
 
         // If payment is authorized but not captured, try to capture it
@@ -735,7 +866,10 @@ const verifyPayment = async (req, res) => {
           })
           .where(eq(paymentIntents.id, paymentIntentId));
 
-        return res.status(400).json({ message: "Could not verify payment with Razorpay. Please contact support." });
+        return res.status(400).json({
+          message:
+            "Could not verify payment with Razorpay. Please contact support.",
+        });
       }
     }
 
@@ -751,7 +885,9 @@ const verifyPayment = async (req, res) => {
 
     // Verify user owns this payment intent
     if (paymentIntent.userId !== userId) {
-      return res.status(403).json({ message: "You are not authorized to verify this payment" });
+      return res
+        .status(403)
+        .json({ message: "You are not authorized to verify this payment" });
     }
 
     // Check if payment intent is already completed
@@ -785,13 +921,18 @@ const verifyPayment = async (req, res) => {
     }
 
     // Check if payment intent has expired
-    if (new Date() > new Date(paymentIntent.expiresAt) && paymentIntent.status === "pending") {
+    if (
+      new Date() > new Date(paymentIntent.expiresAt) &&
+      paymentIntent.status === "pending"
+    ) {
       await db
         .update(paymentIntents)
         .set({ status: "expired" })
         .where(eq(paymentIntents.id, paymentIntentId));
 
-      return res.status(400).json({ message: "Payment session has expired. Please try again." });
+      return res
+        .status(400)
+        .json({ message: "Payment session has expired. Please try again." });
     }
 
     // Get business profile ID from slot
@@ -808,7 +949,9 @@ const verifyPayment = async (req, res) => {
     const isReschedule = paymentIntent.isReschedule === true;
     const rescheduleBookingId = paymentIntent.rescheduleBookingId;
 
-    console.log(`${isReschedule ? '🔄' : '🆕'} Payment verification - ${isReschedule ? `RESCHEDULE for booking ${rescheduleBookingId}` : 'NEW BOOKING'}`);
+    console.log(
+      `${isReschedule ? "🔄" : "🆕"} Payment verification - ${isReschedule ? `RESCHEDULE for booking ${rescheduleBookingId}` : "NEW BOOKING"}`,
+    );
 
     // Use transaction for atomicity
     let bookingId = null; // Can be new booking ID or existing booking ID (for reschedule)
@@ -817,7 +960,9 @@ const verifyPayment = async (req, res) => {
       // CRITICAL: Check for existing booking for this slot+date+service BEFORE proceeding
       // Different services can use the same time slot
       // This prevents race conditions when multiple users try to book the same slot simultaneously
-      console.log(`🔒 Checking for existing bookings for service ${paymentIntent.serviceId}, slot ${paymentIntent.slotId} on ${paymentIntent.bookingDate}`);
+      console.log(
+        `🔒 Checking for existing bookings for service ${paymentIntent.serviceId}, slot ${paymentIntent.slotId} on ${paymentIntent.bookingDate}`,
+      );
 
       // Create date range for the selected date
       const bookingDate = paymentIntent.bookingDate;
@@ -845,21 +990,27 @@ const verifyPayment = async (req, res) => {
             // Check if bookingDate falls within the selected date
             and(
               gte(bookings.bookingDate, startOfDay),
-              lte(bookings.bookingDate, endOfDay)
+              lte(bookings.bookingDate, endOfDay),
             ),
             eq(bookings.status, "confirmed"),
             // For reschedule: exclude the current booking being rescheduled
-            ...(isReschedule ? [ne(bookings.id, rescheduleBookingId)] : [])
-          )
+            ...(isReschedule ? [ne(bookings.id, rescheduleBookingId)] : []),
+          ),
         );
 
       if (existingBookingsCount >= maxAllowBooking) {
-        console.log(`❌ Slot ${paymentIntent.slotId} already booked (reached max ${maxAllowBooking}) for service ${paymentIntent.serviceId} on ${paymentIntent.bookingDate}`);
+        console.log(
+          `❌ Slot ${paymentIntent.slotId} already booked (reached max ${maxAllowBooking}) for service ${paymentIntent.serviceId} on ${paymentIntent.bookingDate}`,
+        );
         // Slot is already booked - cancel this payment
-        throw new Error("This slot is no longer available. It was just booked by another customer. Your payment will be refunded automatically.");
+        throw new Error(
+          "This slot is no longer available. It was just booked by another customer. Your payment will be refunded automatically.",
+        );
       }
 
-      console.log(`✅ Slot ${paymentIntent.slotId} is available, proceeding with ${isReschedule ? 'reschedule' : 'booking'}`);
+      console.log(
+        `✅ Slot ${paymentIntent.slotId} is available, proceeding with ${isReschedule ? "reschedule" : "booking"}`,
+      );
 
       // Get business profile ID from slot
       const [slot] = await tx
@@ -869,7 +1020,9 @@ const verifyPayment = async (req, res) => {
 
       if (!slot) {
         console.error(`❌ Slot ${paymentIntent.slotId} not found in database`);
-        throw new Error(`Slot ${paymentIntent.slotId} not found. Please try again.`);
+        throw new Error(
+          `Slot ${paymentIntent.slotId} not found. Please try again.`,
+        );
       }
 
       console.log(`✅ Slot found: businessProfileId=${slot.businessProfileId}`);
@@ -878,7 +1031,9 @@ const verifyPayment = async (req, res) => {
         // ===========================
         // RESCHEDULE: Update existing booking
         // ===========================
-        console.log(`🔄 Updating existing booking ${rescheduleBookingId} with new slot ${paymentIntent.slotId}`);
+        console.log(
+          `🔄 Updating existing booking ${rescheduleBookingId} with new slot ${paymentIntent.slotId}`,
+        );
 
         // Verify the booking exists and belongs to the user
         const [bookingToReschedule] = await tx
@@ -887,13 +1042,15 @@ const verifyPayment = async (req, res) => {
           .where(
             and(
               eq(bookings.id, rescheduleBookingId),
-              eq(bookings.customerId, userId)
-            )
+              eq(bookings.customerId, userId),
+            ),
           )
           .limit(1);
 
         if (!bookingToReschedule) {
-          throw new Error("Booking to reschedule not found or does not belong to you");
+          throw new Error(
+            "Booking to reschedule not found or does not belong to you",
+          );
         }
 
         // Fetch the current slot's time to store before updating
@@ -932,7 +1089,7 @@ const verifyPayment = async (req, res) => {
           .where(eq(bookings.id, rescheduleBookingId))
           .returning();
 
-        // Fetch the new slot's time for history logging 
+        // Fetch the new slot's time for history logging
         const [newSlot] = await tx
           .select({ startTime: slots.startTime })
           .from(slots)
@@ -940,7 +1097,9 @@ const verifyPayment = async (req, res) => {
           .limit(1);
 
         // Notify provider about the reschedule
-        const { notificationTemplates } = require("../utils/notificationHelper");
+        const {
+          notificationTemplates,
+        } = require("../utils/notificationHelper");
         await notificationTemplates.rescheduleRequested(rescheduleBookingId);
 
         // Log history for reschedule with detailed "From -> To" information
@@ -954,14 +1113,16 @@ const verifyPayment = async (req, res) => {
             previousDate: bookingToReschedule.bookingDate,
             previousTime: currentSlot?.startTime || "N/A",
             newDate: paymentIntent.bookingDate,
-            newTime: newSlot?.startTime || "N/A"
+            newTime: newSlot?.startTime || "N/A",
           },
-          tx // Pass transaction to avoid foreign key constraint issue
+          tx, // Pass transaction to avoid foreign key constraint issue
         );
 
         bookingId = updatedBooking.id;
 
-        console.log(`✅ Booking ${rescheduleBookingId} rescheduled successfully, status: confirmed, rescheduleCount: ${updatedBooking.rescheduleCount}`);
+        console.log(
+          `✅ Booking ${rescheduleBookingId} rescheduled successfully, status: confirmed, rescheduleCount: ${updatedBooking.rescheduleCount}`,
+        );
 
         // Create payment record for the reschedule fee
         // Note: Reschedule fees are flat ₹100 and go entirely to platform (no split)
@@ -1022,7 +1183,7 @@ const verifyPayment = async (req, res) => {
               // Provider earning will be updated after payment record is created
             })
             .returning();
-          
+
           // Log history for new booking
           await logBookingHistory(
             newBooking.id,
@@ -1031,7 +1192,7 @@ const verifyPayment = async (req, res) => {
             "customer",
             userId,
             null,
-            tx // Pass transaction to avoid foreign key constraint issue
+            tx, // Pass transaction to avoid foreign key constraint issue
           );
 
           console.log("✅ New booking created with ID:", newBooking?.id);
@@ -1048,7 +1209,10 @@ const verifyPayment = async (req, res) => {
         // Get provider's subscription to determine platform fee percentage
         let platformFeePercentage = 5; // Default
         try {
-          console.log('🔍 [VERIFY] Fetching subscription for businessProfileId:', slot.businessProfileId);
+          console.log(
+            "🔍 [VERIFY] Fetching subscription for businessProfileId:",
+            slot.businessProfileId,
+          );
           // Get business profile to find provider's userId
           const [businessProfile] = await tx
             .select()
@@ -1057,27 +1221,54 @@ const verifyPayment = async (req, res) => {
             .limit(1);
 
           if (businessProfile) {
-            console.log('✅ [VERIFY] Found businessProfile, providerId:', businessProfile.providerId);
-            const providerSubscription = await getProviderActiveSubscription(businessProfile.providerId);
-            console.log('📊 [VERIFY] Subscription data:', providerSubscription ? {
-              planName: providerSubscription.planName,
-              platformFeePercentage: providerSubscription.planPlatformFeePercentage,
-              status: providerSubscription.status
-            } : 'NULL');
-            if (providerSubscription && providerSubscription.planPlatformFeePercentage !== undefined) {
-              platformFeePercentage = providerSubscription.planPlatformFeePercentage;
+            console.log(
+              "✅ [VERIFY] Found businessProfile, providerId:",
+              businessProfile.providerId,
+            );
+            const providerSubscription = await getProviderActiveSubscription(
+              businessProfile.providerId,
+            );
+            console.log(
+              "📊 [VERIFY] Subscription data:",
+              providerSubscription
+                ? {
+                    planName: providerSubscription.planName,
+                    platformFeePercentage:
+                      providerSubscription.planPlatformFeePercentage,
+                    status: providerSubscription.status,
+                  }
+                : "NULL",
+            );
+            if (
+              providerSubscription &&
+              providerSubscription.planPlatformFeePercentage !== undefined
+            ) {
+              platformFeePercentage =
+                providerSubscription.planPlatformFeePercentage;
             }
           } else {
-            console.log('❌ [VERIFY] Business profile not found for ID:', slot.businessProfileId);
+            console.log(
+              "❌ [VERIFY] Business profile not found for ID:",
+              slot.businessProfileId,
+            );
           }
         } catch (error) {
-          console.error("Error fetching provider subscription for platform fee:", error);
+          console.error(
+            "Error fetching provider subscription for platform fee:",
+            error,
+          );
         }
 
-        console.log(`💰 [VERIFY] Platform fee calculation: ${platformFeePercentage}% of ₹${paymentIntent.amount / 100}`);
-        const platformFee = Math.round(paymentIntent.amount * (platformFeePercentage / 100));
+        console.log(
+          `💰 [VERIFY] Platform fee calculation: ${platformFeePercentage}% of ₹${paymentIntent.amount / 100}`,
+        );
+        const platformFee = Math.round(
+          paymentIntent.amount * (platformFeePercentage / 100),
+        );
         const providerShare = paymentIntent.amount - platformFee;
-        console.log(`💰 [VERIFY] Final amounts - Platform fee: ₹${platformFee / 100}, Provider share: ₹${providerShare / 100}`);
+        console.log(
+          `💰 [VERIFY] Final amounts - Platform fee: ₹${platformFee / 100}, Provider share: ₹${providerShare / 100}`,
+        );
 
         const paymentValues = {
           bookingId: newBooking.id,
@@ -1124,21 +1315,32 @@ const verifyPayment = async (req, res) => {
     });
 
     // CRITICAL LOG: Verify we reached this point
-    console.log('✅ Transaction completed successfully. bookingId:', bookingId, 'isReschedule:', isReschedule);
+    console.log(
+      "✅ Transaction completed successfully. bookingId:",
+      bookingId,
+      "isReschedule:",
+      isReschedule,
+    );
 
     // Send notification to provider about new booking (only for new bookings, not reschedules)
     // CRITICAL: Send notification BEFORE responding to ensure it executes
     if (!isReschedule && bookingId) {
-      console.log('🔔 Sending booking created notification for booking:', bookingId);
+      console.log(
+        "🔔 Sending booking created notification for booking:",
+        bookingId,
+      );
       try {
-        const notifResult = await notificationTemplates.bookingCreated(bookingId);
-        console.log('✅ Notification sent, result:', notifResult);
+        const notifResult =
+          await notificationTemplates.bookingCreated(bookingId);
+        console.log("✅ Notification sent, result:", notifResult);
       } catch (notifError) {
-        console.error('❌ Failed to send notification:', notifError);
-        console.error('Notification error stack:', notifError.stack);
+        console.error("❌ Failed to send notification:", notifError);
+        console.error("Notification error stack:", notifError.stack);
       }
     } else {
-      console.log(`ℹ️ Notification skipped - isReschedule: ${isReschedule}, bookingId: ${bookingId}`);
+      console.log(
+        `ℹ️ Notification skipped - isReschedule: ${isReschedule}, bookingId: ${bookingId}`,
+      );
     }
 
     res.status(200).json({
@@ -1153,13 +1355,18 @@ const verifyPayment = async (req, res) => {
     console.error("Error stack:", error.stack);
     console.error("Error cause:", error.cause);
     console.error("Error code:", error.code);
-    console.error("Request body:", { ...req.body, razorpayPaymentId: req.body.razorpayPaymentId?.substring(0, 10) + '...' });
+    console.error("Request body:", {
+      ...req.body,
+      razorpayPaymentId: req.body.razorpayPaymentId?.substring(0, 10) + "...",
+    });
 
     // Check if this is a "slot already booked" error
-    const isSlotBookedError = error.message && error.message.includes("no longer available");
+    const isSlotBookedError =
+      error.message && error.message.includes("no longer available");
 
     // Truncate error message to fit in varchar(500)
-    const truncatedError = error.message?.substring(0, 450) || "Payment verification failed";
+    const truncatedError =
+      error.message?.substring(0, 450) || "Payment verification failed";
 
     // Update payment_intent as failed
     const { paymentIntentId, razorpayPaymentId } = req.body;
@@ -1187,16 +1394,19 @@ const verifyPayment = async (req, res) => {
 
     // Return appropriate error message
     if (isSlotBookedError) {
-      return res.status(409).json({ // 409 = Conflict
-        message: "This slot is no longer available. It was just booked by another customer. Your payment will be refunded automatically.",
+      return res.status(409).json({
+        // 409 = Conflict
+        message:
+          "This slot is no longer available. It was just booked by another customer. Your payment will be refunded automatically.",
         errorCode: "SLOT_ALREADY_BOOKED",
-        requiresRefund: true
+        requiresRefund: true,
       });
     }
 
     res.status(500).json({
-      message: "Failed to verify payment. Please contact support if amount was deducted.",
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined,
+      message:
+        "Failed to verify payment. Please contact support if amount was deducted.",
+      error: process.env.NODE_ENV === "development" ? error.message : undefined,
     });
   }
 };
@@ -1228,7 +1438,9 @@ const recordFailedPayment = async (req, res) => {
 
     // Verify user owns this payment intent
     if (paymentIntent.userId !== userId) {
-      return res.status(403).json({ message: "You are not authorized to update this payment intent" });
+      return res.status(403).json({
+        message: "You are not authorized to update this payment intent",
+      });
     }
 
     // Update payment_intent as failed
@@ -1247,7 +1459,7 @@ const recordFailedPayment = async (req, res) => {
     console.error("Error recording failed payment:", error);
     res.status(500).json({
       message: "Failed to record payment failure",
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined,
+      error: process.env.NODE_ENV === "development" ? error.message : undefined,
     });
   }
 };
@@ -1282,8 +1494,13 @@ const getPaymentByBookingId = async (req, res) => {
       .where(eq(businessProfiles.id, booking.businessProfileId))
       .limit(1);
 
-    if (booking.customerId !== userId && (!business || business.providerId !== userId)) {
-      return res.status(403).json({ message: "You are not authorized to view this payment" });
+    if (
+      booking.customerId !== userId &&
+      (!business || business.providerId !== userId)
+    ) {
+      return res
+        .status(403)
+        .json({ message: "You are not authorized to view this payment" });
     }
 
     // Fetch payment
@@ -1342,7 +1559,9 @@ const getPaymentById = async (req, res) => {
         .limit(1);
 
       if (!business || business.providerId !== userId) {
-        return res.status(403).json({ message: "You are not authorized to view this payment" });
+        return res
+          .status(403)
+          .json({ message: "You are not authorized to view this payment" });
       }
     }
 
@@ -1372,7 +1591,9 @@ const processRefund = async (req, res) => {
 
     // Only admin can process manual refunds
     if (req.token.roleId !== 3) {
-      return res.status(403).json({ message: "Only admins can process refunds" });
+      return res
+        .status(403)
+        .json({ message: "Only admins can process refunds" });
     }
 
     // Fetch payment
@@ -1404,7 +1625,7 @@ const processRefund = async (req, res) => {
     const refund = await initiateRefund(
       payment.razorpayPaymentId,
       payment.amount, // Full refund
-      { reason: reason || "Manual refund", userId: userId.toString() }
+      { reason: reason || "Manual refund", userId: userId.toString() },
     );
 
     // Update payment record
@@ -1450,7 +1671,9 @@ const cancelPaymentIntent = async (req, res) => {
     const userId = req.token.id;
     const { paymentIntentId } = req.body;
 
-    console.log(`🔓 Request to cancel payment intent ${paymentIntentId} by user ${userId}`);
+    console.log(
+      `🔓 Request to cancel payment intent ${paymentIntentId} by user ${userId}`,
+    );
 
     if (!paymentIntentId) {
       return res.status(400).json({ message: "paymentIntentId is required" });
@@ -1462,25 +1685,29 @@ const cancelPaymentIntent = async (req, res) => {
       .update(paymentIntents)
       .set({
         status: "cancelled",
-        failureReason: "User cancelled the payment session"
+        failureReason: "User cancelled the payment session",
       })
       .where(
         and(
           eq(paymentIntents.id, paymentIntentId),
           eq(paymentIntents.userId, userId),
-          eq(paymentIntents.status, "pending")
-        )
+          eq(paymentIntents.status, "pending"),
+        ),
       )
       .returning();
 
     if (updated) {
-      console.log(`✅ Cancelled payment intent ${paymentIntentId} (slot lock released)`);
+      console.log(
+        `✅ Cancelled payment intent ${paymentIntentId} (slot lock released)`,
+      );
       return res.status(200).json({
         message: "Slot lock released successfully",
         released: true,
       });
     } else {
-      console.log(`⚠️ Payment intent ${paymentIntentId} not found or not cancellable`);
+      console.log(
+        `⚠️ Payment intent ${paymentIntentId} not found or not cancellable`,
+      );
       return res.status(200).json({
         message: "Payment intent not found or already completed",
         released: false,
@@ -1490,7 +1717,7 @@ const cancelPaymentIntent = async (req, res) => {
     console.error("❌ Error cancelling payment intent:", error);
     res.status(500).json({
       message: "Failed to cancel payment intent",
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined,
+      error: process.env.NODE_ENV === "development" ? error.message : undefined,
     });
   }
 };
@@ -1507,11 +1734,13 @@ const getSlotLockStatus = async (req, res) => {
 
     if (!slotId || !bookingDate) {
       return res.status(400).json({
-        message: "slotId and bookingDate are required"
+        message: "slotId and bookingDate are required",
       });
     }
 
-    console.log(`🔍 [DEBUG] Checking slot lock status for slot ${slotId} on ${bookingDate}`);
+    console.log(
+      `🔍 [DEBUG] Checking slot lock status for slot ${slotId} on ${bookingDate}`,
+    );
 
     // Check for pending payment intents
     const pendingIntents = await db
@@ -1520,8 +1749,8 @@ const getSlotLockStatus = async (req, res) => {
       .where(
         and(
           eq(paymentIntents.slotId, parseInt(slotId)),
-          eq(paymentIntents.status, "pending")
-        )
+          eq(paymentIntents.status, "pending"),
+        ),
       );
 
     // Check for confirmed bookings
@@ -1542,9 +1771,9 @@ const getSlotLockStatus = async (req, res) => {
           or(
             eq(bookings.status, "pending"),
             eq(bookings.status, "payment_pending"),
-            eq(bookings.status, "confirmed")
-          )
-        )
+            eq(bookings.status, "confirmed"),
+          ),
+        ),
       );
 
     res.status(200).json({
@@ -1553,35 +1782,36 @@ const getSlotLockStatus = async (req, res) => {
       locked: pendingIntents.length > 0 || confirmedBookings.length > 0,
       pendingIntents: {
         count: pendingIntents.length,
-        details: pendingIntents.map(intent => ({
+        details: pendingIntents.map((intent) => ({
           intentId: intent.id,
           userId: intent.userId,
           status: intent.status,
           createdAt: intent.createdAt,
           expiresAt: intent.expiresAt,
-          isExpired: new Date(intent.expiresAt) < new Date()
-        }))
+          isExpired: new Date(intent.expiresAt) < new Date(),
+        })),
       },
       confirmedBookings: {
         count: confirmedBookings.length,
-        details: confirmedBookings.map(booking => ({
+        details: confirmedBookings.map((booking) => ({
           bookingId: booking.id,
           userId: booking.userId,
           status: booking.status,
-          bookingDate: booking.bookingDate
-        }))
+          bookingDate: booking.bookingDate,
+        })),
       },
-      recommendation: pendingIntents.length > 0
-        ? "Slot is currently locked by another customer"
-        : confirmedBookings.length > 0
-        ? "Slot is already booked"
-        : "Slot is available"
+      recommendation:
+        pendingIntents.length > 0
+          ? "Slot is currently locked by another customer"
+          : confirmedBookings.length > 0
+            ? "Slot is already booked"
+            : "Slot is available",
     });
   } catch (error) {
     console.error("❌ [DEBUG] Error checking slot lock status:", error);
     res.status(500).json({
       message: "Failed to check slot lock status",
-      error: error.message
+      error: error.message,
     });
   }
 };
@@ -1603,11 +1833,13 @@ const validatePaymentIntent = async (req, res) => {
 
     if (!paymentIntentId) {
       return res.status(400).json({
-        message: "paymentIntentId is required"
+        message: "paymentIntentId is required",
       });
     }
 
-    console.log(`🔍 [VALIDATE] Checking payment intent ${paymentIntentId} for user ${userId}`);
+    console.log(
+      `🔍 [VALIDATE] Checking payment intent ${paymentIntentId} for user ${userId}`,
+    );
 
     // Get payment intent
     const [paymentIntent] = await db
@@ -1621,23 +1853,27 @@ const validatePaymentIntent = async (req, res) => {
       return res.status(404).json({
         valid: false,
         message: "Payment session not found. It may have been cancelled.",
-        code: "INTENT_NOT_FOUND"
+        code: "INTENT_NOT_FOUND",
       });
     }
 
     // Verify ownership
     if (paymentIntent.userId !== userId) {
-      console.log(`❌ [VALIDATE] User ${userId} doesn't own intent ${paymentIntentId} (owned by ${paymentIntent.userId})`);
+      console.log(
+        `❌ [VALIDATE] User ${userId} doesn't own intent ${paymentIntentId} (owned by ${paymentIntent.userId})`,
+      );
       return res.status(403).json({
         valid: false,
         message: "You don't have permission to access this payment session.",
-        code: "NOT_AUTHORIZED"
+        code: "NOT_AUTHORIZED",
       });
     }
 
     // Check status
     if (paymentIntent.status !== "pending") {
-      console.log(`❌ [VALIDATE] Payment intent ${paymentIntentId} has status: ${paymentIntent.status}`);
+      console.log(
+        `❌ [VALIDATE] Payment intent ${paymentIntentId} has status: ${paymentIntent.status}`,
+      );
 
       let message = `Payment session is ${paymentIntent.status}.`;
       if (paymentIntent.status === "cancelled") {
@@ -1653,13 +1889,15 @@ const validatePaymentIntent = async (req, res) => {
       return res.status(400).json({
         valid: false,
         message: message,
-        code: paymentIntent.status.toUpperCase() // CANCELLED, EXPIRED, COMPLETED, FAILED
+        code: paymentIntent.status.toUpperCase(), // CANCELLED, EXPIRED, COMPLETED, FAILED
       });
     }
 
     // Check if expired
     if (new Date() > new Date(paymentIntent.expiresAt)) {
-      console.log(`❌ [VALIDATE] Payment intent ${paymentIntentId} expired at ${paymentIntent.expiresAt}`);
+      console.log(
+        `❌ [VALIDATE] Payment intent ${paymentIntentId} expired at ${paymentIntent.expiresAt}`,
+      );
 
       // Mark as expired
       await db
@@ -1670,7 +1908,7 @@ const validatePaymentIntent = async (req, res) => {
       return res.status(400).json({
         valid: false,
         message: "Payment session has expired. Please try again.",
-        code: "EXPIRED"
+        code: "EXPIRED",
       });
     }
 
@@ -1697,27 +1935,33 @@ const validatePaymentIntent = async (req, res) => {
           or(
             eq(bookings.status, "pending"),
             eq(bookings.status, "payment_pending"),
-            eq(bookings.status, "confirmed")
+            eq(bookings.status, "confirmed"),
           ),
           // Exclude current booking if this is a reschedule
-          ...(currentBookingId ? [ne(bookings.id, currentBookingId)] : [])
-        )
+          ...(currentBookingId ? [ne(bookings.id, currentBookingId)] : []),
+        ),
       )
       .limit(1);
 
     if (existingBooking) {
-      console.log(`❌ [VALIDATE] Slot ${paymentIntent.slotId} already booked for service ${paymentIntent.serviceId} by booking ${existingBooking.id}`);
+      console.log(
+        `❌ [VALIDATE] Slot ${paymentIntent.slotId} already booked for service ${paymentIntent.serviceId} by booking ${existingBooking.id}`,
+      );
 
       // Cancel this payment intent
       await db
         .update(paymentIntents)
-        .set({ status: "failed", failureReason: `Slot already booked for this service` })
+        .set({
+          status: "failed",
+          failureReason: `Slot already booked for this service`,
+        })
         .where(eq(paymentIntents.id, paymentIntentId));
 
       return res.status(409).json({
         valid: false,
-        message: "This slot is already booked for this service. Please select a different time.",
-        code: "SLOT_ALREADY_BOOKED"
+        message:
+          "This slot is already booked for this service. Please select a different time.",
+        code: "SLOT_ALREADY_BOOKED",
       });
     }
 
@@ -1731,31 +1975,45 @@ const validatePaymentIntent = async (req, res) => {
           eq(paymentIntents.serviceId, paymentIntent.serviceId), // ✅ Add serviceId check
           eq(paymentIntents.status, "pending"),
           // Different intent ID
-          sql`${paymentIntents.id} != ${paymentIntentId}`
-        )
+          sql`${paymentIntents.id} != ${paymentIntentId}`,
+        ),
       )
       .limit(1);
 
     if (otherPendingIntent) {
-      const otherDate = new Date(otherPendingIntent.bookingDate).toISOString().split('T')[0];
-      const thisDate = new Date(paymentIntent.bookingDate).toISOString().split('T')[0];
+      const otherDate = new Date(otherPendingIntent.bookingDate)
+        .toISOString()
+        .split("T")[0];
+      const thisDate = new Date(paymentIntent.bookingDate)
+        .toISOString()
+        .split("T")[0];
 
       if (otherDate === thisDate) {
-        console.log(`❌ [VALIDATE] Another payment intent ${otherPendingIntent.id} exists for Service ${paymentIntent.serviceId}, slot ${paymentIntent.slotId} on ${thisDate}`);
+        console.log(
+          `❌ [VALIDATE] Another payment intent ${otherPendingIntent.id} exists for Service ${paymentIntent.serviceId}, slot ${paymentIntent.slotId} on ${thisDate}`,
+        );
 
         return res.status(409).json({
           valid: false,
-          message: "Another customer is currently booking this slot. Please wait a moment or choose a different slot.",
+          message:
+            "Another customer is currently booking this slot. Please wait a moment or choose a different slot.",
           code: "SLOT_LOCKED",
-          retryable: true
+          retryable: true,
         });
       }
     }
 
     // All checks passed!
-    const timeRemaining = Math.max(0, Math.floor((new Date(paymentIntent.expiresAt).getTime() - Date.now()) / 1000));
+    const timeRemaining = Math.max(
+      0,
+      Math.floor(
+        (new Date(paymentIntent.expiresAt).getTime() - Date.now()) / 1000,
+      ),
+    );
 
-    console.log(`✅ [VALIDATE] Payment intent ${paymentIntentId} is valid (${timeRemaining}s remaining)`);
+    console.log(
+      `✅ [VALIDATE] Payment intent ${paymentIntentId} is valid (${timeRemaining}s remaining)`,
+    );
 
     res.status(200).json({
       valid: true,
@@ -1766,15 +2024,15 @@ const validatePaymentIntent = async (req, res) => {
         amount: paymentIntent.amount,
         razorpayOrderId: paymentIntent.razorpayOrderId,
         expiresAt: paymentIntent.expiresAt,
-        timeRemaining: timeRemaining
-      }
+        timeRemaining: timeRemaining,
+      },
     });
   } catch (error) {
     console.error("❌ [VALIDATE] Error validating payment intent:", error);
     res.status(500).json({
       valid: false,
       message: "Failed to validate payment session",
-      error: error.message
+      error: error.message,
     });
   }
 };

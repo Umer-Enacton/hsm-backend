@@ -1315,6 +1315,105 @@ const getJobLogs = async (req, res) => {
 };
 
 /**
+ * Get all job logs (with pagination and filtering)
+ */
+const getAllLogs = async (req, res) => {
+  try {
+    const {
+      limit = 50,
+      offset = 0,
+      status,
+      jobId,
+      startDate,
+      endDate,
+      triggeredBy,
+    } = req.query;
+
+    const conditions = [];
+
+    if (jobId) {
+      conditions.push(eq(cronJobLogs.jobId, parseInt(jobId)));
+    }
+
+    if (status) {
+      if (status !== "all") {
+        conditions.push(eq(cronJobLogs.status, status));
+      }
+    }
+
+    if (triggeredBy) {
+      conditions.push(eq(cronJobLogs.triggeredBy, triggeredBy));
+    }
+
+    if (startDate) {
+      conditions.push(
+        sql`${cronJobLogs.startedAt} >= ${new Date(startDate).toISOString()}::timestamp`,
+      );
+    }
+
+    if (endDate) {
+      conditions.push(
+        sql`${cronJobLogs.startedAt} <= ${new Date(endDate).toISOString()}::timestamp`,
+      );
+    }
+
+    // Get logs with related job info
+    const logs = await db
+      .select({
+        id: cronJobLogs.id,
+        startedAt: cronJobLogs.startedAt,
+        completedAt: cronJobLogs.completedAt,
+        status: cronJobLogs.status,
+        result: cronJobLogs.result,
+        errorMessage: cronJobLogs.errorMessage,
+        errorDetails: cronJobLogs.errorDetails,
+        triggeredBy: cronJobLogs.triggeredBy,
+        triggeredByUserId: cronJobLogs.triggeredByUserId,
+        durationMs: cronJobLogs.durationMs,
+        retryCount: cronJobLogs.retryCount,
+        createdAt: cronJobLogs.createdAt,
+        job: {
+          id: cronJobs.id,
+          name: cronJobs.name,
+          displayName: cronJobs.displayName,
+          category: cronJobs.category,
+        },
+      })
+      .from(cronJobLogs)
+      .leftJoin(cronJobs, eq(cronJobLogs.jobId, cronJobs.id))
+      .where(conditions.length > 0 ? and(...conditions) : undefined)
+      .orderBy(desc(cronJobLogs.startedAt))
+      .limit(parseInt(limit))
+      .offset(parseInt(offset));
+
+    // Get total count
+    const [{ count }] = await db
+      .select({ count: sql`count(*)` })
+      .from(cronJobLogs)
+      .where(conditions.length > 0 ? and(...conditions) : undefined);
+
+    res.status(200).json({
+      success: true,
+      data: logs,
+      pagination: {
+        total: parseInt(count),
+        limit: parseInt(limit),
+        offset: parseInt(offset),
+        hasMore: parseInt(offset) + parseInt(limit) < parseInt(count),
+      },
+    });
+  } catch (error) {
+    console.error("Error fetching all job logs:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch job logs",
+      error: error.message,
+    });
+  }
+};
+
+
+/**
  * Get overall cron job stats
  */
 const getJobStats = async (req, res) => {
@@ -1505,6 +1604,7 @@ module.exports = {
   deleteJob,
   triggerJob,
   getJobLogs,
+  getAllLogs,
   getJobStats,
   syncJobToPgCron,
   syncAllJobs,

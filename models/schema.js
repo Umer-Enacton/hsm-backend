@@ -19,6 +19,7 @@ const { sql } = require("drizzle-orm");
 const roleEnum = pgEnum("role_type", ["customer", "provider", "admin", "staff"]);
 
 const bookingStatusEnum = pgEnum("booking_status", [
+  "payment_pending",
   "confirmed",
   "completed",
   "cancelled",
@@ -276,6 +277,7 @@ const bookings = pgTable(
     paymentStatus: paymentStatusEnum("payment_status")
       .default("pending")
       .notNull(),
+    paymentExpiresAt: timestamp("payment_expires_at"), // Added for locking logic
     // Reschedule tracking fields
     rescheduleCount: integer("reschedule_count").default(0).notNull(), // Number of times rescheduled
     lastRescheduleFee: integer("last_reschedule_fee"), // Last reschedule fee charged (in paise)

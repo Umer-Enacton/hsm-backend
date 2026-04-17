@@ -10,6 +10,7 @@ const {
   deleteJob,
   triggerJob,
   getJobLogs,
+  getAllLogs,
   getJobStats,
   syncJobToPgCron,
   syncAllJobs,
@@ -18,6 +19,9 @@ const {
 
 // All routes require admin role
 router.use(authorizeRole(ADMIN));
+
+// Get all logs
+router.get("/logs/all", getAllLogs);
 
 // Get all cron jobs with stats
 router.get("/jobs", getAllJobs);

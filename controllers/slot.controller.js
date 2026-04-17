@@ -163,7 +163,7 @@ const getSlotsPublic = async (req, res) => {
       }
     }
 
-    // Combine booked and locked slot IDs and count them
+    // Combine booked slots and pending payment intents
     const slotCounts = {};
     bookedSlotsResult.forEach((b) => {
       slotCounts[b.slotId] = (slotCounts[b.slotId] || 0) + 1;
@@ -185,7 +185,7 @@ const getSlotsPublic = async (req, res) => {
       bookedSlotsResult.map((b) => b.slotId),
     );
     console.log(
-      `🔒 Service ${serviceId || "ALL"} - Locked slots:`,
+      `🔒 Service ${serviceId || "ALL"} - Locked slots (pending payment):`,
       lockedSlotsResult.map((l) => l.slotId),
     );
     console.log(
@@ -194,7 +194,46 @@ const getSlotsPublic = async (req, res) => {
     );
 
     // Mark each slot with availability status
+    // Also filter out past slots for today
+    // Use IST (UTC+5:30) for time comparison
+    const nowUTC = new Date();
+    const IST_OFFSET = 5.5 * 60 * 60 * 1000; // 5 hours 30 minutes
+    
+    // Get current IST time as separate components (year, month, day, hour, minute)
+    const nowISTMs = nowUTC.getTime() + IST_OFFSET;
+    const nowIST = new Date(nowISTMs);
+    
+    // Get IST date components
+    const istYear = nowIST.getUTCFullYear();
+    const istMonth = nowIST.getUTCMonth();
+    const istDay = nowIST.getUTCDate();
+    const istHours = nowIST.getUTCHours();
+    const istMinutes = nowIST.getUTCMinutes();
+    
+    const isToday = startOfDay.toDateString() === new Date(istYear, istMonth, istDay).toDateString();
+    
+    console.log(`🕐 IST Time: ${istYear}-${String(istMonth+1).padStart(2,'0')}-${String(istDay).padStart(2,'0')} ${String(istHours).padStart(2,'0')}:${String(istMinutes).padStart(2,'0')}, isToday: ${isToday}`);
+    
     const slotsWithAvailability = businessSlots.map((slot) => {
+      // For today's date, check if slot time has passed (in IST)
+      let isPast = false;
+      if (isToday && slot.startTime) {
+        const [hours, minutes, seconds] = slot.startTime.split(':').map(Number);
+        // Compare slot hours:minutes with current IST hours:minutes
+        const slotMinutes = hours * 60 + minutes;
+        const nowMinutes = istHours * 60 + istMinutes;
+        isPast = slotMinutes <= nowMinutes;
+        console.log(`⏰ Slot ${slot.id} (${slot.startTime}): slotMinutes=${slotMinutes}, nowMinutes=${nowMinutes}, isPast=${isPast}`);
+      }
+      
+      if (isPast) {
+        return {
+          ...slot,
+          isAvailable: false,
+          status: "past",
+        };
+      }
+      
       const isUnavailable = unavailableSlotIds.has(slot.id);
       return {
         ...slot,
