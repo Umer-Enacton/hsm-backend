@@ -1750,6 +1750,7 @@ const getSlotLockStatus = async (req, res) => {
         and(
           eq(paymentIntents.slotId, parseInt(slotId)),
           eq(paymentIntents.status, "pending"),
+          gte(paymentIntents.expiresAt, new Date()),
         ),
       );
 
