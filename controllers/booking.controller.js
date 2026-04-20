@@ -40,6 +40,7 @@ const {
   getMonthlyBookingCount,
 } = require("../controllers/providerSubscription.controller");
 const { notificationTemplates } = require("../utils/notificationHelper");
+const { acquireSlotLock } = require("../utils/slotLock");
 // Import email service
 const { sendCompletionOTPEmail } = require("../helper/emailService");
 
@@ -2557,60 +2558,71 @@ const providerReschedule = async (req, res) => {
       });
     }
 
-    // Check if new slot is available
+    // Check if new slot is available - use transaction with lock
     const startOfDay = new Date(bookingDateObj);
-    startOfDay.setHours(0, 0, 0, 0);
-    const endOfDay = new Date(bookingDateObj);
-    endOfDay.setHours(23, 59, 59, 999);
+    startOfDay.setUTCHours(0, 0, 0, 0);
 
-    // Check if new slot is already booked for the SAME service
-    // Different services can use the same time slot simultaneously
-    const [conflictingBooking] = await db
-      .select()
-      .from(bookings)
-      .where(
-        and(
-          eq(bookings.slotId, slotId),
-          eq(bookings.serviceId, booking.serviceId), // Only check same service
-          gte(bookings.bookingDate, startOfDay),
-          lte(bookings.bookingDate, endOfDay),
-          eq(bookings.status, "confirmed"),
-          ne(bookings.id, bookingId), // Exclude the current booking itself
-        ),
-      )
-      .limit(1);
+    // Use transaction with daily_slots lock
+    const result = await db.transaction(async (tx) => {
+      // Acquire slot lock
+      await acquireSlotLock(tx, slotId, startOfDay, booking.serviceId);
 
-    if (conflictingBooking) {
+      // Check if new slot is already booked for the SAME service
+      const endOfDay = new Date(startOfDay);
+      endOfDay.setUTCHours(23, 59, 59, 999);
+
+      const [conflictingBooking] = await tx
+        .select()
+        .from(bookings)
+        .where(
+          and(
+            eq(bookings.slotId, slotId),
+            eq(bookings.serviceId, booking.serviceId),
+            gte(bookings.bookingDate, startOfDay),
+            lte(bookings.bookingDate, endOfDay),
+            eq(bookings.status, "confirmed"),
+            ne(bookings.id, bookingId),
+          ),
+        )
+        .limit(1);
+
+      if (conflictingBooking) {
+        const err = new Error("Slot already booked");
+        err.code = "SLOT_ALREADY_BOOKED";
+        throw err;
+      }
+
+      // Fetch current slot to get its startTime
+      const [currentSlot] = await tx
+        .select({ startTime: slots.startTime })
+        .from(slots)
+        .where(eq(slots.id, booking.slotId))
+        .limit(1);
+
+      // Update booking with new slot
+      const [updatedBooking] = await tx
+        .update(bookings)
+        .set({
+          slotId: slotId,
+          bookingDate: bookingDateObj,
+          status: "confirmed",
+          previousSlotId: booking.slotId,
+          previousSlotTime: currentSlot?.startTime || null,
+          previousBookingDate: booking.bookingDate,
+          rescheduledBy: "provider",
+          rescheduledAt: new Date(),
+        })
+        .where(eq(bookings.id, bookingId))
+        .returning();
+
+      return updatedBooking;
+    });
+
+    if (!result) {
       return res.status(409).json({
-        message:
-          "This slot is already booked for this service. Please select a different time.",
+        message: "This slot is already booked for this service.",
       });
     }
-
-    // Fetch current slot to get its startTime for previousSlotTime
-    const [currentSlot] = await db
-      .select({ startTime: slots.startTime })
-      .from(slots)
-      .where(eq(slots.id, booking.slotId))
-      .limit(1);
-
-    // Update booking with new slot (provider reschedule is auto-approved)
-    const [updatedBooking] = await db
-      .update(bookings)
-      .set({
-        slotId: slotId,
-        bookingDate: bookingDateObj,
-        status: "confirmed", // Auto-confirmed for provider reschedule
-        // Preserve previous details for UI "From -> To" display
-        previousSlotId: booking.slotId,
-        previousSlotTime: currentSlot?.startTime || null,
-        previousBookingDate: booking.bookingDate,
-        rescheduleReason: reason,
-        rescheduledBy: "provider",
-        rescheduledAt: new Date(),
-      })
-      .where(eq(bookings.id, bookingId))
-      .returning();
 
     // Log history for provider reschedule with detailed "From -> To" information
     await logBookingHistory(

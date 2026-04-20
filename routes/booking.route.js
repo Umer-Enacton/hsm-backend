@@ -15,9 +15,7 @@ const {
   cancelRescheduleRequest,
   cancelBooking,
   cancelByProvider,
-  // Existing reschedule management
-  approveReschedule,
-  declineReschedule,
+  // Provider reschedule (uses daily_slots lock)
   providerReschedule,
   // OTP-based completion verification
   initiateCompletion,
@@ -71,17 +69,7 @@ router.put("/accept-booking/:id", authorizeRole(PROVIDER), acceptBooking); // Wi
 router.put("/reject-booking/:id", authorizeRole(PROVIDER), rejectBooking); // Will deprecate
 router.put("/complete-booking/:id", authorizeRole(PROVIDER), completeBooking);
 
-// Provider reschedule management
-router.put(
-  "/booking/:id/reschedule-approve",
-  authorizeRole(PROVIDER),
-  approveReschedule,
-);
-router.put(
-  "/booking/:id/reschedule-decline",
-  authorizeRole(PROVIDER),
-  declineReschedule,
-);
+// Provider reschedule (uses daily_slots lock)
 router.put(
   "/booking/:id/provider-reschedule",
   authorizeRole(PROVIDER),

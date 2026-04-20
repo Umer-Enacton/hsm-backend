@@ -36,6 +36,8 @@ const {
 } = require("../utils/razorpay");
 const { notificationTemplates } = require("../utils/notificationHelper");
 const { logBookingHistory } = require("../utils/historyHelper");
+const { acquireSlotLock, dayRange } = require("../utils/slotLock");
+const { canBookSlot } = require("../utils/capacityCheck");
 const {
   getProviderActiveSubscription,
 } = require("../controllers/providerSubscription.controller");
@@ -265,8 +267,8 @@ const createPaymentOrder = async (req, res) => {
       amountInPaise = rupeesToPaise(service.price);
     }
 
-    // OPTIMISTIC LOCKING: Try to insert payment_intent directly
-    // Unique constraint on (slot_id, booking_date, status='pending') prevents duplicate locks
+    // MATERIALIZED SLOT LOCKING: Use daily_slots table with SELECT FOR UPDATE
+    // This serializes concurrent requests for the same slot+date
     console.log(`🔒 Attempting to lock slot ${slotId} for ${bookingDate}`);
     console.log(
       `📍 User ${userId} trying to ${isReschedule ? "reschedule" : "book"} slot ${slotId} on ${bookingDate}`,
@@ -276,167 +278,105 @@ const createPaymentOrder = async (req, res) => {
     const expiresAt = new Date(now.getTime() + 90 * 1000);
 
     // ============================================
-    // CHECK FOR EXISTING BOOKINGS
+    // TRANSACTION: Lock slot + Check capacity + Create payment intent
     // ============================================
-    // Create date range for the selected date
-    const startOfDay = new Date(bookingDateObj);
-    startOfDay.setHours(0, 0, 0, 0);
-    const endOfDay = new Date(bookingDateObj);
-    endOfDay.setHours(23, 59, 59, 999);
-
-    const maxBookingLimit = service.maxAllowBooking || 1;
-
-    // Get count of existing CONFIRMED/COMPLETED bookings for this slot/date
-    const bookingsCountResult = await db
-      .select({ count: count() })
-      .from(bookings)
-      .where(
-        and(
-          eq(bookings.slotId, slotId),
-          eq(bookings.serviceId, serviceId),
-          gte(bookings.bookingDate, startOfDay),
-          lte(bookings.bookingDate, endOfDay),
-          or(
-            eq(bookings.status, "confirmed"),
-            eq(bookings.status, "completed"),
-          ),
-          ...(isReschedule ? [ne(bookings.id, bookingId)] : []),
-        ),
-      );
-
-    const bookedCount = Number(bookingsCountResult[0]?.count || 0);
-    await new Promise((resolve) => setTimeout(resolve, 5000));
-    if (bookedCount >= maxBookingLimit) {
-      console.log(
-        `❌ Slot ${slotId} already fully booked (${bookedCount}/${maxBookingLimit})`,
-      );
-      return res.status(409).json({
-        message:
-          "This slot is already fully booked. Please select a different time.",
-        code: "SLOT_ALREADY_BOOKED",
-        retryable: false,
-      });
-    }
-
-    console.log(`✅ Slot available, creating payment intent...`);
+    // Normalize bookingDate to UTC midnight for the transaction
+    const bookingDateMidnight = new Date(bookingDateObj);
+    bookingDateMidnight.setUTCHours(0, 0, 0, 0);
 
     try {
-      // Try to create payment_intent - unique constraint prevents race conditions
-      console.log(`🔐 Creating payment intent to lock slot ${slotId}`);
-      console.log(`📦 Insert data:`, {
-        userId,
-        serviceId,
-        slotId,
-        addressId: isReschedule ? existingBooking?.addressId : addressId,
-        bookingDate: bookingDateObj.toISOString(),
-        amount: amountInPaise,
-        status: "pending",
-        expiresAt: expiresAt.toISOString(),
-        isReschedule: isReschedule,
-        rescheduleBookingId: isReschedule ? bookingId : null,
-      });
-
-      // Normalize bookingDate to date-only (midnight) for unique constraint to work properly
-      // This ensures two users booking same slot on same date get a conflict
-      const bookingDateOnly = new Date(bookingDateObj);
-      bookingDateOnly.setHours(0, 0, 0, 0);
-      const bookingDateEnd = new Date(bookingDateOnly);
-      bookingDateEnd.setHours(23, 59, 59, 999);
-
-      // Pre-check: Check if there's already a pending payment intent for this slot/date
-      // Use date range to catch any pending intents for that day
-      const existingIntent = await db
-        .select()
-        .from(paymentIntents)
-        .where(
-          and(
-            eq(paymentIntents.slotId, slotId),
-            gte(paymentIntents.bookingDate, bookingDateOnly),
-            lte(paymentIntents.bookingDate, bookingDateEnd),
-            eq(paymentIntents.status, "pending"),
-            gt(paymentIntents.expiresAt, new Date()),
-          ),
-        )
-        .limit(1);
-
-      if (existingIntent.length > 0) {
+      // Use transaction to ensure atomic lock + check + insert
+      paymentIntent = await db.transaction(async (tx) => {
+        // Step 1: Acquire slot lock (upsert daily_slots + SELECT FOR UPDATE)
         console.log(
-          `⛔ Slot ${slotId} already has pending payment intent ${existingIntent[0].id}`,
+          `🔐 Acquiring slot lock for slot ${slotId} on ${bookingDate}, serviceId: ${serviceId}`,
         );
+        await acquireSlotLock(tx, slotId, bookingDateMidnight, serviceId);
+        console.log(`✅ Slot lock acquired`);
+
+        // Step 2: Check capacity under the lock
+        const capacityCheck = await canBookSlot(tx, {
+          slotId,
+          serviceId,
+          bookingDate: bookingDateMidnight,
+          excludeBookingId: isReschedule ? bookingId : null,
+        });
+        console.log(`📊 Capacity check:`, capacityCheck);
+
+        if (!capacityCheck.canBook) {
+          console.log(`❌ Slot unavailable: ${capacityCheck.reason}`);
+          const err = new Error(
+            "This slot is no longer available. Please choose another time.",
+          );
+          err.code = "SLOT_UNAVAILABLE";
+          throw err;
+        }
+
+        // Step 3: Create payment intent
+        console.log(`💳 Creating payment intent to lock slot ${slotId}`);
+
+        const addressIdValue = isReschedule
+          ? existingBooking?.addressId
+          : addressId;
+        console.log(
+          `📝 Intent values - userId: ${userId}, serviceId: ${serviceId}, slotId: ${slotId}, addressId: ${addressIdValue}`,
+        );
+
+        const intentValues = {
+          userId: userId,
+          serviceId: serviceId,
+          slotId: slotId,
+          addressId: addressIdValue,
+          bookingDate: bookingDateMidnight,
+          amount: amountInPaise,
+          razorpayOrderId: `temp_${userId}_${Date.now()}`,
+          status: "pending",
+          expiresAt: expiresAt,
+        };
+
+        // Add reschedule-specific fields if applicable
+        if (isReschedule) {
+          intentValues.isReschedule = true;
+          intentValues.rescheduleBookingId = bookingId;
+        }
+
+        console.log(
+          `📝 Inserting payment_intent with:`,
+          JSON.stringify(intentValues),
+        );
+
+        const newIntent = await tx
+          .insert(paymentIntents)
+          .values(intentValues)
+          .returning();
+
+        console.log(`✅ Payment intent result:`, newIntent);
+
+        if (!newIntent || !newIntent[0]) {
+          throw new Error("Failed to create payment intent - no return value");
+        }
+
+        console.log(
+          `✅ Payment intent ${newIntent[0].id} created, slot locked`,
+        );
+        return newIntent[0];
+      });
+    } catch (txError) {
+      // Handle transaction errors
+      if (txError.code === "SLOT_UNAVAILABLE") {
         return res.status(409).json({
-          message:
-            "This slot is currently being booked by another customer. Please wait a moment and try again.",
-          code: "SLOT_LOCKED",
-          retryable: true,
+          message: txError.message,
+          code: "SLOT_UNAVAILABLE",
+          retryable: false,
         });
       }
 
-      const intentValues = {
-        userId: userId,
-        serviceId: serviceId,
-        slotId: slotId,
-        addressId: isReschedule ? existingBooking?.addressId : addressId,
-        bookingDate: bookingDateOnly, // Use date-only for unique constraint
-        amount: amountInPaise,
-        razorpayOrderId: `temp_${userId}_${Date.now()}`, // Temporary, will update after Razorpay order creation
-        status: "pending",
-        expiresAt: expiresAt,
-      };
-
-      // Add reschedule-specific fields if applicable
-      if (isReschedule) {
-        intentValues.isReschedule = true;
-        intentValues.rescheduleBookingId = bookingId;
-      }
-
-      const [newIntent] = await db
-        .insert(paymentIntents)
-        .values(intentValues)
-        .returning();
-
-      paymentIntent = newIntent;
-      console.log(
-        `✅ Payment intent ${newIntent.id} created, slot ${slotId} locked for 1 minute`,
-      );
-    } catch (insertError) {
-      // Check if this is a unique constraint violation (slot already locked)
-      const errorCode = insertError.code || insertError.cause?.code;
-      const errorMessage =
-        insertError.message || insertError.cause?.message || "";
-
-      console.log(`❌ Insert failed with error:`, {
-        errorCode,
-        errorMessage: errorMessage.substring(0, 200),
-        fullError: insertError.toString().substring(0, 300),
-      });
-
-      if (
-        errorCode === "23505" ||
-        errorMessage.includes("unique constraint") ||
-        errorMessage.includes("duplicate key")
-      ) {
-        console.log(
-          `⏳ Slot ${slotId} is already locked by another customer (unique constraint violation)`,
-        );
-        return res.status(409).json({
-          message:
-            "Another customer is currently booking this slot. Please wait a moment and try again, or choose a different slot.",
-          code: "SLOT_LOCKED",
-          retryable: true,
-          debug: {
-            constraint: "payment_intents_slot_date_pending_unique",
-            errorCode,
-            errorMessage: errorMessage.substring(0, 200),
-          },
-        });
-      }
-
-      // Re-throw other errors to be handled by outer catch block
-      console.log(`⚠️ Non-constraint error, re-throwing...`);
-      throw insertError;
+      // Re-throw other errors
+      console.log(`❌ Transaction error:`, txError.message);
+      throw txError;
     }
 
-    // Create Razorpay order now that slot is locked
+    // Create Razorpay order now that slot is locked (outside transaction)
     const tempReceipt = `intent_${paymentIntent.id}_${Date.now()}`;
     const notes = {
       serviceId: serviceId.toString(),
@@ -681,7 +621,7 @@ const createPaymentOrder = async (req, res) => {
     ) {
       return res.status(409).json({
         message:
-          "Another customer is currently booking this slot. Please wait a moment and try again, or choose a different slot.",
+          "This slot is being booked by someone else. Please try another time.",
         code: "SLOT_LOCKED",
         retryable: true,
       });
@@ -691,7 +631,7 @@ const createPaymentOrder = async (req, res) => {
     if (errorMessage.includes("already booked")) {
       return res.status(409).json({
         message:
-          "This slot has already been booked. Please select a different time.",
+          "This slot is no longer available. Please select another time.",
         code: "SLOT_ALREADY_BOOKED",
       });
     }
@@ -892,27 +832,37 @@ const verifyPayment = async (req, res) => {
 
     // Check if payment intent is already completed
     if (paymentIntent.status === "completed") {
-      // Only fetch existing booking if bookingId exists
-      // For new bookings, bookingId is NULL until booking is created
-      if (paymentIntent.bookingId) {
-        const [existingBooking] = await db
-          .select()
-          .from(bookings)
-          .where(eq(bookings.id, paymentIntent.bookingId))
-          .limit(1);
+      // IDEMPOTENCY: Payment was already processed
+      // Return success with existing booking ID
+      const existingBookingId = paymentIntent.bookingId;
+      console.log(
+        `♻️ Payment already completed, returning existing booking ID: ${existingBookingId}`,
+      );
 
-        if (existingBooking) {
-          return res.status(200).json({
-            message: "Payment already verified",
-            bookingId: existingBooking.id,
-          });
-        }
-      } else {
-        // Payment completed but no booking ID (edge case - reschedule or special case)
+      if (existingBookingId) {
         return res.status(200).json({
           message: "Payment already verified",
+          bookingId: existingBookingId,
+          isReschedule: paymentIntent.isReschedule === true,
+        });
+      } else if (paymentIntent.isReschedule) {
+        return res.status(200).json({
+          message: "Payment already verified",
+          bookingId: paymentIntent.rescheduleBookingId,
+          isReschedule: true,
         });
       }
+      return res.status(200).json({
+        message: "Payment already verified",
+      });
+    }
+
+    // Check for terminal states
+    if (["failed", "expired"].includes(paymentIntent.status)) {
+      return res.status(400).json({
+        message: `Payment intent is ${paymentIntent.status}`,
+        code: "INTENT_TERMINAL",
+      });
     }
 
     // Check if Razorpay order ID matches
@@ -953,18 +903,48 @@ const verifyPayment = async (req, res) => {
       `${isReschedule ? "🔄" : "🆕"} Payment verification - ${isReschedule ? `RESCHEDULE for booking ${rescheduleBookingId}` : "NEW BOOKING"}`,
     );
 
-    // Use transaction for atomicity
-    let bookingId = null; // Can be new booking ID or existing booking ID (for reschedule)
+    // Use transaction with slot lock for atomicity + idempotency
+    let bookingId = null;
 
     await db.transaction(async (tx) => {
-      // CRITICAL: Check for existing booking for this slot+date+service BEFORE proceeding
-      // Different services can use the same time slot
-      // This prevents race conditions when multiple users try to book the same slot simultaneously
-      console.log(
-        `🔒 Checking for existing bookings for service ${paymentIntent.serviceId}, slot ${paymentIntent.slotId} on ${paymentIntent.bookingDate}`,
+      // Step 1: Acquire slot lock (for double-booking prevention)
+      const bookingDateMidnight = new Date(paymentIntent.bookingDate);
+      bookingDateMidnight.setUTCHours(0, 0, 0, 0);
+
+      await acquireSlotLock(
+        tx,
+        paymentIntent.slotId,
+        bookingDateMidnight,
+        paymentIntent.serviceId,
       );
 
-      // Create date range for the selected date
+      // Step 2: Re-fetch payment intent under FOR UPDATE to prevent concurrent updates
+      // This ensures idempotency between client call and webhook
+      const [currentIntent] = await tx
+        .select()
+        .from(paymentIntents)
+        .where(eq(paymentIntents.id, paymentIntentId))
+        .for("update");
+
+      // Step 3: Check if already completed (idempotency check under lock)
+      if (currentIntent.status === "completed") {
+        console.log(`♻️ Payment already completed under lock, returning`);
+        bookingId =
+          currentIntent.bookingId || currentIntent.rescheduleBookingId;
+        return; // Exit transaction early
+      }
+
+      // Step 4: Check for terminal states under lock
+      if (["failed", "expired"].includes(currentIntent.status)) {
+        throw new Error(`Payment intent is ${currentIntent.status}`);
+      }
+
+      // Step 5: Capacity check under the lock
+      console.log(
+        `🔒 Checking capacity for service ${paymentIntent.serviceId}, slot ${paymentIntent.slotId} on ${paymentIntent.bookingDate}`,
+      );
+
+      // Create date range for capacity check
       const bookingDate = paymentIntent.bookingDate;
       const startOfDay = new Date(bookingDate);
       startOfDay.setHours(0, 0, 0, 0);
@@ -986,26 +966,20 @@ const verifyPayment = async (req, res) => {
         .where(
           and(
             eq(bookings.slotId, paymentIntent.slotId),
-            eq(bookings.serviceId, paymentIntent.serviceId), // Only check same service
-            // Check if bookingDate falls within the selected date
-            and(
-              gte(bookings.bookingDate, startOfDay),
-              lte(bookings.bookingDate, endOfDay),
-            ),
+            eq(bookings.serviceId, paymentIntent.serviceId),
+            gte(bookings.bookingDate, startOfDay),
+            lte(bookings.bookingDate, endOfDay),
             eq(bookings.status, "confirmed"),
-            // For reschedule: exclude the current booking being rescheduled
             ...(isReschedule ? [ne(bookings.id, rescheduleBookingId)] : []),
           ),
         );
 
       if (existingBookingsCount >= maxAllowBooking) {
         console.log(
-          `❌ Slot ${paymentIntent.slotId} already booked (reached max ${maxAllowBooking}) for service ${paymentIntent.serviceId} on ${paymentIntent.bookingDate}`,
+          `❌ Slot ${paymentIntent.slotId} already booked (reached max ${maxAllowBooking})`,
         );
-        // Slot is already booked - cancel this payment
-        throw new Error(
-          "This slot is no longer available. It was just booked by another customer. Your payment will be refunded automatically.",
-        );
+        // RACE CONDITION: Slot was taken by another customer - initiate refund
+        throw new Error("SLOT_RACE_LOST");
       }
 
       console.log(
@@ -1304,12 +1278,13 @@ const verifyPayment = async (req, res) => {
           .where(eq(bookings.id, newBooking.id));
       }
 
-      // Update payment_intent to completed (common for both cases)
+      // Update payment_intent to completed with booking ID (enables idempotency)
       await tx
         .update(paymentIntents)
         .set({
           status: "completed",
           completedAt: new Date(),
+          bookingId: bookingId,
         })
         .where(eq(paymentIntents.id, paymentIntentId));
     });
@@ -1321,6 +1296,37 @@ const verifyPayment = async (req, res) => {
       "isReschedule:",
       isReschedule,
     );
+
+    // If we got a SLOT_RACE_LOST error, initiate refund
+    if (bookingId === "SLOT_RACE_LOST") {
+      console.log("💰 Initiating refund for race condition");
+      if (razorpayPaymentId) {
+        try {
+          await initiateRefund(
+            razorpayPaymentId,
+            "Slot taken by another customer",
+          );
+        } catch (refundError) {
+          console.error("Error initiating refund:", refundError);
+        }
+      }
+
+      // Update payment_intent as failed
+      await db
+        .update(paymentIntents)
+        .set({
+          status: "failed",
+          failureReason: "Slot taken by another customer",
+        })
+        .where(eq(paymentIntents.id, paymentIntentId));
+
+      return res.status(409).json({
+        message:
+          "This slot was taken by another customer. A refund has been initiated.",
+        code: "SLOT_ALREADY_BOOKED",
+        requiresRefund: true,
+      });
+    }
 
     // Send notification to provider about new booking (only for new bookings, not reschedules)
     // CRITICAL: Send notification BEFORE responding to ensure it executes

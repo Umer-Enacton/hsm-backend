@@ -421,14 +421,35 @@ const paymentIntents = pgTable("payment_intents", {
   amount: integer("amount").notNull(), // Amount in paise
   razorpayOrderId: varchar("razorpay_order_id", { length: 100 }),
   status: paymentIntentStatusEnum("status").default("pending").notNull(),
-  expiresAt: timestamp("expires_at").notNull(), // Lock expires after 1 minute
+  expiresAt: timestamp("expires_at").notNull(), // Lock expires after 90 seconds
   createdAt: timestamp("created_at").defaultNow().notNull(),
   completedAt: timestamp("completed_at"),
   failureReason: varchar("failure_reason", { length: 500 }),
+  // FK to booking after payment completed - enables idempotency
+  bookingId: integer("booking_id").references(() => bookings.id, { onDelete: "set null" }),
   // Reschedule fields
   isReschedule: boolean("is_reschedule").default(false),
   rescheduleBookingId: integer("reschedule_booking_id"), // References bookings.id for reschedule
 });
+
+// Daily Slots - Materialized slot for SELECT FOR UPDATE locking
+const dailySlots = pgTable(
+  "daily_slots",
+  {
+    id: serial("id").primaryKey(),
+    serviceId: integer("service_id")
+      .notNull()
+      .references(() => services.id, { onDelete: "cascade" }),
+    slotId: integer("slot_id")
+      .notNull()
+      .references(() => slots.id, { onDelete: "cascade" }),
+    bookingDate: date("booking_date").notNull(), // DATE type - key is the calendar day
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => ({
+    uniqueSlotDate: uniqueIndex("daily_slots_slot_date_idx").on(table.slotId, table.bookingDate),
+  })
+);
 // Payment Details - Stores UPI/Bank details for admin and providers
 const paymentDetails = pgTable("payment_details", {
   id: serial("id").primaryKey(),
@@ -919,4 +940,6 @@ module.exports = {
   cronJobCategoryEnum,
   cronJobTriggeredByEnum,
   cronJobSyncStatusEnum,
+  // Daily Slots - Materialized slot for double-booking prevention
+  dailySlots,
 };
