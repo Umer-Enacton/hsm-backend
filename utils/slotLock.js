@@ -65,8 +65,6 @@ async function acquireSlotLock(tx, slotId, bookingDate, serviceId) {
     .insert(dailySlots)
     .values({ serviceId, slotId, bookingDate: dateStr })
     .onConflictDoNothing();
-  // 5 second sleep
-  await new Promise((resolve) => setTimeout(resolve, 5000));
   // Now lock the row with SELECT FOR UPDATE
   // This serializes concurrent requests for the same slot+date
   const [lockedRow] = await tx
