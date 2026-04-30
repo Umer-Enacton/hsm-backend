@@ -262,7 +262,8 @@ const updatePlan = async (req, res) => {
       updateData.features = JSON.stringify({
         ...existingFeatures,
         ...(features ? JSON.parse(features) : {}),
-        allowedGraphs: allowedGraphs || existingFeatures.allowedGraphs || [],
+        // Only override allowedGraphs if explicitly provided in the request
+        ...(allowedGraphs !== undefined ? { allowedGraphs } : {}),
       });
     }
     if (isActive !== undefined) updateData.isActive = isActive;

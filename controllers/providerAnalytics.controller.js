@@ -442,11 +442,9 @@ const getRevenueAnalytics = async (req, res) => {
     // Define all available charts with their IDs
     const availableCharts = {
       revenue_chart: "Revenue Trends",
-      bookings_chart: "Bookings Overview",
       status_chart: "Booking Status",
-      customer_ratings: "Customer Ratings",
-      category_performance: "Category Performance",
-      trends: "Service Trends",
+      trends: "Service Performance",
+      time_patterns: "Time Patterns & Busy Hours",
     };
 
     // Build response with allowed charts
@@ -965,10 +963,11 @@ const getTimePatternsAnalytics = async (req, res) => {
       });
     }
 
-    // Check if time_patterns is in allowed graphs
+    // Check if time_patterns is in allowed graphs OR provider is on Premium plan
     const planFeatures = subscription.planFeatures || {};
     const allowedGraphs = planFeatures.allowedGraphs || [];
-    if (!allowedGraphs.includes("time_patterns")) {
+    const isPremiumPlan = subscription?.planName?.toLowerCase().includes("premium");
+    if (!allowedGraphs.includes("time_patterns") && !isPremiumPlan) {
       return res.status(403).json({
         message: "Time Patterns analytics is only available on Premium plan.",
         code: "ANALYTICS_ACCESS_DENIED",
