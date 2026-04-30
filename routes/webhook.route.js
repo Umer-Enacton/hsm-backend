@@ -1,43 +1,36 @@
 const express = require("express");
 const { handleWebhook } = require("../controllers/webhook.controller");
 
-// Create a separate router with raw body parser for webhooks
-// This ensures we get the exact raw JSON that Razorpay signed
 const webhookRouter = express.Router();
 
-// IMPORTANT: Don't use express.raw() middleware here
-// Instead, we'll capture the raw stream manually before any parsing
-// This is the ONLY way to get the exact bytes Razorpay signed
+/**
+ * Capture raw body for Razorpay webhook signature verification.
+ *
+ * On Vercel (and other serverless platforms) the request body is already
+ * buffered before the handler runs, so stream-based approaches (req.on("data"))
+ * receive nothing.  Instead we use express.raw() which works in both local and
+ * serverless environments: it reads the buffered body as a Buffer and stores it
+ * on req.body, from which we derive both req.rawBody (string) and the parsed
+ * JSON object.
+ */
+const captureRawBody = [
+  // express.raw() reads the body as a Buffer regardless of Content-Type
+  express.raw({ type: "*/*", limit: "10mb" }),
 
-const captureRawBody = (req, res, next) => {
-  let data = "";
-
-  // Set encoding to utf8 to get strings instead of buffers
-  req.setEncoding("utf8");
-
-  req.on("data", (chunk) => {
-    data += chunk;
-  });
-
-  req.on("end", () => {
-    req.rawBody = data;
-
-    // Parse as JSON for controller use
+  // Convert Buffer → string + JSON, keep raw string for HMAC verification
+  (req, res, next) => {
     try {
-      req.body = JSON.parse(data);
+      const raw = req.body instanceof Buffer ? req.body.toString("utf8") : String(req.body || "");
+      req.rawBody = raw;
+      req.body = raw ? JSON.parse(raw) : {};
     } catch (e) {
       console.error("❌ Failed to parse webhook JSON:", e.message);
+      req.rawBody = "";
       req.body = {};
     }
-
     next();
-  });
-
-  req.on("error", (err) => {
-    console.error("❌ Webhook stream error:", err);
-    next(err);
-  });
-};
+  },
+];
 
 /**
  * Unified Razorpay Webhook Endpoint

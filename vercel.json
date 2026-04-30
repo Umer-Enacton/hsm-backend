@@ -1,4 +1,9 @@
 {
   "buildCommand": "echo 'No build step required'",
-  "outputDirectory": "."
+  "outputDirectory": ".",
+  "functions": {
+    "index.js": {
+      "includeFiles": "**"
+    }
+  }
 }

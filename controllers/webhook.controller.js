@@ -53,12 +53,14 @@ const handleWebhook = async (req, res) => {
     // Razorpay signs the exact raw JSON string, so we must use that
     const body = req.rawBody || JSON.stringify(req.body);
 
-    // Debug logging (remove in production if needed)
+    // Debug logging
     console.log("🔍 Webhook signature verification:", {
       hasSignature: !!signature,
       signatureLength: signature?.length,
       bodyLength: body?.length,
-      bodyStart: body?.substring(0, 100),
+      bodyIsEmpty: body === "" || body === "{}",
+      bodyStart: body?.substring(0, 120),
+      rawBodyPresent: !!req.rawBody,
     });
 
     // 1. Verify webhook signature (CRITICAL for security)
